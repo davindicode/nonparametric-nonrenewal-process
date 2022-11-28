@@ -54,7 +54,6 @@ of hierarchical models.
     - Conway-Maxwell-Poisson
 * Gaussian likelihoods
     - Univariate
-    - Multivariate (TODO)
 
 
 ## Optimization procedures
