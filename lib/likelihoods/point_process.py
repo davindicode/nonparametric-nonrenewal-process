@@ -189,90 +189,6 @@ def gen_IBP(intensity):
     return b.sample().numpy()
 
 
-def gen_CMP(mu, nu, max_rejections=1000):
-    """
-    Use rejection sampling to sample from the COM-Poisson count distribution. [1]
-
-    References:
-
-    [1] `Bayesian Inference, Model Selection and Likelihood Estimation using Fast Rejection
-         Sampling: The Conway-Maxwell-Poisson Distribution`, Alan Benson, Nial Friel (2021)
-
-    :param numpy.array rate: input rate of shape (..., time)
-    :param float tbin: time bin size
-    :param float eps: order of magnitude of P(N>1)/P(N<2) per dilated Bernoulli bin
-    :param int max_count: maximum number of spike counts per bin possible
-    :returns: inhomogeneous Poisson process sample
-    :rtype: numpy.array
-    """
-    trials = mu.shape[0]
-    neurons = mu.shape[1]
-    Y = np.empty(mu.shape)
-
-    for tr in range(trials):
-        for n in range(neurons):
-            mu_, nu_ = mu[tr, n, :], nu[tr, n, :]
-
-            # Poisson
-            k = 0
-            left_bins = np.where(nu_ >= 1)[0]
-            while len(left_bins) > 0:
-                mu__, nu__ = mu_[left_bins], nu_[left_bins]
-                y_dash = torch.poisson(torch.tensor(mu__)).numpy()
-                _mu_ = np.floor(mu__)
-                alpha = (
-                    mu__ ** (y_dash - _mu_)
-                    / scsps.factorial(y_dash)
-                    * scsps.factorial(_mu_)
-                ) ** (nu__ - 1)
-
-                u = np.random.rand(*mu__.shape)
-                selected = u <= alpha
-                Y[tr, n, left_bins[selected]] = y_dash[selected]
-                left_bins = left_bins[~selected]
-                if k >= max_rejections:
-                    raise ValueError("Maximum rejection steps exceeded")
-                else:
-                    k += 1
-
-            # geometric
-            k = 0
-            left_bins = np.where(nu_ < 1)[0]
-            while len(left_bins) > 0:
-                mu__, nu__ = mu_[left_bins], nu_[left_bins]
-                p = 2 * nu__ / (2 * mu__ * nu__ + 1 + nu__)
-                u_0 = np.random.rand(*p.shape)
-
-                y_dash = np.floor(np.log(u_0) / np.log(1 - p))
-                a = np.floor(mu__ / (1 - p) ** (1 / nu__))
-                alpha = (1 - p) ** (a - y_dash) * (
-                    mu__ ** (y_dash - a) / scsps.factorial(y_dash) * scsps.factorial(a)
-                ) ** nu__
-
-                u = np.random.rand(*mu__.shape)
-                selected = u <= alpha
-                Y[tr, n, left_bins[selected]] = y_dash[selected]
-                left_bins = left_bins[~selected]
-                if k >= max_rejections:
-                    raise ValueError("Maximum rejection steps exceeded")
-                else:
-                    k += 1
-
-    return Y
-
-    """
-    if rate.max() == 0:
-        return np.zeros_like(rate)
-        
-    dt_ = np.sqrt(eps)/rate.max()
-    dilation = max(int(np.ceil(tbin/dt_)), 1) # number of counts to allow per original bin
-    if dilation > max_count:
-        raise ValueError('Maximum count ({}, requested {}) exceeded for Poisson process sampling'.format(max_count, dilation))
-    tbin_ = tbin / dilation
-    rate_ = np.repeat(rate, dilation, axis=-1) # repeat to allow IBP to sum to counts > 1
-    return gen_IBP(rate_*tbin_).reshape(*rate.shape[:-1], -1, dilation).sum(-1)
-    """
-
 
 # Poisson point process
 class Poisson_pp(base._likelihood):
@@ -598,7 +514,7 @@ class Gamma(_renewal_model):
         shape_ = self.shape.expand(1, self.F_dims)[:, neuron]
 
         # Ignore the end points of the spike train
-        # d_Lambda_i = rates[:self.spiketimes[0]].sum()*self.tbin
+        # d_Lambda_i = rates[:self.spiketimes[0]].sum()*self.tbin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
         # d_Lambda_f = rates[self.spiketimes[ii]:].sum()*self.tbin
         # l_start = torch.empty((len(neuron)), device=self.tbin.device)
         # l_end = torch.empty((len(neuron)), device=self.tbin.device)
@@ -763,7 +679,7 @@ class inv_Gaussian(_renewal_model):
 
     def constrain(self):
         self.mu.data = torch.clamp(self.mu.data, min=1e-5)
-
+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
     def set_Y(self, spikes, batch_info):
         super().set_Y(spikes, batch_info)
 

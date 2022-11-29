@@ -29,3 +29,29 @@ class _filter(nn.Module):
 
     def constrain(self):
         return
+    
+    
+    
+
+
+class filtered_input(base._VI_object):
+    """
+    Stimulus filtering as in GLMs
+    """
+
+    def __init__(self, input_series, stimulus_filter, tensor_type=torch.float):
+        self.register_buffer("input_series", input_series.type(tensor_type))
+
+        self.add_module("filter", stimulus_filter)
+        self.history_len = (
+            self.filter.history_len
+        )  # history excludes instantaneous part
+
+    def sample(self, b, batch_info, samples, net_input, importance_weighted):
+        """ """
+        _XZ = self.stimulus_filter(XZ.permute(0, 2, 1))[0].permute(
+            0, 2, 1
+        )  # ignore filter variance
+        KL_prior = self.stimulus_filter.KL_prior()
+
+        return _XZ, KL_prior
