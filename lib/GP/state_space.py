@@ -7,7 +7,7 @@ from jax import jit, jacrev, vmap, grad, lax, tree_map
 from jax.scipy.linalg import solve_triangular, cho_solve
 from jax.numpy.linalg import cholesky
 
-from .utils import solve
+from ..utils.linalg import solve
 
 import math
 _log_twopi = math.log(2 * math.pi)

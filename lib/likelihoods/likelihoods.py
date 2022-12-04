@@ -8,8 +8,8 @@ from jax.scipy.linalg import block_diag, solve_triangular
 from jax.numpy.linalg import cholesky
 from jax.nn import softmax
 
-from .utils import expsum, softplus, sigmoid, logphi, softplus_inv, gauss_hermite, \
-    get_blocks, inv, mc_sample
+from ..utils.jax import expsum, softplus, sigmoid, softplus_inv, mc_sample
+from ..utils.linalg import gauss_hermite, get_blocks, inv
 
 import math
 _log_twopi = math.log(2 * math.pi)

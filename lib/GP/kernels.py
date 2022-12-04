@@ -7,8 +7,8 @@ from jax import jit, vmap, tree_map, lax
 
 from jax.scipy.linalg import expm, block_diag
 
-from .utils import softplus, softplus_inv, softplus_inv_list, softplus_list, \
-    rotation_matrix, solve, solve_continuous_lyapunov
+from ..utils.jax import softplus, softplus_inv, softplus_inv_list, softplus_list
+from ..utils.linalg import rotation_matrix, solve, solve_continuous_lyapunov
 
 import scipy
 

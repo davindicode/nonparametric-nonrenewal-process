@@ -7,8 +7,8 @@ from jax import jit, jacrev, random, vmap, value_and_grad, grad, tree_map, vjp
 from jax.scipy.linalg import cho_factor, cho_solve, solve_triangular
 from jax.numpy.linalg import cholesky
 
-from .utils import softplus, sigmoid, logphi, softplus_inv, expsum, \
-    gauss_hermite, inv, enforce_positive_diagonal, mc_sample, sample_gaussian_noise
+from .utils.jax import softplus, sigmoid, softplus_inv, expsum, mc_sample, sample_gaussian_noise
+from .utils.linalg import gauss_hermite, inv, enforce_positive_diagonal
 
 import math
 
