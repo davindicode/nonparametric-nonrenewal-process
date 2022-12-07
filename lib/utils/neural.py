@@ -5,7 +5,6 @@ import jax.random as jr
 from jax import lax
 
 
-
 def get_lagged_ISIs(spiketrain, lags):
     """
     :param np.ndarray spiketrain: input spike trains of shape (time, neurons)
@@ -13,17 +12,19 @@ def get_lagged_ISIs(spiketrain, lags):
         lagged ISIs of shape (time, neurons, lags)
     """
     T, N = spiketrain.shape
-    
+
     def step(carry, inputs):
-        carry = carry.at[:, 0].add(1.)
+        carry = carry.at[:, 0].add(1.0)
         out = carry
-        
+
         # spike reset
-        spike_cond = (inputs > 0)
-        carry = carry.at[:, 1:].set(jnp.where(spike_cond[:, None], carry[:, :-1], carry[:, 1:]))
-        carry = carry.at[:, 0].set(jnp.where(spike_cond, 0., carry[:, 0]))
+        spike_cond = inputs > 0
+        carry = carry.at[:, 1:].set(
+            jnp.where(spike_cond[:, None], carry[:, :-1], carry[:, 1:])
+        )
+        carry = carry.at[:, 0].set(jnp.where(spike_cond, 0.0, carry[:, 0]))
         return carry, out
-    
+
     init = jnp.ones((N, lags)) * jnp.nan
     xs = spiketrain
 
@@ -31,58 +32,68 @@ def get_lagged_ISIs(spiketrain, lags):
     return lagged_ISIs
 
 
-
-
 ### spike trains ###
-def bin_data(bin_size, bin_time, spikes, track_samples, 
-             behaviour_data=None, average_behav=True, binned=False):
+def bin_data(
+    bin_size,
+    bin_time,
+    spikes,
+    track_samples,
+    behaviour_data=None,
+    average_behav=True,
+    binned=False,
+):
     """
     Bin the spike train into a given bin size.
-    
+
     :param int bin_size: desired binning of original time steps into new bin
     :param float bin_time: time step of each original bin or time point
     :param np.array spikes: input spikes in train or index format
     :param int track_samples: number of time steps in the recording
     :param tuple behaviour_data: input behavioural time series
     :param bool average_behav: takes the middle element in bins for behavioural data if False
-    :param bool binned: spikes is a spike train if True (trials, neurons, time), otherwise 
+    :param bool binned: spikes is a spike train if True (trials, neurons, time), otherwise
                         it is a list of spike time indices (trials, neurons)*[spike indices]
     :return:
         tbin, resamples, rc_t, rcov_t
     """
-    tbin = bin_size*bin_time
-    resamples = int(np.floor(track_samples/bin_size))
+    tbin = bin_size * bin_time
+    resamples = int(np.floor(track_samples / bin_size))
     centre = bin_size // 2
     # leave out data with full bins
-    
+
     rcov_t = ()
     if behaviour_data is not None:
         if isinstance(average_behav, list) is False:
             average_behav = [average_behav for _ in range(len(behaviour_data))]
-        
+
         for k, cov_t in enumerate(behaviour_data):
             if average_behav[k]:
-                rcov_t += (cov_t[:resamples*bin_size].reshape(resamples, bin_size).mean(1),)
+                rcov_t += (
+                    cov_t[: resamples * bin_size].reshape(resamples, bin_size).mean(1),
+                )
             else:
-                rcov_t += (cov_t[centre:resamples*bin_size:bin_size],)
-            
+                rcov_t += (cov_t[centre : resamples * bin_size : bin_size],)
+
     if binned:
-        rc_t = spikes[:, :resamples*bin_size].reshape(spikes.shape[0], resamples, bin_size).sum(-1)
+        rc_t = (
+            spikes[:, : resamples * bin_size]
+            .reshape(spikes.shape[0], resamples, bin_size)
+            .sum(-1)
+        )
     else:
         units = len(spikes)
         rc_t = np.zeros((units, resamples))
         for u in range(units):
-            retimes = np.floor(spikes[u]/bin_size).astype(int)
+            retimes = np.floor(spikes[u] / bin_size).astype(int)
             np.add.at(rc_t[u], retimes[retimes < resamples], 1)
-        
-    return tbin, resamples, rc_t, rcov_t
 
+    return tbin, resamples, rc_t, rcov_t
 
 
 def binned_to_indices(spiketrain):
     """
     Converts a binned spike train into spike time indices (with duplicates)
-    
+
     :param np.array spiketrain: the spike train to convert
     :returns: spike indices denoting spike times in units of time bins
     :rtype: np.array
@@ -91,10 +102,9 @@ def binned_to_indices(spiketrain):
     bigger = np.where(spiketrain > 1)[0]
     add_on = (spike_ind,)
     for b in bigger:
-        add_on += (b*np.ones(int(spiketrain[b])-1, dtype=int),)
+        add_on += (b * np.ones(int(spiketrain[b]) - 1, dtype=int),)
     spike_ind = np.concatenate(add_on)
     return np.sort(spike_ind)
-
 
 
 def covariates_at_spikes(spiketimes, behaviour_data):
@@ -106,7 +116,5 @@ def covariates_at_spikes(spiketimes, behaviour_data):
     for u in range(units):
         for k, cov_t in enumerate(behaviour_data):
             cov_s[k].append(cov_t[spiketimes[u]])
-            
+
     return cov_s
-
-

@@ -70,11 +70,11 @@ def backtrack(DTW):
 def dtw(a, b):
     """perform dynamic time warping on two matricies a and b
     first dimension must be time, second dimension shapes must be equal
-    
+
     returns:
         trace_x, trace_y -- the warp path as two lists of indicies. Suitable for use in
         an iterpolation function such as numpy.interp
-        
+
         to warp values from a to b, use: numpy.interp(warpable_values, trace_x, trace_y)
         to warp values from b to a, use: numpy.interp(warpable_values, trace_y, trace_x)
     """

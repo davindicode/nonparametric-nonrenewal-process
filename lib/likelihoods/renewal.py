@@ -316,46 +316,7 @@ class _renewal_model(base._likelihood):
         train[ind] += 1
         return train
 
-    def rate_rescale(self, neuron, spike_ind, rates, duplicate, minimum=1e-8):
-        """
-        Rate rescaling with option to dequantize, which will be random per sample.
-
-        :param torch.Tensor rates: input rates of shape (trials, neurons, timesteps)
-        :returns: list of rescaled ISIs, list index over neurons, elements of shape (trials, ISIs)
-        :rtype: list
-        """
-        rtime = torch.cumsum(rates, dim=-1) * self.tbin
-        samples = rtime.shape[0]
-        rISI = []
-        for tr in range(self.trials):
-            isis = []
-            for en, n in enumerate(neuron):
-                if len(spike_ind[tr][n]) > 1:
-                    if self.dequant:
-                        deqn = (
-                            torch.rand(
-                                samples, *spike_ind[tr][n].shape, device=rates.device
-                            )
-                            * rates[tr :: self.trials, en, spike_ind[tr][n]]
-                            * self.tbin
-                        )  # assume spike at 0
-
-                        tau = rtime[tr :: self.trials, en, spike_ind[tr][n]] - deqn
-
-                        if duplicate[tr, n]:  # re-oder in case of duplicate spike_ind
-                            tau = torch.sort(tau, dim=-1)[0]
-
-                    else:
-                        tau = rtime[tr :: self.trials, en, spike_ind[tr][n]]
-
-                    a = tau[:, 1:] - tau[:, :-1]
-                    a[a < minimum] = minimum  # don't allow near zero ISI
-                    isis.append(a)  # samples, order
-                else:
-                    isis.append([])
-            rISI.append(isis)
-
-        return rISI
+    
 
     def set_Y(self, spikes, batch_info):
         """
