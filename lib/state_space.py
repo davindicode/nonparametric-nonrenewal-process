@@ -1,6 +1,8 @@
 import math
 from functools import partial
 
+from .base import module
+
 import jax.numpy as jnp
 import jax.random as jr
 from jax import grad, jacrev, jit, lax, tree_map, vmap
@@ -219,62 +221,68 @@ def get_evaldata(t_eval, timedata):
 
 
 ### classes ###
-class StateSpace(object):
+class StateSpace(module):
     """
     The state space model class
     """
+    x_dims: int
+    diagonal_site: bool
+    kernel: module
+        
+    site_obs: jnp.ndarray
+    site_Lcov: jnp.ndarray
 
-    def __init__(self, x_dims, kernel, var_params, diagonal_site):
+    def __init__(self, x_dims, kernel, site_obs, site_Lcov, diagonal_site):
         """
         :param dict hyp: (hyper)parameters of the state space model
         :param dict var_params: variational parameters
         """
         self.x_dims = x_dims
-        self.kernel = kernel
         self.diagonal_site = diagonal_site
+        self.kernel = kernel
+        
+        self.site_obs = site_obs
+        self.site_Lcov = site_Lcov
 
-        self.params = {"kernel": kernel.hyp}
-        self.var_params = var_params
-
-    def normal_site_init(self, Tsteps, mean=0.0, std=1.0):
-        """
-        If state space site parameters are None, will initialize with Kalman filter
-        """
-        var_params = {
-            "site_obs": mean * jnp.ones([Tsteps, self.x_dims, 1]),
-            "site_Lcov": std * jnp.eye(self.x_dims)[None, ...].repeat(Tsteps, axis=0),
-        }
-        self.var_params = var_params
-
-    @partial(jit, static_argnums=(0,))
-    def constraints(self, params, var_params):
+    def apply_constraints(self):
         """
         PSD constraint
         """
-        Lcov = var_params["site_Lcov"]
-        epdfunc = lambda x: enforce_positive_diagonal(x, lower_lim=1e-2)
-        Lcov = vmap(epdfunc)(jnp.tril(Lcov))
-        var_params["site_Lcov"] = jnp.triu(Lcov) if self.diagonal_site else Lcov
-        return params, var_params
+        model = jax.tree_map(lambda p: p, self)  # copy
+        
+        def update(W_rec):
+            Lcov = var_params["site_Lcov"]
+            epdfunc = lambda x: enforce_positive_diagonal(x, lower_lim=1e-2)
+            Lcov = vmap(epdfunc)(jnp.tril(Lcov))
+            var_params["site_Lcov"] = jnp.triu(Lcov) if self.diagonal_site else Lcov
+            return params, var_params
 
-    @partial(jit, static_argnums=(0,))
+        model = eqx.tree_at(
+            lambda tree: tree.site_Lcov,
+            model,
+            replace_fn=update,
+        )
+        
+        kernel = self.kernel.apply_constraints(self.kernel)
+        model = eqx.tree_at(
+            lambda tree: tree.kernel,
+            model,
+            replace_fn=lambda _: kernel,
+        )
+
+        return model
+    
     def compute_intermediates(self, hyp, dt=None):
         """
         Compute intermediate reused values that only depend on hyperparameters
         """
         return {}  # empty container
 
-    @partial(jit, static_argnums=(0,))
-    def constraints(self, params, var_params):
-        return params, var_params
-
     ### LDS ###
-    @partial(jit, static_argnums=(0,))
     def state_transition(self, dt, hyp=None):
         hyp = self.kernel.hyp if hyp is None else hyp
         return self.kernel.state_transition(dt, hyp)
 
-    @partial(jit, static_argnums=(0,))
     def state_output(self, hyp=None):
         hyp = self.kernel.hyp if hyp is None else hyp
         return self.kernel.state_output(hyp)
@@ -292,8 +300,7 @@ class FullLDS(StateSpace):
         """
         super().__init__(kernel.out_dims, kernel, var_params, diagonal_site)
 
-    @partial(jit, static_argnums=(0,))
-    def get_LDS_matrices(self, params, timedata, Pinf):
+    def get_LDS_matrices(self, timedata, Pinf):
         t, dt = timedata
         Id = jnp.eye(Pinf.shape[0])
         Zs = jnp.zeros_like(Pinf)
@@ -314,7 +321,7 @@ class FullLDS(StateSpace):
     ### posterior ###
     @partial(jit, static_argnums=(0, 5, 6))
     def evaluate_posterior(
-        self, t_eval, timedata, params, var_params, mean_only, compute_KL, jitter
+        self, t_eval, timedata, mean_only, compute_KL, jitter
     ):
         """
         predict at test locations X, which may includes training points

@@ -1,6 +1,8 @@
 import math
 from functools import partial
 
+from .base import module
+
 import jax.numpy as jnp
 import jax.random as jr
 from jax import grad, jacrev, jit, random, tree_map, value_and_grad, vjp, vmap
@@ -21,7 +23,7 @@ from .utils.linalg import enforce_positive_diagonal, gauss_hermite, inv
 vdiag = vmap(jnp.diag)
 
 
-class Mapping(object):
+class Mapping(module):
     """
     The observation model class, E_q[ p(yₙ|fₙ) p(fₙ|xₙ) ], defines a mapping combined with a likelihood
 
@@ -39,9 +41,6 @@ class Mapping(object):
         self.params = params
         self.var_params = var_params
 
-    def constraints(self, params, var_params):
-        return params, var_params
-
     ### distributions ###
     def evaluate_posterior(self, x, params, var_params, mean_only, compute_KL, jitter):
         """ """
@@ -58,7 +57,7 @@ class Mapping(object):
         raise NotImplementedError("Prior for this mapping is not implemented")
 
 
-class Constant(Mapping):
+class Constant(module):
     """
     Constant value
     """
@@ -112,7 +111,7 @@ class Constant(Mapping):
         return samples, KL
 
 
-class Identity(Mapping):
+class Identity(module):
     """
     Direct regression to likelihood
     """
@@ -164,7 +163,7 @@ class Identity(Mapping):
         return samples, KL
 
 
-class Linear(Mapping):
+class Linear(module):
     """
     Factor analysis
     """
@@ -221,7 +220,7 @@ class Linear(Mapping):
         return samples, KL
 
 
-class tSVGP(eqx.Module):
+class tSVGP(module):
     """
     Sparse variational Gaussian process
 
@@ -261,8 +260,7 @@ class tSVGP(eqx.Module):
 
         self.RFF_num_feats = RFF_num_feats  # use random Fourier features
 
-    @partial(jit, static_argnums=(0,))
-    def constraints(self, params, var_params):
+    def apply_constraints(self):
         """
         PSD constraint
         """

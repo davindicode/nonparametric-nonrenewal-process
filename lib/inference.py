@@ -450,6 +450,16 @@ class IF_SSGP(SVI_state_space):
     def evaluate_ELBO(self):
         return
 
+    
+    ### constrain ###
+    @partial(jit, static_argnums=(0,))
+    def constraints(self):
+        """
+        Pool together contraints from model components
+        """
+        self.state_space.constraints()
+        
+    
 
 class PP_SSGP(SVI_state_space):
     """

@@ -1,7 +1,7 @@
 import math
 from functools import partial
 
-import equinox as eqx
+from .base import module
 
 import jax.numpy as jnp
 import jax.random as jr
@@ -61,7 +61,7 @@ def _scaled_dist_Rn(X, Z, lengthscale):
 
 
 ### classes ###
-class StationaryKernel(eqx.Module):
+class StationaryKernel(module):
     """
     The GP Kernel / prior class.
     Implements methods for converting GP priors,
