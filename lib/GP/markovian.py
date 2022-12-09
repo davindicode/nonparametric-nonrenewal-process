@@ -15,6 +15,7 @@ from ..utils.linalg import solve
 _log_twopi = math.log(2 * math.pi)
 
 
+
 # linear algebra operations
 def kalman_filter(
     obs_means, obs_Lcovs, As, Qs, H, minf, Pinf, return_predict=False, compute_logZ=True
@@ -272,20 +273,18 @@ class StateSpace(module):
 
         return model
     
-    def compute_intermediates(self, hyp, dt=None):
-        """
-        Compute intermediate reused values that only depend on hyperparameters
-        """
-        return {}  # empty container
+#     def compute_intermediates(self, hyp, dt=None):
+#         """
+#         Compute intermediate reused values that only depend on hyperparameters
+#         """
+#         return {}  # empty container
 
-    ### LDS ###
-    def state_transition(self, dt, hyp=None):
-        hyp = self.kernel.hyp if hyp is None else hyp
-        return self.kernel.state_transition(dt, hyp)
+#     ### LDS ###
+#     def state_transition(self, dt):
+#         return self.kernel.state_transition(dt)
 
-    def state_output(self, hyp=None):
-        hyp = self.kernel.hyp if hyp is None else hyp
-        return self.kernel.state_output(hyp)
+#     def state_output(self):
+#         return self.kernel.state_output()
 
 
 class FullLDS(StateSpace):
@@ -293,12 +292,12 @@ class FullLDS(StateSpace):
     Full state space LDS
     """
 
-    def __init__(self, kernel, var_params=None, diagonal_site=True):
+    def __init__(self, kernel, site_obs, site_Lcov, diagonal_site=True):
         """
         :param dict hyp: (hyper)parameters of the state space model
         :param dict var_params: if None, Kalman filter will initialize
         """
-        super().__init__(kernel.out_dims, kernel, var_params, diagonal_site)
+        super().__init__(kernel.out_dims, kernel, site_obs, site_Lcov, diagonal_site)
 
     def get_LDS_matrices(self, timedata, Pinf):
         t, dt = timedata
@@ -306,12 +305,12 @@ class FullLDS(StateSpace):
         Zs = jnp.zeros_like(Pinf)
 
         if dt.shape[0] == 1:
-            A = self.state_transition(dt[0], params)
+            A = self.kernel.state_transition(dt[0])
             Q = process_noise_covariance(A, Pinf)
             As = jnp.stack([Id] + [A] * (t.shape[0] - 1) + [Id], axis=0)
             Qs = jnp.stack([Zs] + [Q] * (t.shape[0] - 1) + [Zs], axis=0)
         else:
-            As = vmap(self.state_transition, (0, None), 0)(dt, params)
+            As = vmap(self.kernel.state_transition)(dt)
             Qs = vmap(process_noise_covariance, (0, None), 0)(As, Pinf)
             As = jnp.concatenate((Id[None, ...], As, Id[None, ...]), axis=0)
             Qs = jnp.concatenate((Zs[None, ...], Qs, Zs[None, ...]), axis=0)
@@ -319,7 +318,6 @@ class FullLDS(StateSpace):
         return As, Qs
 
     ### posterior ###
-    @partial(jit, static_argnums=(0, 5, 6))
     def evaluate_posterior(
         self, t_eval, timedata, mean_only, compute_KL, jitter
     ):
@@ -423,8 +421,7 @@ class FullLDS(StateSpace):
         return post_means, post_covs, KL
 
     ### sample ###
-    @partial(jit, static_argnums=(0, 3))
-    def sample_prior(self, params, prng_state, num_samps, timedata, jitter):
+    def sample_prior(self, prng_state, num_samps, timedata, jitter):
         """
         Sample from the model prior f~N(0,K) multiple times using a nested loop.
         :param num_samps: the number of samples to draw [scalar]
@@ -462,11 +459,8 @@ class FullLDS(StateSpace):
         f_samples = vmap(sample_i, 0, 1)(prng_states)
         return f_samples  # (time, tr, state_dims, 1)
 
-    @partial(jit, static_argnums=(0, 4, 8))
     def sample_posterior(
         self,
-        params,
-        var_params,
         prng_state,
         num_samps,
         timedata,
@@ -540,6 +534,7 @@ class FullLDS(StateSpace):
         smoothed_samps = vmap(smooth_prior_sample, 1, 1)(prior_samps_noisy)
         # Matheron's rule pathwise samplig
         return prior_samps_eval - smoothed_samps + post_means[:, None, ...], KL_ss
+
 
 
 class UncoupledLDS(StateSpace):

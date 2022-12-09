@@ -1,3 +1,4 @@
+from typing import Callable
 import math
 from functools import partial
 
@@ -15,6 +16,7 @@ from ..utils.jax import softplus, softplus_inv, softplus_inv_list, softplus_list
 from ..utils.linalg import rotation_matrix, solve, solve_continuous_lyapunov
 
 _sqrt_twopi = math.sqrt(2 * math.pi)
+
 
 
 ### functions ###
@@ -37,7 +39,7 @@ def _safe_sqrt(x):
     return jnp.sqrt(jnp.maximum(x, 1e-36))
 
 
-def _scaled_dist_squared_Rn(X, X_, lengthscale):
+def _scaled_dist_squared_Rn(X, Y, lengthscale):
     r"""
     Returns :math:`\|\frac{X-Z}{l}\|^2`
 
@@ -45,19 +47,20 @@ def _scaled_dist_squared_Rn(X, X_, lengthscale):
     :return: distance of shape (out_dims, num_points, num_points_)
     """
     scaled_X = X / lengthscale[:, None, :]
-    scaled_X_ = X_ / lengthscale[:, None, :]
+    scaled_Y = Y / lengthscale[:, None, :]
     X2 = (scaled_X**2).sum(-1, keepdims=True)
-    X2_ = (scaled_X_**2).sum(-1, keepdims=True)
-    XX_ = scaled_X @ scaled_X_.transpose(0, 2, 1)
-    r2 = X2 - 2 * XX_ + X2_.transpose(0, 2, 1)
+    Y2 = (scaled_Y**2).sum(-1, keepdims=True)
+    XY = scaled_X @ scaled_Y.transpose(0, 2, 1)
+    r2 = X2 - 2 * XY + Y2.transpose(0, 2, 1)
     return jnp.maximum(r2, 0.0)
 
 
-def _scaled_dist_Rn(X, Z, lengthscale):
+def _scaled_dist_Rn(X, Y, lengthscale):
     r"""
     Returns :math:`\|\frac{X-Z}{l}\|`
     """
-    return jnp.sqrt(_scaled_dist_squared_Rn(X, Z, lengthscale))
+    return jnp.sqrt(_scaled_dist_squared_Rn(X, Y, lengthscale))
+
 
 
 ### classes ###
@@ -129,30 +132,9 @@ class StationaryKernel(module):
         """ """
         raise NotImplementedError("Spectrum density is not implemented")
 
-    @partial(jit, static_argnums=(0,))
-    def spectral_representation(self, omega):
-        """
-        Calculation of the spectral representation of the kernel, from its state space parameters.
-        We return HS(\omega)H^T which is a scalar (directly in observation space.
-        Note that in the LEG case this expression simplifies because of the structue of the process
-        (it assumes F = NN^T + R - R^T where N is the noise matrix)
-        """
-        F, L, Qc, H, _ = self.kernel_to_state_space(hyp)
-        n = jnp.shape(F)[0]
-        tmp = F + 1j * jnp.eye(n) * omega
-        tmp_inv = jnp.linalg.inv(tmp)
-        conj_tmp_inv = jnp.linalg.inv(F - 1j * jnp.eye(n) * omega)
-        return H @ tmp_inv @ L @ Qc @ L.T @ conj_tmp_inv.T @ H.T
+    
 
-    @partial(jit, static_argnums=(0,))
-    def temporal_representation(self, tau):
-        """
-        Calculation of the temporal representation of the kernel, from its state space parameters.
-        We return H P_inf*expm(F\tau)^TH^T
-        """
-        F, _, _, H, P_inf = self.kernel_to_state_space(hyp)
-        return H @ P_inf @ expm(F.T * tau) @ H.T
-
+    
 
 class IID(StationaryKernel):
     """
@@ -194,6 +176,7 @@ class IID(StationaryKernel):
         """
         return jnp.zeros((self.state_dims, self.state_dims))
 
+    
 
 class Cosine(StationaryKernel):
     """
@@ -213,23 +196,22 @@ class Cosine(StationaryKernel):
                sin(ωΔt)    cos(ωΔt) )
     """
 
-    presoftp_freq: jnp.ndarray
+    pre_omega: jnp.ndarray
 
     def __init__(self, frequency):
         in_dims = 1
         out_dims = 1
         state_dims = 2
         super().__init__(in_dims, out_dims, state_dims)
-        self.presoftp_freq = presoftp_freq
+        self.pre_omega = pre_omega
 
     @property
-    def frequency(self):
-        return softplus(self.presoftp_freq)
+    def omega(self):
+        return softplus(self.pre_omega)
 
     @partial(jit, static_argnums=(0,))
     def state_dynamics(self):
-        hyperparams = softplus(self.hyp if hyp is None else hyp)
-        omega = hyperparams[0]
+        omega = softplus(self.pre_omega)
         F = jnp.array([[0.0, -omega], [omega, 0.0]])
         L = []
         Qc = []
@@ -251,9 +233,9 @@ class Cosine(StationaryKernel):
         :param hyperparams: hyperparameters of the prior: frequency [1, 1]
         :return: state transition matrix A [M+1, D, D]
         """
-        hyperparams = softplus(self.hyp if hyp is None else hyp)
-        omega = hyperparams[0]
-        return rotation_matrix(dt, omega)  # [2, 2]
+        omega = softplus(self.pre_omega)
+        return rotation_matrix(dt, freq)  # [2, 2]
+    
 
 
 class LEG(StationaryKernel):
@@ -272,49 +254,11 @@ class LEG(StationaryKernel):
         state_dims = N.shape[0]
         in_dims = 1
         super().__init__(in_dims, out_dims, state_dims)
-        self.minf = jnp.zeros((state_dims,))
-
-    @partial(jit, static_argnums=(0,))
-    def parameterize(self, N, R):
-        # symmetric part
-        Q = jnp.diag(softplus(N) + 1e-5)
-        # Q = N@N.T
-        # antisymmetric part
-        S = R - R.T
-        G = Q + S
-        return G, Q
-
-    @partial(jit, static_argnums=(0,))
-    def state_dynamics(self, hyperparams):
-        N, R = hyperparams[0], hyperparams[1]
-        G, Q = self.parameterize(N, R)
-        F = -G / 2.0
-        return F, Q
-
-    @partial(jit, static_argnums=(0,))
-    def state_output(self, hyperparams):
-        F, Q = self.state_dynamics(hyperparams)
-        H = hyperparams[2].T
-        # Pinf is the solution of the Lyapunov equation F P + P F^T + L Qc L^T = 0
-        # Pinf = solve_continuous_lyapunov(F, Q)
-        # In this parameterization Pinf is just the identity
-        Pinf = jnp.eye(H.shape[1])
-        return H, self.minf, Pinf
-
-    @partial(jit, static_argnums=(0,))
-    def state_transition(self, dt, hyperparams=None):
-        """
-        Calculation of the discrete-time state transition matrix A = expm(FΔt) for the Matern-7/2 prior.
-        :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
-        :param hyperparams: the kernel hyperparameters, lengthscale is in index 1 [2]
-        :return: state transition matrix A [4, 4]
-        """
-        # hyperparams = self.hyp if hyperparams is None else hyperparams
-        hyperparams = self.hyp if hyperparams is None else hyperparams
-        N, R = hyperparams[0], hyperparams[1]
-        G, _ = self.parameterize(N, R)
-        return expm(-dt * G / 2)
-
+        self.N = N
+        self.R = R
+        self.B = B
+        self.Lam = Lam
+        
     @staticmethod
     def initialize_hyperparams(key, state_dims, out_dims):
         keys = jr.split(key, 4)
@@ -324,13 +268,45 @@ class LEG(StationaryKernel):
         Lam = jr.normal(keys[3], shape=(state_dims, state_dims)) / jnp.sqrt(state_dims)
         return N, R, B, Lam
 
-    def temporal_representation(self, tau, hyperparams=None):
+    def parameterize(self):
+        # symmetric part
+        Q = jnp.diag(softplus(self.N) + 1e-5)  # Q = N@N.T
+        # antisymmetric part
+        G = Q + (self.R - self.R.T)
+        return G, Q
+
+    def state_dynamics(self):
+        G, Q = self.parameterize()
+        F = -G / 2.0
+        return F, Q
+
+    def state_output(self):
+        """
+        Pinf is the solution of the Lyapunov equation F P + P F^T + L Qc L^T = 0
+        Pinf = solve_continuous_lyapunov(F, Q)
+        In this parameterization Pinf is just the identity
+        """
+        #F, Q = self.state_dynamics()
+        minf = jnp.zeros((state_dims,))
+        Pinf = jnp.eye(self.state_dims)
+        return self.H, minf, Pinf
+
+    def state_transition(self, dt):
+        """
+        Calculation of the discrete-time state transition matrix A = expm(FΔt) for the Matern-7/2 prior.
+        :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
+        :param hyperparams: the kernel hyperparameters, lengthscale is in index 1 [2]
+        :return: state transition matrix A [4, 4]
+        """
+        G, _ = self.parameterize()
+        return expm(-dt * G / 2)
+
+    def temporal_representation(self, tau):
         """
         Calculation of the temporal representation of the kernel, from its state space parameters. We return H P_inf*expm(F\tau)^TH^T
         """
-        hyperparams = self.hyp if hyperparams is None else hyperparams
-        F, Q = self.state_dynamics(hyperparams)
-        H, _, P_inf = self.state_output(hyperparams)
+        F, Q = self.state_dynamics()
+        H, _, P_inf = self.state_output()
         cond = jnp.sum(tau) >= 0.0
 
         def pos_tau():
@@ -343,67 +319,59 @@ class LEG(StationaryKernel):
 
     # return H @ P_inf @ expm(tau*F) @ H.T
 
+    
 
 ### lengthscale ###
 class Lengthscale(StationaryKernel):
     """
     Kernels based on lengthscales
     """
+                     
+    pre_len: jnp.ndarray
+    pre_var: jnp.ndarray
+                     
+    distance_metric: Callable
 
     def __init__(self, out_dims, state_dims, variance, lengthscale, distance_metric):
-        hyp = {
-            "lengthscale": softplus_inv(lengthscale),
-            "variance": softplus_inv(variance),
-        }
         in_dims = lengthscale.shape[-1]
-        super().__init__(in_dims, out_dims, state_dims, hyp=hyp)
+        super().__init__(in_dims, out_dims, state_dims)
+        self.pre_len = softplus_inv(lengthscale)
+        self.pre_var = softplus_inv(variance)
+                     
         self.distance_metric = distance_metric
 
     @property
     def variance(self):
-        return softplus(self.hyp["variance"])
+        return softplus(self.pre_var)
 
     @property
     def lengthscale(self):
-        return softplus(self.hyp["lengthscale"])
+        return softplus(self.pre_len)
 
     # kernel
-    @partial(jit, static_argnums=(0,))
-    def K(self, X, X_, hyp=None):
+    def K(self, X, Y):
         """
         X and X_ have shapes (out_dims, num_points, in_dims)
         """
-        hyp = self.hyp if hyp is None else hyp
-
-        l = softplus(hyp["lengthscale"])
-        r_in = self.distance_metric(X, X_, l)
+        l = softplus(self.pre_len)
+        r_in = self.distance_metric(X, Y, l)
 
         # hyp_no_l = {k: hyp[k] for k in list(hyp)[1:]}
         return self.K_r(r_in, hyp)
 
-    @staticmethod
-    def K_r(r, hyp):
-        raise NotImplementedError("kernel not implemented")
+    def K_r(r):
+        raise NotImplementedError("kernel function not implemented")
 
-    @staticmethod
-    def K_omega(r, hyp):
-        raise NotImplementedError("kernel not implemented")
+    def K_omega(r):
+        raise NotImplementedError("kernel spectrum not implemented")
 
     # state space
-    @partial(jit, static_argnums=(0,))
-    def state_dynamics(self, hyp=None):
-        hyp = self.hyp if hyp is None else hyp
-        in_shape = tree_map(lambda x: 0, hyp)
-
+    def state_dynamics(self):
         # vmap over output dimensions
         out = vmap(self.state_dynamics_, in_axes=in_shape, out_axes=(0,) * 3)(hyp)
         return block_diag(*out)
 
-    @partial(jit, static_argnums=(0,))
-    def state_transition(self, dt, hyp=None):
-        hyp = self.hyp if hyp is None else hyp
-        in_shape = tree_map(lambda x: 0, hyp)
-
+    def state_transition(self, dt):
         # vmap over output dimensions
         out = vmap(self.state_transition_, in_axes=(None, in_shape), out_axes=0)(
             dt, hyp
@@ -411,15 +379,35 @@ class Lengthscale(StationaryKernel):
 
         return block_diag(*out)
 
-    @partial(jit, static_argnums=(0,))
-    def state_output(self, hyp=None):
-        hyp = self.hyp if hyp is None else hyp
-        in_shape = tree_map(lambda x: 0, hyp)
+    def state_output(self):
         # vmap over output dimensions
         H, minf, Pinf = vmap(
             self.state_output_, in_axes=(in_shape,), out_axes=(0,) * 3
         )(hyp)
         return block_diag(*H), minf.reshape(-1), block_diag(*Pinf)
+    
+    def spectral_representation(self, omega):
+        """
+        Calculation of the spectral representation of the kernel, from its state space parameters.
+        We return HS(\omega)H^T which is a scalar (directly in observation space.
+        Note that in the LEG case this expression simplifies because of the structue of the process
+        (it assumes F = NN^T + R - R^T where N is the noise matrix)
+        """
+        F, L, Qc, H, _ = self.kernel_to_state_space()
+        n = jnp.shape(F)[0]
+        tmp = F + 1j * jnp.eye(n) * omega
+        tmp_inv = jnp.linalg.inv(tmp)
+        conj_tmp_inv = jnp.linalg.inv(F - 1j * jnp.eye(n) * omega)
+        return H @ tmp_inv @ L @ Qc @ L.T @ conj_tmp_inv.T @ H.T
+
+    def temporal_representation(self, tau):
+        """
+        Calculation of the temporal representation of the kernel, from its state space parameters.
+        We return H P_inf*expm(F\tau)^TH^T
+        """
+        F, _, _, H, P_inf = self.kernel_to_state_space(hyp)
+        return H @ P_inf @ expm(F.T * tau) @ H.T
+    
 
 
 class Matern12(Lengthscale):
@@ -440,8 +428,7 @@ class Matern12(Lengthscale):
         state_dims = out_dims
         super().__init__(out_dims, state_dims, variance, lengthscale, _scaled_dist_Rn)
 
-    @staticmethod
-    def K_r(r, hyp):
+    def K_r(self, r):
         """
         The Matern 1/2 kernel. Functions drawn from a GP with this kernel are not
         differentiable anywhere. The kernel equation is
@@ -450,18 +437,16 @@ class Matern12(Lengthscale):
         r  is the Euclidean distance between the input points, scaled by the lengthscales parameter ℓ.
         σ² is the variance parameter
         """
-        variance = softplus(hyp["variance"])[:, None, None]
+        variance = softplus(self.pre_var)[:, None, None]
         return variance * jnp.exp(-r)
 
-    @partial(jit, static_argnums=(0,))
     def state_dynamics_(self, hyp):
         """
         Uses variance and lengthscale hyperparameters to construct the state space model
         """
-        hyp = self.hyp if hyp is None else hyp
-        var = softplus(hyp["variance"])
+        var = softplus(self.pre_var)
         ell = softplus(
-            hyp["lengthscale"][0]
+            self.pre_len[0]
         )  # use first input dimension as time dimension
 
         F = -1.0 / ell[None, None]
@@ -469,7 +454,6 @@ class Matern12(Lengthscale):
         Qc = 2.0 * (var / ell)[None, None]
         return F, L, Qc
 
-    @partial(jit, static_argnums=(0,))
     def state_transition_(self, dt, hyp):
         """
         Calculation of the discrete-time state transition matrix A = expm(FΔt) for the exponential prior.
@@ -478,20 +462,19 @@ class Matern12(Lengthscale):
         :return: state transition matrix A [1, 1]
         """
         ell = softplus(
-            hyp["lengthscale"][0]
+            self.pre_len[0]
         )  # use first input dimension as time dimension
 
         A = jnp.exp(-dt / ell)[None, None]
         return A
 
-    @partial(jit, static_argnums=(0,))
     def state_output_(self, hyp):
-        var = softplus(hyp["variance"])
-        # F, L, Qc = self.state_dynamics(hyp)
+        variance = softplus(self.pre_var)[:, None, None]
         H = jnp.ones((1, 1))  # observation projection
         minf = jnp.zeros((1,))  # stationary state mean
         Pinf = var[None, None]
         return H, minf, Pinf
+
 
 
 class Matern32(Lengthscale):
