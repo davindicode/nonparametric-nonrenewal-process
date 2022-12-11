@@ -111,28 +111,6 @@ def get_blocks(A, num_blocks, block_size):
     return jnp.stack(A_, axis=0)
 
 
-### LDS ###
-def compute_kernel(delta_t, F, Pinf, H):
-    """
-    delta_t is positive and increasing
-    """
-    A = vmap(expm)(F[None, ...] * delta_t[:, None, None])
-    At = vmap(expm)(-F.T[None, ...] * delta_t[:, None, None])
-    P = (A[..., None] * Pinf[None, None, ...]).sum(-2)
-    P_ = (Pinf[None, ..., None] * At[:, None, ...]).sum(-2)
-
-    delta_t = np.broadcast_to(delta_t[:, None, None], P.shape)
-    Kt = H[None, ...] @ jnp.where(delta_t > 0.0, P, P_) @ H.T[None, ...]
-    return Kt
-
-
-def discrete_transitions(F, L, Qc):
-    """ """
-    A = expm(F * dt)
-    Pinf = solve_continuous_lyapunov(F, L @ L.T * Qc)
-    Q = Pinf - A @ Pinf @ A.T
-    return A, Pinf
-
 
 ### cubature ###
 def discretegrid(xy, w, nt):

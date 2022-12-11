@@ -20,8 +20,6 @@ from ..utils.jax import (
 )
 from ..utils.linalg import enforce_positive_diagonal, gauss_hermite, inv
 
-vdiag = vmap(jnp.diag)
-
 
 
 class tSVGP(module):
@@ -108,67 +106,10 @@ class tSVGP(module):
             means of shape (out_dims, num_samps, time, 1)
             covariances of shape (out_dims, num_samps, time, time)
         """
-        in_dims = self.kernel.in_dims
-        out_dims = self.kernel.out_dims
-        
-        num_induc = self.induc_locs.shape[1]
-        eps_I = jitter * jnp.eye(num_induc)[None, ...]
-
-        Kzz = self.kernel.K(self.induc_locs, self.induc_locs)
-        Kzz = jnp.broadcast_to(Kzz, (out_dims, num_induc, num_induc))
-        induc_cov = self.chol_Lambda_2 @ self.chol_Lambda_2.transpose(0, 2, 1)
-        chol_R = cholesky(Kzz + induc_cov)  # (out_dims, num_induc, num_induc)
-
-        ts, num_samps = x.shape[:2]
-        K = lambda x, y: self.kernel.K(x, y)
-
-        Kxx = vmap(K, (2, 2), 1)(
-            x[None, ...], x[None, ...]
-        )  # (out_dims, num_samps, time, time)
-        Kxx = jnp.broadcast_to(Kxx, (out_dims, num_samps, ts, ts))
-
-        Kzx = vmap(K, (None, 2), 1)(
-            self.induc_locs, x[None, ...]
-        )  # (out_dims, num_samps, num_induc, time)
-        Kzx = jnp.broadcast_to(Kzx, (out_dims, num_samps, num_induc, ts))
-        Kxz = Kzx.transpose(0, 1, 3, 2)  # (out_dims, num_samps, time, num_induc)
-
-        if mean_only is False or compute_KL:
-            chol_Kzz = cholesky(Kzz + eps_I)  # (out_dims, num_induc, num_induc)
-            Kxz_invKzz = cho_solve(
-                (chol_Kzz[:, None, ...].repeat(num_samps, axis=1), True), Kzx
-            ).transpose(0, 1, 3, 2)
-
-        Rinv_lambda_1 = cho_solve((chol_R, True), self.lambda_1)  # (out_dims, num_induc, 1)
-        post_means = (
-            Kxz @ Rinv_lambda_1[:, None, ...].repeat(num_samps, axis=1)
-            + self.mean[:, None, None, None]
-        )  # (out_dims, num_samps, time, 1)
-
-        if mean_only is False:
-            invR_Kzx = cho_solve(
-                (chol_R[:, None, ...].repeat(num_samps, axis=1), True), Kzx
-            )  # (out_dims, num_samps, num_induc, time)
-            post_covs = (
-                Kxx - Kxz_invKzz @ Kzx + Kxz @ invR_Kzx
-            )  # (out_dims, num_samps, time, time)
-        else:
-            post_covs = None
-
-        if compute_KL:
-            trace_term = jnp.trace(cho_solve((chol_R, True), Kzz)).sum()
-            quadratic_form = (
-                Rinv_lambda_1.transpose(0, 2, 1) @ Kzz @ Rinv_lambda_1
-            ).sum()
-            log_determinants = (jnp.log(vdiag(chol_R)) - jnp.log(vdiag(chol_Kzz))).sum()
-            KL = 0.5 * (trace_term + quadratic_form - num_induc) + log_determinants
-        else:
-            KL = 0.0
-
-        if compute_aux:
-            aux = (Kxz, Kxz_invKzz, chol_R)  # squeeze shape
-        else:
-            aux = None
+        post_means, post_covs, KL, aux = evaluate_sparse_posterior(
+            self.kernel, self.induc_locs, self.mean, x, 
+            self.lambda_1, self.chol_Lambda_2, mean_only, compute_KL, compute_aux, jitter
+        )
 
         return post_means, post_covs, KL, aux
 

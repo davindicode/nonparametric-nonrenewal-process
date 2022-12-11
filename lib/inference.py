@@ -12,6 +12,7 @@ from jax.scipy.linalg import cho_solve, solve_triangular
 _log_twopi = math.log(2 * math.pi)
 
 
+
 ### inputs ###
 def process_inputs(t, x_obs, y, dtype):
     """
@@ -458,6 +459,110 @@ class IF_SSGP(SVI_state_space):
         Pool together contraints from model components
         """
         self.state_space.constraints()
+        
+        
+    def train_grads(
+        model,
+        constraints,
+        select_learnable_params,
+        dataset,
+        optim,
+        dt,
+        epochs,
+        in_size,
+        hidden_size,
+        out_size,
+        weight_L2,
+        activity_L2,
+        prng_state,
+        priv_std,
+        input_std,
+    ):
+        # freeze parameters
+        filter_spec = jax.tree_map(lambda _: False, model)
+        filter_spec = eqx.tree_at(
+            select_learnable_params,
+            filter_spec,
+            replace=(True,) * len(select_learnable_params(model)),
+        )
+
+        @partial(eqx.filter_value_and_grad, arg=filter_spec)
+        def compute_loss(model, ic, inputs, targets):
+            outputs = model(inputs, ic, dt, activity_L2 > 0.0)  # (time, tr, out_d)
+
+            L2_weights = weight_L2 * ((model.W_rec) ** 2).sum() if weight_L2 > 0.0 else 0.0
+            L2_activities = (
+                activity_L2 * (outputs[1] ** 2).mean(1).sum() if activity_L2 > 0.0 else 0.0
+            )
+            return ((outputs[0] - targets) ** 2).mean(1).sum() + L2_weights + L2_activities
+
+        @partial(eqx.filter_jit, device=jax.devices()[0])
+        def make_step(model, ic, inputs, targets, opt_state):
+            loss, grads = compute_loss(model, ic, inputs, targets)
+            updates, opt_state = optim.update(grads, opt_state)
+            model = eqx.apply_updates(model, updates)
+            model = constraints(model)
+            return loss, model, opt_state
+
+        opt_state = optim.init(model)
+        loss_tracker = []
+
+        iterator = tqdm(range(epochs))  # graph iterations/epochs
+        for ep in iterator:
+
+            dataloader = iter(dataset)
+            for (x, y) in dataloader:
+                ic = jnp.zeros((x.shape[0], hidden_size))
+                x = jnp.array(x.transpose(2, 0, 1))  # (time, tr, dims)
+                y = jnp.array(y.transpose(2, 0, 1))
+
+                if input_std > 0.0:
+                    x += input_std * jr.normal(prng_state, shape=x.shape)
+                    prng_state, _ = jr.split(prng_state)
+
+                if priv_std > 0.0:
+                    eps = priv_std * jr.normal(
+                        prng_state, shape=(*x.shape[:2], hidden_size)
+                    )
+                    prng_state, _ = jr.split(prng_state)
+                else:
+                    eps = jnp.zeros((*x.shape[:2], hidden_size))
+
+                loss, model, opt_state = make_step(model, ic, (x, eps), y, opt_state)
+                loss = loss.item()
+                loss_tracker.append(loss)
+
+                loss_dict = {"loss": loss}
+                iterator.set_postfix(**loss_dict)
+
+        return model, loss_tracker
+    
+    
+    def train_nat_grads(
+        model,
+        constraints,
+        select_learnable_params,
+        dataset,
+        optim,
+        dt,
+        epochs,
+        in_size,
+        hidden_size,
+        out_size,
+        weight_L2,
+        activity_L2,
+        prng_state,
+        priv_std,
+        input_std,
+    ):
+        # freeze parameters
+        filter_spec = jax.tree_map(lambda _: False, model)
+        filter_spec = eqx.tree_at(
+            select_learnable_params,
+            filter_spec,
+            replace=(True,) * len(select_learnable_params(model)),
+        )
+        return
         
     
 
