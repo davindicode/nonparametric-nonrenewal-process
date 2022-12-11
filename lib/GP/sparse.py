@@ -1,16 +1,16 @@
 import math
 from functools import partial
 
-from .base import module
+from ..base import module
 
 import jax.numpy as jnp
 import jax.random as jr
-from jax import grad, jacrev, jit, random, tree_map, value_and_grad, vjp, vmap
+from jax import vmap
 from jax.numpy.linalg import cholesky
 
 from jax.scipy.linalg import cho_factor, cho_solve, solve_triangular
 
-from .utils.jax import (
+from ..utils.jax import (
     expsum,
     mc_sample,
     sample_gaussian_noise,
@@ -18,7 +18,7 @@ from .utils.jax import (
     softplus,
     softplus_inv,
 )
-from .utils.linalg import enforce_positive_diagonal, gauss_hermite, inv
+from ..utils.linalg import enforce_positive_diagonal, gauss_hermite, inv
 
 vdiag = vmap(jnp.diag)
 
@@ -36,7 +36,7 @@ class tSVGP(module):
 
     References:
         [1] site-based Sparse Variational Gaussian Processes
-    """
+    """     
     # hyperparameters
     induc_locs: jnp.ndarray
     mean: jnp.ndarray
@@ -48,7 +48,7 @@ class tSVGP(module):
     kernel: module
     RFF_num_feats: int
 
-    def __init__(self, kernel, mean_f, induc_locs, lambda_1, chol_Lambda_2, RFF_num_feats=0):
+    def __init__(self, kernel, mean, induc_locs, lambda_1, chol_Lambda_2, RFF_num_feats=0):
         """
         :param induc_locs: inducing point locations z, array of shape (out_dims, num_induc, in_dims)
         :param variance: The observation noise variance, σ²
@@ -62,7 +62,7 @@ class tSVGP(module):
                 "Dimensions of inducing locations do not match kernel output dimensions"
             )
 
-        super().__init__(kernel.in_dims, kernel.out_dims)
+        super().__init__()
         self.induc_locs = induc_locs  # (num_induc, out_dims, in_dims)
         self.mean = mean  # (out_dims,)
 
@@ -108,12 +108,15 @@ class tSVGP(module):
             means of shape (out_dims, num_samps, time, 1)
             covariances of shape (out_dims, num_samps, time, time)
         """
-        num_induc = induc_locs.shape[1]
+        in_dims = self.kernel.in_dims
+        out_dims = self.kernel.out_dims
+        
+        num_induc = self.induc_locs.shape[1]
         eps_I = jitter * jnp.eye(num_induc)[None, ...]
 
-        Kzz = self.kernel.K(z, z)
-        Kzz = jnp.broadcast_to(Kzz, (self.out_dims, num_induc, num_induc))
-        induc_cov = chol_Lambda_2 @ chol_Lambda_2.transpose(0, 2, 1)
+        Kzz = self.kernel.K(self.induc_locs, self.induc_locs)
+        Kzz = jnp.broadcast_to(Kzz, (out_dims, num_induc, num_induc))
+        induc_cov = self.chol_Lambda_2 @ self.chol_Lambda_2.transpose(0, 2, 1)
         chol_R = cholesky(Kzz + induc_cov)  # (out_dims, num_induc, num_induc)
 
         ts, num_samps = x.shape[:2]
@@ -122,12 +125,12 @@ class tSVGP(module):
         Kxx = vmap(K, (2, 2), 1)(
             x[None, ...], x[None, ...]
         )  # (out_dims, num_samps, time, time)
-        Kxx = jnp.broadcast_to(Kxx, (self.out_dims, num_samps, ts, ts))
+        Kxx = jnp.broadcast_to(Kxx, (out_dims, num_samps, ts, ts))
 
         Kzx = vmap(K, (None, 2), 1)(
-            z, x[None, ...]
+            self.induc_locs, x[None, ...]
         )  # (out_dims, num_samps, num_induc, time)
-        Kzx = jnp.broadcast_to(Kzx, (self.out_dims, num_samps, num_induc, ts))
+        Kzx = jnp.broadcast_to(Kzx, (out_dims, num_samps, num_induc, ts))
         Kxz = Kzx.transpose(0, 1, 3, 2)  # (out_dims, num_samps, time, num_induc)
 
         if mean_only is False or compute_KL:
@@ -136,10 +139,10 @@ class tSVGP(module):
                 (chol_Kzz[:, None, ...].repeat(num_samps, axis=1), True), Kzx
             ).transpose(0, 1, 3, 2)
 
-        Rinv_lambda_1 = cho_solve((chol_R, True), lambda_1)  # (out_dims, num_induc, 1)
+        Rinv_lambda_1 = cho_solve((chol_R, True), self.lambda_1)  # (out_dims, num_induc, 1)
         post_means = (
             Kxz @ Rinv_lambda_1[:, None, ...].repeat(num_samps, axis=1)
-            + mean_f[:, None, None, None]
+            + self.mean[:, None, None, None]
         )  # (out_dims, num_samps, time, 1)
 
         if mean_only is False:
@@ -178,39 +181,42 @@ class tSVGP(module):
         :return:
             sample of shape (time, num_samps, out_dims)
         """
+        in_dims = self.kernel.in_dims
+        out_dims = self.kernel.out_dims
+        
         if x.ndim == 3:
             x = x[..., None, :]  # (time, num_samps, out_dims, in_dims)
         ts, num_samps = x.shape[:2]
 
         if self.RFF_num_feats > 0:  # random Fourier features
             prng_keys = jr.split(prng_state, 2)
-            variance = softplus(kern_hyp["variance"])  # (out_dims,)
+            variance = softplus(self.kernel.pre_var)  # (out_dims,)
             ks = self.kernel.sample_spectrum(
-                kern_hyp, prng_keys[0], num_samps, self.RFF_num_feats
+                prng_keys[0], num_samps, self.RFF_num_feats
             )  # (num_samps, out_dims, feats, in_dims)
             phi = (
                 2
                 * jnp.pi
                 * jr.uniform(
-                    prng_keys[1], shape=(num_samps, self.out_dims, self.RFF_num_feats)
+                    prng_keys[1], shape=(num_samps, out_dims, self.RFF_num_feats)
                 )
             )
 
-            samples = mean_f[None, None, :] + jnp.sqrt(
+            samples = self.mean[None, None, :] + jnp.sqrt(
                 2.0 * variance / self.RFF_num_feats
             ) * (jnp.cos((ks[None, ...] * x[..., None, :]).sum(-1) + phi)).sum(
                 -1
             )  # (time, num_samps, out_dims)
 
         else:
-            K = lambda x: self.kernel.K(x, x, kern_hyp)
+            K = lambda x: self.kernel.K(x, x)
             Kxx = vmap(K, 1, 1)(
                 x.transpose(2, 1, 0, 3)
             )  # (out_dims, num_samps, time, time)
-            eps_I = jnp.broadcast_to(jitter * jnp.eye(ts), (self.out_dims, 1, ts, ts))
+            eps_I = jnp.broadcast_to(jitter * jnp.eye(ts), (out_dims, 1, ts, ts))
             cov = Kxx + eps_I
             mean = jnp.broadcast_to(
-                mean_f[:, None, None, None], (self.out_dims, num_samps, ts, 1)
+                self.mean[:, None, None, None], (out_dims, num_samps, ts, 1)
             )
             samples = sample_gaussian_noise(prng_state, mean, cov)[..., 0].transpose(
                 2, 1, 0
@@ -226,31 +232,35 @@ class tSVGP(module):
         :return:
             sample of shape (time, num_samps, out_dims)
         """
+        in_dims = self.kernel.in_dims
+        out_dims = self.kernel.out_dims
+        num_induc = self.induc_locs.shape[1]
+        
         if self.RFF_num_feats > 0:
             post_means, _, KL, aux = self.evaluate_posterior(
-                x, params, var_params, True, compute_KL, True, jitter
+                x, True, compute_KL, True, jitter
             )
             Kxz, Kxz_invKzz, chol_R = aux
-            z = params["induc_locs"].transpose(1, 0, 2)  # (out_dims, num_induc, in_dims)
+            z = self.induc_locs.transpose(1, 0, 2)  # (out_dims, num_induc, in_dims)
 
             prng_keys = jr.split(prng_state, 2)
             ts, num_samps = x.shape[:2]
 
             x_aug = jnp.concatenate(
                 (
-                    x[..., None, :].repeat(self.out_dims, axis=2),
+                    x[..., None, :].repeat(out_dims, axis=2),
                     z[:, None, ...].repeat(num_samps, axis=1),
                 ),
                 axis=0,
             )  # (nums, num_samps, out_dims, in_dims)
-            print(x_aug.shape)
-            prior_samps = self.sample_prior(params, prng_keys[0], x_aug, jitter)
+            
+            prior_samps = self.sample_prior(prng_keys[0], x_aug, jitter)
             prior_samps_x, prior_samps_z = prior_samps[:ts, ...], prior_samps[ts:, ...]
 
             noise = solve_triangular(
                 chol_R[:, None, ...].repeat(num_samps, axis=1),
                 jr.normal(
-                    prng_keys[1], shape=(self.out_dims, num_samps, self.num_induc, 1)
+                    prng_keys[1], shape=(out_dims, num_samps, num_induc, 1)
                 ),
                 lower=True,
             )
@@ -265,7 +275,7 @@ class tSVGP(module):
 
         else:
             post_means, post_covs, KL, _ = self.evaluate_posterior(
-                x, params, var_params, False, compute_KL, False, jitter
+                x, False, compute_KL, False, jitter
             )
             samples = sample_gaussian_noise(prng_state, post_means, post_covs)
             samples = samples[..., 0].transpose(2, 1, 0)

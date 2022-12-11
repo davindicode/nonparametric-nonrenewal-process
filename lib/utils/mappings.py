@@ -1,3 +1,12 @@
+import math
+#from functools import partial
+
+from ..base import module
+
+import jax.numpy as jnp
+import jax.random as jr
+
+
 
 class Mapping(module):
     """

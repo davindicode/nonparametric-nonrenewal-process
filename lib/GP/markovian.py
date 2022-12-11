@@ -1,7 +1,7 @@
 import math
-from functools import partial
+#from functools import partial
 
-from .base import module
+from ..base import module
 
 import jax.numpy as jnp
 import jax.random as jr
@@ -55,7 +55,7 @@ def kalman_filter(
 
         if compute_logZ:
             L = cholesky(S)  # + jitter*I)
-            n = solve_triangular(L, eta, lower=True)  # (x_dims, 1)
+            n = solve_triangular(L, eta, lower=True)  # (state_dims, 1)
             lZ -= jnp.log(jnp.diag(L)).sum() + 0.5 * (jnp.sum(n * n)) + D * _log_twopi
 
         carry = (f_m, f_P, lZ)
@@ -130,7 +130,7 @@ def pseudo_log_likelihood(post_mean, post_cov, site_obs, site_Lcov):
 
 
 def compute_conditional_statistics(
-    kernel, params, Pinf, t_eval, t, ind, mean_only, jitter
+    kernel_state_transition, Pinf, t_eval, t, ind, mean_only, jitter
 ):
     """
     Predicts marginal states at new time points. (new time points should be sorted)
@@ -146,8 +146,8 @@ def compute_conditional_statistics(
     """
     dt_fwd = t_eval - t[ind]
     dt_back = t[ind + 1] - t_eval
-    A_fwd = kernel.state_transition(dt_fwd, params)
-    A_back = kernel.state_transition(dt_back, params)
+    A_fwd = kernel_state_transition(dt_fwd)
+    A_back = kernel_state_transition(dt_back)
 
     Q_fwd = Pinf - A_fwd @ Pinf @ A_fwd.T
     Q_back = Pinf - A_back @ Pinf @ A_back.T
@@ -177,8 +177,7 @@ def predict_from_state(
     post_mean,
     post_cov,
     gain,
-    kernel,
-    kern_params,
+    kernel_state_transition,
     Pinf,
     mean_only,
     jitter,
@@ -191,7 +190,7 @@ def predict_from_state(
 
     if mean_only is False:
         P, T = compute_conditional_statistics(
-            kernel, kern_params, Pinf, t_eval, t, ind, mean_only, jitter
+            kernel_state_transition, Pinf, t_eval, t, ind, mean_only, jitter
         )
         cross_cov = gain[ind] @ post_cov[ind + 1]
         cov_joint = jnp.block(
@@ -201,7 +200,7 @@ def predict_from_state(
 
     else:
         P = compute_conditional_statistics(
-            kernel, kern_params, Pinf, t_eval, t, ind, mean_only, jitter
+            kernel_state_transition, Pinf, t_eval, t, ind, mean_only, jitter
         )
         return P @ mean_joint
 
@@ -221,101 +220,149 @@ def get_evaldata(t_eval, timedata):
     return all_timedata, t_ind, eval_ind
 
 
-### classes ###
-class StateSpace(module):
-    """
-    The state space model class
-    """
-    x_dims: int
-    diagonal_site: bool
-    kernel: module
-        
-    site_obs: jnp.ndarray
-    site_Lcov: jnp.ndarray
 
-    def __init__(self, x_dims, kernel, site_obs, site_Lcov, diagonal_site):
-        """
-        :param dict hyp: (hyper)parameters of the state space model
-        :param dict var_params: variational parameters
-        """
-        self.x_dims = x_dims
-        self.diagonal_site = diagonal_site
-        self.kernel = kernel
-        
-        self.site_obs = site_obs
-        self.site_Lcov = site_Lcov
-
-    def apply_constraints(self):
-        """
-        PSD constraint
-        """
-        model = jax.tree_map(lambda p: p, self)  # copy
-        
-        def update(W_rec):
-            Lcov = var_params["site_Lcov"]
-            epdfunc = lambda x: enforce_positive_diagonal(x, lower_lim=1e-2)
-            Lcov = vmap(epdfunc)(jnp.tril(Lcov))
-            var_params["site_Lcov"] = jnp.triu(Lcov) if self.diagonal_site else Lcov
-            return params, var_params
-
-        model = eqx.tree_at(
-            lambda tree: tree.site_Lcov,
-            model,
-            replace_fn=update,
-        )
-        
-        kernel = self.kernel.apply_constraints(self.kernel)
-        model = eqx.tree_at(
-            lambda tree: tree.kernel,
-            model,
-            replace_fn=lambda _: kernel,
-        )
-
-        return model
-    
-#     def compute_intermediates(self, hyp, dt=None):
-#         """
-#         Compute intermediate reused values that only depend on hyperparameters
-#         """
-#         return {}  # empty container
-
-#     ### LDS ###
-#     def state_transition(self, dt):
-#         return self.kernel.state_transition(dt)
-
-#     def state_output(self):
-#         return self.kernel.state_output()
-
-
-class FullLDS(StateSpace):
-    """
-    Full state space LDS
-    """
-
-    def __init__(self, kernel, site_obs, site_Lcov, diagonal_site=True):
-        """
-        :param dict hyp: (hyper)parameters of the state space model
-        :param dict var_params: if None, Kalman filter will initialize
-        """
-        super().__init__(kernel.out_dims, kernel, site_obs, site_Lcov, diagonal_site)
-
-    def get_LDS_matrices(self, timedata, Pinf):
+def get_LDS_matrices(kernel, timedata, Pinf):
         t, dt = timedata
         Id = jnp.eye(Pinf.shape[0])
         Zs = jnp.zeros_like(Pinf)
 
         if dt.shape[0] == 1:
-            A = self.kernel.state_transition(dt[0])
+            A = kernel.state_transition(dt[0])
             Q = process_noise_covariance(A, Pinf)
             As = jnp.stack([Id] + [A] * (t.shape[0] - 1) + [Id], axis=0)
             Qs = jnp.stack([Zs] + [Q] * (t.shape[0] - 1) + [Zs], axis=0)
         else:
-            As = vmap(self.kernel.state_transition)(dt)
+            As = vmap(kernel.state_transition)(dt)
             Qs = vmap(process_noise_covariance, (0, None), 0)(As, Pinf)
             As = jnp.concatenate((Id[None, ...], As, Id[None, ...]), axis=0)
             Qs = jnp.concatenate((Zs[None, ...], Qs, Zs[None, ...]), axis=0)
 
         return As, Qs
+
+
+    
+def evaluate_LDS_posterior(
+    t_eval, As, Qs, H, minf, Pinf, kernel_state_transition, 
+    t_obs, site_obs, site_Lcov, mean_only, compute_KL, jitter
+):
+    """
+    predict at test locations X, which may includes training points
+    (which are essentially fixed inducing points)
+
+    :param jnp.ndarray t_eval: evaluation times of shape (locs,)
+    :return:
+        means of shape (time, out, 1)
+        covariances of shape (time, out, out)
+    """    
+    minf = minf[:, None]
+
+    # filtering then smoothing
+    logZ, filter_means, filter_covs = kalman_filter(
+        site_obs,
+        site_Lcov,
+        As[:-1],
+        Qs[:-1],
+        H,
+        minf,
+        Pinf,
+        return_predict=False,
+        compute_logZ=compute_KL,
+    )
+    smoother_means, smoother_covs, gains = rauch_tung_striebel_smoother(
+        filter_means, filter_covs, As[1:], Qs[1:], H, full_state=True
+    )
+
+    if t_eval is not None:  # predict the state distribution at the test time steps
+        # add dummy states at either edge
+        inf = 1e10 * jnp.ones(1)
+        t_aug = jnp.concatenate([-inf, t_obs, inf], axis=0)
+        mean_aug = jnp.concatenate(
+            [minf[None, :], smoother_means, minf[None, :]], axis=0
+        )
+        cov_aug = jnp.concatenate(
+            [Pinf[None, ...], smoother_covs, Pinf[None, ...]], axis=0
+        )
+        gain_aug = jnp.concatenate([jnp.zeros_like(gains[:1, ...]), gains], axis=0)
+
+        #in_shape = tree_map(lambda x: None, params["kernel"])
+        predict_from_state_vmap = vmap(
+            predict_from_state,
+            (0, 0, None, None, None, None, None, None, None, None),
+            0 if mean_only else (0, 0),
+        )
+
+        ind_eval = jnp.searchsorted(t_aug, t_eval) - 1
+        if mean_only:
+            eval_mean = predict_from_state_vmap(
+                t_eval,
+                ind_eval,
+                t_aug,
+                mean_aug,
+                cov_aug,
+                gain_aug,
+                kernel_state_transition, 
+                Pinf,
+                True,
+                jitter,
+            )
+            post_means, post_covs, KL = H @ eval_mean, None, 0.0
+
+        else:
+            eval_mean, eval_cov = predict_from_state_vmap(
+                t_eval,
+                ind_eval,
+                t_aug,
+                mean_aug,
+                cov_aug,
+                gain_aug,
+                kernel_state_transition,
+                Pinf,
+                False,
+                jitter,
+            )
+            post_means, post_covs, KL = H @ eval_mean, H @ eval_cov @ H.T, 0.0
+
+    else:
+        post_means = H @ smoother_means
+        if compute_KL:  # compute using pseudo likelihood
+            post_covs = H @ smoother_covs @ H.T
+            site_log_lik = pseudo_log_likelihood(
+                post_means, post_covs, site_obs, site_Lcov
+            )
+            KL = site_log_lik - logZ
+
+        else:
+            post_covs = None if mean_only else H @ smoother_covs @ H.T
+            KL = 0.0
+
+    return post_means, post_covs, KL
+
+
+
+### classes ###
+class LGSSM(module):
+    """
+    Linear Gaussian State Space Model
+    
+    Temporal multi-output kernels have separate latent processes that can be coupled.
+    Spatiotemporal kernel modifies the process noise across latent processes, but dynamics uncoupled.
+    Multi-output GPs generally mix latent processes via dynamics as well.
+    """
+    
+    markov_kernel: module
+        
+    site_obs: jnp.ndarray
+    site_Lcov: jnp.ndarray
+
+    def __init__(self, markov_kernel, site_obs, site_Lcov):
+        """
+        :param dict hyp: (hyper)parameters of the state space model
+        :param dict var_params: variational parameters
+        """
+        self.markov_kernel = markov_kernel
+        
+        self.site_obs = site_obs
+        self.site_Lcov = site_Lcov
 
     ### posterior ###
     def evaluate_posterior(
@@ -330,94 +377,15 @@ class FullLDS(StateSpace):
             means of shape (time, out, 1)
             covariances of shape (time, out, out)
         """
-        H, minf, Pinf = self.kernel.state_output(hyp=params["kernel"])
-        minf = minf[:, None]
-        site_obs, site_Lcov = var_params["site_obs"], var_params["site_Lcov"]
-
         # compute linear dynamical system
-        As, Qs = self.get_LDS_matrices(params["kernel"], timedata, Pinf)
+        H, minf, Pinf = self.markov_kernel.state_output()
+        As, Qs = get_LDS_matrices(self.markov_kernel, timedata, Pinf)
 
-        # filtering then smoothing
-        logZ, filter_means, filter_covs = kalman_filter(
-            site_obs,
-            site_Lcov,
-            As[:-1],
-            Qs[:-1],
-            H,
-            minf,
-            Pinf,
-            return_predict=False,
-            compute_logZ=compute_KL,
+        post_means, post_covs, KL = evaluate_LDS_posterior(
+            t_eval, As, Qs, H, minf, Pinf, self.markov_kernel.state_transition, 
+            timedata[0], self.site_obs, self.site_Lcov, 
+            mean_only, compute_KL, jitter, 
         )
-        smoother_means, smoother_covs, gains = rauch_tung_striebel_smoother(
-            filter_means, filter_covs, As[1:], Qs[1:], H, full_state=True
-        )
-
-        if t_eval is not None:  # predict the state distribution at the test time steps
-            # add dummy states at either edge
-            inf = 1e10 * jnp.ones(1)
-            t_aug = jnp.concatenate([-inf, timedata[0], inf], axis=0)
-            mean_aug = jnp.concatenate(
-                [minf[None, :], smoother_means, minf[None, :]], axis=0
-            )
-            cov_aug = jnp.concatenate(
-                [Pinf[None, ...], smoother_covs, Pinf[None, ...]], axis=0
-            )
-            gain_aug = jnp.concatenate([jnp.zeros_like(gains[:1, ...]), gains], axis=0)
-
-            in_shape = tree_map(lambda x: None, params["kernel"])
-            predict_from_state_vmap = vmap(
-                predict_from_state,
-                (0, 0, None, None, None, None, None, in_shape, None, None, None),
-                0 if mean_only else (0, 0),
-            )
-
-            ind_eval = jnp.searchsorted(t_aug, t_eval) - 1
-            if mean_only:
-                eval_mean = predict_from_state_vmap(
-                    t_eval,
-                    ind_eval,
-                    t_aug,
-                    mean_aug,
-                    cov_aug,
-                    gain_aug,
-                    self.kernel,
-                    params["kernel"],
-                    Pinf,
-                    True,
-                    jitter,
-                )
-                post_means, post_covs, KL = H @ eval_mean, None, 0.0
-
-            else:
-                eval_mean, eval_cov = predict_from_state_vmap(
-                    t_eval,
-                    ind_eval,
-                    t_aug,
-                    mean_aug,
-                    cov_aug,
-                    gain_aug,
-                    self.kernel,
-                    params["kernel"],
-                    Pinf,
-                    False,
-                    jitter,
-                )
-                post_means, post_covs, KL = H @ eval_mean, H @ eval_cov @ H.T, 0.0
-
-        else:
-            post_means = H @ smoother_means
-            if compute_KL:  # compute using pseudo likelihood
-                post_covs = H @ smoother_covs @ H.T
-                site_log_lik = pseudo_log_likelihood(
-                    post_means, post_covs, site_obs, site_Lcov
-                )
-                KL = site_log_lik - logZ
-
-            else:
-                post_covs = None if mean_only else H @ smoother_covs @ H.T
-                KL = 0.0
-
         return post_means, post_covs, KL
 
     ### sample ###
@@ -429,12 +397,12 @@ class FullLDS(StateSpace):
         :return:
             f_sample: the prior samples [S, N_samp]
         """
-        eps_I = jitter * jnp.eye(self.kernel.state_dims)
-        H, minf, Pinf = self.state_output(hyp=params["kernel"])
+        eps_I = jitter * jnp.eye(self.markov_kernel.state_dims)
+        H, minf, Pinf = self.markov_kernel.state_output()
 
         # transition and noise process matrices
         tsteps = timedata[0].shape[0]
-        As, Qs = self.get_LDS_matrices(params["kernel"], timedata, Pinf)
+        As, Qs = get_LDS_matrices(self.markov_kernel, timedata, Pinf)
 
         prng_states = jr.split(prng_state, num_samps)  # (num_samps, 2)
 
@@ -443,14 +411,14 @@ class FullLDS(StateSpace):
             A, Q, prng_state = inputs
             L = cholesky(Q + eps_I)  # can be a bit unstable, lower=True
 
-            q_samp = L @ jr.normal(prng_state, shape=(self.kernel.state_dims, 1))
+            q_samp = L @ jr.normal(prng_state, shape=(self.markov_kernel.state_dims, 1))
             m = A @ m + q_samp
             f = H @ m
             return m, f
 
         def sample_i(prng_state):
             m0 = cholesky(Pinf) @ jr.normal(
-                prng_state, shape=(self.kernel.state_dims, 1)
+                prng_state, shape=(self.markov_kernel.state_dims, 1)
             )
             prng_keys = jr.split(prng_state, tsteps)
             _, f_sample = lax.scan(step, init=m0, xs=(As[:-1], Qs[:-1], prng_keys))
@@ -464,7 +432,7 @@ class FullLDS(StateSpace):
         prng_state,
         num_samps,
         timedata,
-        evaldata,
+        t_eval,
         jitter,
         compute_KL,
     ):
@@ -485,46 +453,54 @@ class FullLDS(StateSpace):
         :return:
             the posterior samples (eval_locs, num_samps, N, 1)
         """
-        site_obs, site_Lcov = var_params["site_obs"], var_params["site_Lcov"]
-
-        if evaldata is None:
+        if t_eval is None:
             all_timedata = timedata
             t_ind = jnp.arange(timedata[0].shape[0])
             eval_ind = t_ind
         else:
+            evaldata = get_evaldata(t_eval, timedata)
             all_timedata, t_ind, eval_ind = evaldata
         t_eval = all_timedata[0][eval_ind]
+        
+        # compute linear dynamical system
+        H, minf, Pinf = self.markov_kernel.state_output()
+        As, Qs = get_LDS_matrices(self.markov_kernel, timedata, Pinf)
 
+        # sample prior at obs and eval locs
         prng_keys = jr.split(prng_state, 2)
-
         prior_samps = self.sample_prior(
-            params, prng_keys[0], num_samps, all_timedata, jitter
+            prng_keys[0], num_samps, all_timedata, jitter
         )
-        post_means, _, KL_ss = self.evaluate_posterior(
-            t_eval,
-            timedata,
-            params,
-            var_params,
-            mean_only=True,
-            compute_KL=compute_KL,
-            jitter=jitter,
+        
+        # posterior mean
+        post_means, _, KL_ss = evaluate_LDS_posterior(
+            t_eval, As, Qs, H, minf, Pinf, self.markov_kernel.state_transition, 
+            timedata[0], self.site_obs, self.site_Lcov, 
+            mean_only=True, compute_KL=compute_KL, jitter=jitter,
         )  # (time, N, 1)
 
+        # noisy prior samples at eval locs
         prior_samps_t, prior_samps_eval = (
             prior_samps[t_ind, ...],
             prior_samps[eval_ind, ...],
         )
-        prior_samps_noisy = prior_samps_t + site_Lcov[:, None, ...] @ jr.normal(
+        prior_samps_noisy = prior_samps_t + self.site_Lcov[:, None, ...] @ jr.normal(
             prng_keys[1], shape=prior_samps_t.shape
         )  # (time, tr, N, 1)
 
+        # smooth noisy samples
         def smooth_prior_sample(prior_samp_i):
-            var_params = {"site_obs": prior_samp_i, "site_Lcov": site_Lcov}
-            smoothed_sample, _, _ = self.evaluate_posterior(
+            smoothed_sample, _, _ = evaluate_LDS_posterior(
                 t_eval,
-                timedata,
-                params,
-                var_params,
+                As, 
+                Qs, 
+                H, 
+                minf, 
+                Pinf, 
+                self.markov_kernel.state_transition, 
+                timedata[0], 
+                prior_samp_i, 
+                self.site_Lcov, 
                 mean_only=True,
                 compute_KL=False,
                 jitter=jitter,
@@ -532,22 +508,82 @@ class FullLDS(StateSpace):
             return smoothed_sample
 
         smoothed_samps = vmap(smooth_prior_sample, 1, 1)(prior_samps_noisy)
+        
         # Matheron's rule pathwise samplig
         return prior_samps_eval - smoothed_samps + post_means[:, None, ...], KL_ss
 
-
-
-class UncoupledLDS(StateSpace):
+    
+    
+class FullLGSSM(LGSSM):
     """
-    Uncoupled LDS (block diagonal state space)
+    Full state space LDS with Gaussian noise
+    
+    Temporal multi-output kernels have separate latent processes that can be coupled.
+    Spatiotemporal kernel modifies the process noise across latent processes, but dynamics uncoupled.
+    Multi-output GPs generally mix latent processes via dynamics as well.
     """
+    
+    diagonal_site: bool
 
-    def __init__(self, x_dims, kernel, var_params=None, diagonal_site=True):
+    def __init__(self, kernel, site_obs, site_Lcov, diagonal_site=True):
         """
-        :param dict hyp: (hyper)parameters of the state space model
-        :param dict var_params: if None, Kalman filter will initialize
+        :param module kernel: kernel module
+        :param jnp.ndarray site_obs: site observations with shape (x_dims, timesteps)
+        :param jnp.ndarray site_Lcov: site covariance cholesky with shape (x_dims, x_dims, timesteps)
         """
-        super().__init__(x_dims, kernel, var_params, diagonal_site)
-        self.hyp = tree_map(lambda h: h[None, ...].repeat(x_dims, axis=0), kernel.hyp)
-        # if len(H.shape) == 3: # independent latent dimensions
-        # vmap over kernel and kalman filter to get uncoupled dynamics
+        super().__init__(kernel, site_obs, site_Lcov)
+        self.diagonal_site = diagonal_site
+        
+    def apply_constraints(self):
+        """
+        PSD constraint
+        """
+        model = jax.tree_map(lambda p: p, self)  # copy
+        
+        def update(Lcov):
+            epdfunc = lambda x: enforce_positive_diagonal(x, lower_lim=1e-2)
+            Lcov = vmap(epdfunc)(jnp.tril(Lcov))
+            Lcov = jnp.triu(Lcov) if self.diagonal_site else Lcov
+            return Lcov
+
+        model = eqx.tree_at(
+            lambda tree: tree.site_Lcov,
+            model,
+            replace_fn=update,
+        )
+        
+        kernel = self.markov_kernel.apply_constraints(self.markov_kernel)
+        model = eqx.tree_at(
+            lambda tree: tree.markov_kernel,
+            model,
+            replace_fn=lambda _: kernel,
+        )
+
+        return model
+    
+
+
+class SpatiotemporalLGSSM(LGSSM):
+    """
+    Factorized spatial and temporal GP kernel with temporal markov kernel
+    
+    Temporal multi-output kernels have separate latent processes that can be coupled.
+    Spatiotemporal kernel modifies the process noise across latent processes, but dynamics uncoupled.
+    Multi-output GPs generally mix latent processes via dynamics as well.
+    """
+    
+    spatial_MF: bool
+    
+    spatial_kernel: module
+
+    def __init__(self, temporal_kernel, spatial_kernel, site_obs, site_Lcov, spatial_MF=True):
+        """
+        :param module kernel: kernel module
+        :param jnp.ndarray site_obs: site observations with shape (out_dims, spatial_locs, timesteps)
+        """
+        super().__init__(temporal_kernel, site_obs, site_Lcov)
+        self.spatial_kernel = spatial_kernel
+        
+        self.spatial_MF = spatial_MF
+        
+    
