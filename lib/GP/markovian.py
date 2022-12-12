@@ -2,9 +2,14 @@ import math
 
 from ..base import module
 
+from jax import vmap, lax
 import jax.numpy as jnp
 import jax.random as jr
 from jax.numpy.linalg import cholesky
+
+import equinox as eqx
+
+from .linalg import get_LGSSM_matrices, id_kronecker, evaluate_LGSSM_posterior
 
 _log_twopi = math.log(2 * math.pi)
 
@@ -43,14 +48,23 @@ class LGSSM(module):
 
     def __init__(self, markov_kernel, site_obs, site_Lcov):
         """
-        :param dict hyp: (hyper)parameters of the state space model
-        :param dict var_params: variational parameters
+        :param module markov_kernel: (hyper)parameters of the state space model
+        :param jnp.ndarray site_obs: means of shape (time, out, 1)
+        :param jnp.ndarray site_Lcov: covariances of shape (time, out, out)
         """
         self.markov_kernel = markov_kernel
         
         self.site_obs = site_obs
         self.site_Lcov = site_Lcov
 
+    def get_LDS(self, timedata, Pinf):
+        t, dt = timedata
+        if dt.shape[0] == 1:
+            A = self.markov_kernel.state_transition(dt[0])
+        else:
+            A = vmap(self.markov_kernel.state_transition)(dt)
+        return get_LGSSM_matrices(A, Pinf, t.shape[0])
+    
     ### posterior ###
     def evaluate_posterior(
         self, t_eval, timedata, mean_only, compute_KL, jitter
@@ -66,7 +80,7 @@ class LGSSM(module):
         """
         # compute linear dynamical system
         H, minf, Pinf = self.markov_kernel.state_output()
-        As, Qs = get_LGSSM_matrices(self.markov_kernel, timedata, Pinf)
+        As, Qs = self.get_LDS(timedata, Pinf)
 
         post_means, post_covs, KL = evaluate_LGSSM_posterior(
             t_eval, As, Qs, H, minf, Pinf, self.markov_kernel.state_transition, 
@@ -89,7 +103,7 @@ class LGSSM(module):
 
         # transition and noise process matrices
         tsteps = timedata[0].shape[0]
-        As, Qs = get_LGSSM_matrices(self.markov_kernel, timedata, Pinf)
+        As, Qs = self.get_LDS(timedata, Pinf)
 
         prng_states = jr.split(prng_state, num_samps)  # (num_samps, 2)
 
@@ -151,7 +165,7 @@ class LGSSM(module):
         
         # compute linear dynamical system
         H, minf, Pinf = self.markov_kernel.state_output()
-        As, Qs = get_LGSSM_matrices(self.markov_kernel, timedata, Pinf)
+        As, Qs = self.get_LDS(timedata, Pinf)
 
         # sample prior at obs and eval locs
         prng_keys = jr.split(prng_state, 2)
@@ -215,8 +229,8 @@ class FullLGSSM(LGSSM):
     def __init__(self, kernel, site_obs, site_Lcov, diagonal_site=True):
         """
         :param module kernel: kernel module
-        :param jnp.ndarray site_obs: site observations with shape (x_dims, timesteps)
-        :param jnp.ndarray site_Lcov: site covariance cholesky with shape (x_dims, x_dims, timesteps)
+        :param jnp.ndarray site_obs: site observations with shape (timesteps, x_dims, 1)
+        :param jnp.ndarray site_Lcov: site covariance cholesky with shape (timesteps, x_dims, x_dims)
         """
         super().__init__(kernel, site_obs, site_Lcov)
         self.diagonal_site = diagonal_site
@@ -248,6 +262,24 @@ class FullLGSSM(LGSSM):
 
         return model
     
+    
+@eqx.filter_vmap(args=(None, 0, 0, 0, 0, 0, 0, None, 0, 0, None, None, None), out=(0, 0, 0))
+def vmap_outdims(t_eval, As, Qs, H, minf, Pinf, kernel_state_transition, 
+                 t_obs, site_obs, site_Lcov, mean_only, compute_KL, jitter):
+    return evaluate_LGSSM_posterior(
+        t_eval, As, Qs, H, minf, Pinf, kernel_state_transition, 
+        t_obs, site_obs, site_Lcov, mean_only, compute_KL, jitter, 
+    )
+
+
+@eqx.filter_vmap(args=(None, None, None, None, None, None, None, None, -3, -3, None, None, None), out=(0, 0, 0))
+def vmap_spatial(t_eval, As, Qs, H, minf, Pinf, kernel_state_transition, 
+                 t_obs, site_obs, site_Lcov, mean_only, compute_KL, jitter):
+    return vmap_outdims(
+        t_eval, As, Qs, H, minf, Pinf, kernel_state_transition, 
+        t_obs, site_obs, site_Lcov, mean_only, compute_KL, jitter, 
+    )
+    
 
 
 class SpatiotemporalLGSSM(LGSSM):
@@ -261,18 +293,35 @@ class SpatiotemporalLGSSM(LGSSM):
     
     spatial_MF: bool
     
+    spatial_locs: jnp.ndarray
     spatial_kernel: module
 
-    def __init__(self, temporal_kernel, spatial_kernel, site_obs, site_Lcov, spatial_MF=True):
+    def __init__(self, temporal_kernel, spatial_kernel, spatial_locs, site_obs, site_Lcov, spatial_MF=True):
         """
-        :param module kernel: kernel module
-        :param jnp.ndarray site_obs: site observations with shape (out_dims, spatial_locs, timesteps)
-        :param jnp.ndarray site_Lcov: site observations with shape (out_dims, spatial_locs, spatial_locs, timesteps)
+        :param module temporal_kernel: markov kernel module
+        :param module spatial_kernel: spatial kernel
+        :param jnp.ndarray site_obs: site observations with shape (out_dims, timesteps, spatial_locs, 1)
+        :param jnp.ndarray site_Lcov: site observations with shape (out_dims, timesteps, spatial_locs, spatial_locs or 1)
         """
+        if spatial_MF:
+            assert site_Lcov.shape[-1] == 1
+        assert site_obs.shape[-2] == site_Lcov.shape[-2]  # spatial_locs
         super().__init__(temporal_kernel, site_obs, site_Lcov)
         self.spatial_kernel = spatial_kernel
+        self.spatial_locs = spatial_locs
         
         self.spatial_MF = spatial_MF
+        
+    def get_LDS(self, timedata, Pinf):
+        """
+        :param jnp.ndarray Pinf: matrix of shape (out_dims, state_dims, state_dims)
+        """
+        t, dt = timedata
+        if dt.shape[0] == 1:
+            A = self.markov_kernel._state_transition(dt[0])  # (out_dims, state_dims, 1)
+        else:
+            A = vmap(self.markov_kernel._state_transition, 0, 1)(dt)  # (out_dims, timesteps, state_dims, 1)
+        return vmap(get_LGSSM_matrices, (0, 0, None), (0, 0))(A, Pinf, t.shape[0])
         
     def apply_constraints(self):
         """
@@ -302,12 +351,8 @@ class SpatiotemporalLGSSM(LGSSM):
         return model
     
     ### posterior ###
-    def spatial_conditional(self):
-        return
-    
-    
     def evaluate_posterior(
-        self, t_eval, timedata, mean_only, compute_KL, jitter
+        self, t_eval, x_eval, timedata, mean_only, compute_KL, jitter
     ):
         """
         predict at test locations X, which may includes training points
@@ -318,25 +363,47 @@ class SpatiotemporalLGSSM(LGSSM):
             means of shape (time, out, 1)
             covariances of shape (time, out, out)
         """
-        # compute linear dynamical system
-        H, minf, Pinf = self.markov_kernel.state_output()
-        As, Qs = get_LGSSM_matrices(self.markov_kernel, timedata, Pinf)
-
-        post_means, post_covs, KL = evaluate_LGSSM_posterior(
-            t_eval, As, Qs, H, minf, Pinf, self.markov_kernel.state_transition, 
-            timedata[0], self.site_obs, self.site_Lcov, 
-            mean_only, compute_KL, jitter, 
-        )
-        return post_means, post_covs, KL
-
+        num_spatial = self.spatial_locs.shape[-2]
+        
+        # compute LDS matrices
+        H, minf, Pinf = self.markov_kernel._state_output()
+        As, Qs = self.get_LDS(timedata, Pinf)
+        
+        if self.spatial_MF:  # vmap over temporal kernel out_dims = spatial_locs
+            # vmap over spatial points
+            post_means, post_covs, KL = vmap_spatial(
+                t_eval, As, Qs, H, minf, Pinf, self.markov_kernel.state_transition, 
+                timedata[0], self.site_obs[..., None], self.site_Lcov[..., None], 
+                mean_only, compute_KL, jitter, 
+            )  # (spatial_locs, out_dims, timesteps, 1)
+            
+            post_means = post_means.transpose(1, 2, 0, 3)
+            post_covs = post_covs.transpose(1, 2, 0, 3)
+            
+        else:
+            # kronecker structure
+            H, Pinf = id_kronecker(num_spatial, H), id_kronecker(num_spatial, Pinf)
+            minf = jnp.tile(minf, (1, num_spatial))
+            As, Qs = id_kronecker(num_spatial, As), id_kronecker(num_spatial, Qs)
+            print(As.shape)
+            print(Pinf.shape)
+            print(Qs.shape)
+            post_means, post_covs, KL = vmap_outdims(
+                t_eval, As, Qs, H, minf, Pinf, self.markov_kernel.state_transition, 
+                timedata[0], self.site_obs, self.site_Lcov, 
+                mean_only, compute_KL, jitter, 
+            )  # (out_dims, timesteps, spatial_locs)
+            
+            print(post_means.shape)
+            
         # TODO: if R is fixed, only compute B, C once
-        B, C = self.kernel.spatial_conditional(X, R)
+        C_krr, C_nystrom = sparse_conditional(x_eval)  # (out_dims, timesteps, spatial_locs, spatial_locs)
         W = B @ H
-        test_mean = W @ state_mean
-        test_var = W @ state_cov @ transpose(W) + C
-   
-            
-            
+        test_mean = post_means @ W
+        test_var = W @ post_covs @ transpose(W) + self.temporal_kernel.K(X, X) * C
+        
+        return post_means, post_covs, KL   
+        
     ### sample ###
     def sample_prior(self, prng_state, num_samps, timedata, jitter):
         """

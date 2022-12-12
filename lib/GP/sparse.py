@@ -3,22 +3,81 @@ from functools import partial
 
 from ..base import module
 
+from jax import vmap
 import jax.numpy as jnp
 import jax.random as jr
-from jax import vmap
 from jax.numpy.linalg import cholesky
+from jax.scipy.linalg import solve_triangular
 
-from jax.scipy.linalg import cho_factor, cho_solve, solve_triangular
+from .linalg import evaluate_tsparse_posterior
+from ..utils.jax import sample_gaussian_noise
 
-from ..utils.jax import (
-    expsum,
-    mc_sample,
-    sample_gaussian_noise,
-    sigmoid,
-    softplus,
-    softplus_inv,
-)
-from ..utils.linalg import enforce_positive_diagonal, gauss_hermite, inv
+
+
+class qSVGP(module):
+    """
+    """
+    # hyperparameters
+    induc_locs: jnp.ndarray
+    mean: jnp.ndarray
+        
+    # variational parameters
+    lambda_1: jnp.ndarray
+    chol_Lambda_2: jnp.ndarray
+        
+    kernel: module
+    RFF_num_feats: int
+
+    def __init__(self, kernel, mean, induc_locs, lambda_1, chol_Lambda_2, RFF_num_feats=0):
+        """
+        :param induc_locs: inducing point locations z, array of shape (out_dims, num_induc, in_dims)
+        :param variance: The observation noise variance, σ²
+        """
+        if induc_locs.shape[2] != kernel.in_dims:
+            raise ValueError(
+                "Dimensions of inducing locations do not match kernel input dimensions"
+            )
+        if induc_locs.shape[0] != kernel.out_dims:
+            raise ValueError(
+                "Dimensions of inducing locations do not match kernel output dimensions"
+            )
+
+        super().__init__()
+        self.induc_locs = induc_locs  # (num_induc, out_dims, in_dims)
+        self.mean = mean  # (out_dims,)
+
+        self.lambda_1 = lambda_1
+        self.chol_Lambda_2 = chol_Lambda_2
+        
+        self.kernel = kernel
+        self.RFF_num_feats = RFF_num_feats  # use random Fourier features
+
+    def apply_constraints(self):
+        """
+        PSD constraint
+        """
+        model = jax.tree_map(lambda p: p, self)  # copy
+        
+        def update(Lcov):
+            epdfunc = lambda x: enforce_positive_diagonal(x, lower_lim=1e-2)
+            Lcov = vmap(epdfunc)(jnp.tril(Lcov))
+            Lcov = jnp.tril(Lcov)
+            return Lcov
+
+        model = eqx.tree_at(
+            lambda tree: tree.chol_Lambda_2,
+            model,
+            replace_fn=update,
+        )
+        
+        kernel = self.kernel.apply_constraints(self.kernel)
+        model = eqx.tree_at(
+            lambda tree: tree.kernel,
+            model,
+            replace_fn=lambda _: kernel,
+        )
+
+        return model
 
 
 
@@ -106,7 +165,7 @@ class tSVGP(module):
             means of shape (out_dims, num_samps, time, 1)
             covariances of shape (out_dims, num_samps, time, time)
         """
-        post_means, post_covs, KL, aux = evaluate_sparse_posterior(
+        post_means, post_covs, KL, aux = evaluate_tsparse_posterior(
             self.kernel, self.induc_locs, self.mean, x, 
             self.lambda_1, self.chol_Lambda_2, mean_only, compute_KL, compute_aux, jitter
         )
@@ -131,8 +190,7 @@ class tSVGP(module):
 
         if self.RFF_num_feats > 0:  # random Fourier features
             prng_keys = jr.split(prng_state, 2)
-            variance = softplus(self.kernel.pre_var)  # (out_dims,)
-            ks = self.kernel.sample_spectrum(
+            ks, amplitude = self.kernel.sample_spectrum(
                 prng_keys[0], num_samps, self.RFF_num_feats
             )  # (num_samps, out_dims, feats, in_dims)
             phi = (
@@ -143,8 +201,8 @@ class tSVGP(module):
                 )
             )
 
-            samples = self.mean[None, None, :] + jnp.sqrt(
-                2.0 * variance / self.RFF_num_feats
+            samples = self.mean[None, None, :] + amplitude * jnp.sqrt(
+                2.0 / self.RFF_num_feats
             ) * (jnp.cos((ks[None, ...] * x[..., None, :]).sum(-1) + phi)).sum(
                 -1
             )  # (time, num_samps, out_dims)

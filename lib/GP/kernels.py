@@ -358,15 +358,15 @@ class Lengthscale(StationaryKernel):
 
     # state space
     def state_dynamics(self):
-        out = self.state_dynamics_()  # vmap over output dims
-        return block_diag(*out)
+        F, L, Qc = self._state_dynamics()  # vmap over output dims
+        return block_diag(*F), block_diag(*L), block_diag(*Qc)
 
     def state_transition(self, dt):
-        out = self.state_transition_(dt)  # vmap over output dims
-        return block_diag(*out)
+        A = self._state_transition(dt)  # vmap over output dims
+        return block_diag(*A)
 
     def state_output(self):
-        H, minf, Pinf = self.state_output_()  # vmap over output dims
+        H, minf, Pinf = self._state_output()  # vmap over output dims
         return block_diag(*H), minf.reshape(-1), block_diag(*Pinf)
     
     def spectral_representation(self, omega):
@@ -426,11 +426,14 @@ class SquaredExponential(Lengthscale):
 
     def sample_spectrum(self, prng_state, num_samps, RFF_num_feats):
         lengthscale = softplus(self.pre_len)  # (out, d_x)
+        variance = softplus(self.pre_var)  # (out_dims,)
+        
         k_std = 1.0 / lengthscale
         ks = k_std[None, :, None, :] * jr.normal(
             prng_state, shape=(num_samps, self.out_dims, RFF_num_feats, self.in_dims)
         )
-        return ks
+        amplitude = jnp.sqrt(variance)
+        return ks, amplitude
 
 
 
@@ -495,7 +498,7 @@ class Matern12(Lengthscale):
         return variance * jnp.exp(-r)
 
     @eqx.filter_vmap
-    def state_dynamics_(self):
+    def _state_dynamics(self):
         """
         Uses variance and lengthscale hyperparameters to construct the state space model
         """
@@ -508,7 +511,7 @@ class Matern12(Lengthscale):
         return F, L, Qc
 
     @eqx.filter_vmap(kwargs=dict(dt=None))
-    def state_transition_(self, dt):
+    def _state_transition(self, dt):
         """
         Calculation of the discrete-time state transition matrix A = expm(FΔt) for the exponential prior.
         :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
@@ -520,7 +523,7 @@ class Matern12(Lengthscale):
         return A
 
     @eqx.filter_vmap
-    def state_output_(self):
+    def _state_output(self):
         var = softplus(self.pre_var)
         H = jnp.ones((1, 1))  # observation projection
         minf = jnp.zeros((1,))  # stationary state mean
@@ -565,7 +568,7 @@ class Matern32(Lengthscale):
         return variance * (1.0 + sqrt3 * r) * jnp.exp(-sqrt3 * r)
 
     @eqx.filter_vmap
-    def state_dynamics_(self):
+    def _state_dynamics(self):
         var = softplus(self.pre_var)
         ell = softplus(self.pre_len[0])  # first dimension
 
@@ -576,7 +579,7 @@ class Matern32(Lengthscale):
         return F, L, Qc
 
     @eqx.filter_vmap(kwargs=dict(dt=None))
-    def state_transition_(self, dt):
+    def _state_transition(self, dt):
         """
         Calculation of the discrete-time state transition matrix A = expm(FΔt) for the Matern-3/2 prior.
         :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
@@ -592,7 +595,7 @@ class Matern32(Lengthscale):
         return A
 
     @eqx.filter_vmap
-    def state_output_(self):
+    def _state_output(self):
         var = softplus(self.pre_var)
         ell = softplus(self.pre_len[0])  # first dimension
         
@@ -642,7 +645,7 @@ class Matern52(Lengthscale):
         return var * (1.0 + sqrt5 * r + 5.0 / 3.0 * jnp.square(r)) * jnp.exp(-sqrt5 * r)
 
     @eqx.filter_vmap
-    def state_dynamics_(self):
+    def _state_dynamics(self):
         var = softplus(self.pre_var)
         ell = softplus(self.pre_len[0])  # first dimension
 
@@ -659,7 +662,7 @@ class Matern52(Lengthscale):
         return F, L, Qc
 
     @eqx.filter_vmap(kwargs=dict(dt=None))
-    def state_transition_(self, dt):
+    def _state_transition(self, dt):
         """
         Calculation of the discrete-time state transition matrix A = expm(FΔt) for the Matern-5/2 prior.
         :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
@@ -688,7 +691,7 @@ class Matern52(Lengthscale):
         return A
 
     @eqx.filter_vmap
-    def state_output_(self):
+    def _state_output(self):
         var = softplus(self.pre_var)
         ell = softplus(self.pre_len[0])  # first dimension
 
@@ -751,7 +754,7 @@ class Matern72(Lengthscale):
 
     # state space
     @eqx.filter_vmap
-    def state_dynamics_(self, hyp):
+    def _state_dynamics(self, hyp):
         hyp = self.hyp if hyp is None else hyp
         var = softplus(self.pre_var)
         ell = softplus(self.pre_len[0])  # first dimension
@@ -771,7 +774,7 @@ class Matern72(Lengthscale):
         return F, L, Qc
 
     @eqx.filter_vmap(kwargs=dict(dt=None))
-    def state_transition_(self, dt):
+    def _state_transition(self, dt):
         ell = softplus(self.pre_len[0])  # first dimension
 
         lam = jnp.sqrt(7.0) / ell
@@ -814,7 +817,7 @@ class Matern72(Lengthscale):
         return A
 
     @eqx.filter_vmap
-    def state_output_(self):
+    def _state_output(self):
         """
         Calculation of the discrete-time state transition matrix A = expm(FΔt) for the Matern-7/2 prior.
         :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]

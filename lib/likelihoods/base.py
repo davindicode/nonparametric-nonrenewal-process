@@ -1,7 +1,12 @@
+from .base import module
+
+
+
+
 ### classes ###
-class FactorizedLikelihood(object):
+class FactorizedLikelihood(module):
     """
-    The likelihood model class, p(yₙ|fₙ)
+    The likelihood model class, p(yₙ|fₙ) factorized across time points
 
     variational_expectation() computes all E_q(f) related quantities and its derivatives for NGD
     We allow multiple f (vector fₙ) to correspond to a single yₙ as in heteroscedastic likelihoods
@@ -182,9 +187,159 @@ class FactorizedLikelihood(object):
         raise NotImplementedError(
             "Posterior sampling of likelihood variables not implemented"
         )
+        
+        
+        
+class RenewalLikelihood(module):
+    """
+    Renewal model base class
+    """
+
+    def __init__(
+        self, tbin, neurons, inv_link, tensor_type, allow_duplicate, dequantize
+    ):
+        super().__init__(tbin, neurons, neurons, inv_link, tensor_type)
+        self.allow_duplicate = allow_duplicate
+        self.dequant = dequantize
+
+    def train_to_ind(self, train):
+        if self.allow_duplicate:
+            duplicate = False
+            spike_ind = train.nonzero().flatten()
+            bigger = torch.where(train > 1)[0]
+            add_on = (spike_ind,)
+            for b in bigger:
+                add_on += (
+                    b * torch.ones(int(train[b]) - 1, device=train.device, dtype=int),
+                )
+
+            if len(add_on) > 1:
+                duplicate = True
+            spike_ind = torch.cat(add_on)
+            return torch.sort(spike_ind)[0], duplicate
+        else:
+            return torch.nonzero(train).flatten(), False
+
+    def ind_to_train(self, ind, timesteps):
+        train = torch.zeros((timesteps))
+        train[ind] += 1
+        return train
+
+    
+
+    def set_Y(self, spikes, batch_info):
+        """
+        Get all the activity into batches useable format for quick log-likelihood evaluation
+        Tensor shapes: self.act [neuron_dim, batch_dim]
+        """
+        if self.allow_duplicate is False and spikes.max() > 1:  # only binary trains
+            raise ValueError("Only binary spike trains are accepted in set_Y() here")
+        super().set_Y(spikes, batch_info)
+        batch_edge, _, _ = self.batch_info
+
+        self.spiketimes = []
+        self.intervals = torch.empty((self.batches, self.trials, self.neurons))
+        self.duplicate = np.empty((self.batches, self.trials, self.neurons), dtype=bool)
+        for b in range(self.batches):
+            spk = self.all_spikes[..., batch_edge[b] : batch_edge[b + 1]]
+            spiketimes = []
+            for tr in range(self.trials):
+                cont = []
+                for k in range(self.neurons):
+                    s, self.duplicate[b, tr, k] = self.train_to_ind(spk[tr, k])
+                    cont.append(s)
+                    self.intervals[b, tr, k] = len(s) - 1
+                spiketimes.append(cont)
+            self.spiketimes.append(
+                spiketimes
+            )  # batch list of trial list of spike times list over neurons
+
+    def sample_helper(self, h, b, neuron, scale, samples):
+        """
+        MC estimator for NLL function.
+
+        :param torch.Tensor scale: additional scaling of the rate rescaling to preserve the ISI mean
+
+        :returns: tuple of rates, spikes*log(rates*scale), rescaled ISIs
+        :rtype: tuple
+        """
+        batch_edge, _, _ = self.batch_info
+        scale = scale.expand(1, self.F_dims)[
+            :, neuron, None
+        ]  # rescale to get mean 1 in renewal distribution
+        rates = self.f(h) * scale
+        spikes = self.all_spikes[:, neuron, batch_edge[b] : batch_edge[b + 1]].to(
+            self.tbin.device
+        )
+        # self.spikes[b][:, neuron, self.filter_len-1:]
+        if (
+            self.trials != 1 and samples > 1 and self.trials < h.shape[0]
+        ):  # cannot rely on broadcasting
+            spikes = spikes.repeat(
+                samples, 1, 1
+            )  # trial blocks are preserved, concatenated in first dim
+
+        if (
+            self.inv_link == "exp"
+        ):  # bit masking seems faster than integer indexing using spiketimes
+            n_l_rates = (spikes * (h + torch.log(scale))).sum(-1)
+        else:
+            n_l_rates = (spikes * torch.log(rates + 1e-12)).sum(
+                -1
+            )  # rates include scaling
+
+        spiketimes = [[s.to(self.tbin.device) for s in ss] for ss in self.spiketimes[b]]
+        rISI = self.rate_rescale(neuron, spiketimes, rates, self.duplicate[b])
+        return rates, n_l_rates, rISI
+
+    def objective(self, F_mu, F_var, XZ, b, neuron, scale, samples=10, mode="MC"):
+        """
+        :param torch.Tensor F_mu: model output F mean values of shape (samplesxtrials, neurons, time)
+
+        :returns: negative likelihood term of shape (samples, timesteps), sample weights (samples, 1
+        :rtype: tuple of torch.tensors
+        """
+        if mode == "MC":
+            h = self.mc_gen(F_mu, F_var, samples, neuron)
+            rates, n_l_rates, rISI = self.sample_helper(h, b, neuron, scale, samples)
+            ws = torch.tensor(1.0 / rates.shape[0])
+        elif mode == "direct":
+            rates, n_l_rates, spikes = self.sample_helper(
+                F_mu[:, neuron, :], b, neuron, samples
+            )
+            ws = torch.tensor(1.0 / rates.shape[0])
+        else:
+            raise NotImplementedError
+
+        return self.nll(n_l_rates, rISI, neuron), ws
+
+    def sample(self, rate, neuron=None, XZ=None):
+        """
+        Sample spike trains from the modulated renewal process.
+
+        :param numpy.array rate: input rate of shape (trials, neuron, timestep)
+        :returns: spike train of shape (trials, neuron, timesteps)
+        :rtype: np.array
+        """
+        neuron = self._validate_neuron(neuron)
+        spiketimes = gen_IRP(
+            self.ISI_dist(neuron), rate[:, neuron, :], self.tbin.item()
+        )
+
+        # if binned:
+        tr_t_spike = []
+        for sp in spiketimes:
+            tr_t_spike.append(
+                self.ind_to_train(torch.tensor(sp), rate.shape[-1]).numpy()
+            )
+
+        return np.array(tr_t_spike).reshape(rate.shape[0], -1, rate.shape[-1])
+
+        # else:
+        #    return spiketimes
 
 
-class filtered_likelihood(base._likelihood):
+class FilterLikelihood(module):
     """
     Wrapper for base._likelihood classes with filters.
     """

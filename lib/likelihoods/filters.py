@@ -8,11 +8,12 @@ from torch.nn.parameter import Parameter
 
 from tqdm.autonotebook import tqdm
 
-from .. import base, distributions
+from .base import FilterLikelihood
+
 
 
 ### filters ###
-class sigmoid_refractory(base._filter):
+class sigmoid_refractory(FilterLikelihood):
     """
     Step refractory filter
     """
@@ -74,8 +75,9 @@ class sigmoid_refractory(base._filter):
         h_ = self.compute_filter()
         return F.conv1d(input, h_, groups=self.conv_groups), 0
 
+    
 
-class raised_cosine_bumps(base._filter):
+class raised_cosine_bumps(FilterLikelihood):
     """
     Raised cosine basis [1], takes the form of
 
@@ -174,7 +176,7 @@ class raised_cosine_bumps(base._filter):
         return F.conv1d(input, h_, groups=self.conv_groups), 0
 
 
-class hetero_raised_cosine_bumps(base._filter):
+class hetero_raised_cosine_bumps(FilterLikelihood):
     """
     Raised cosine basis with weights input dependent
     """
@@ -300,7 +302,7 @@ class hetero_raised_cosine_bumps(base._filter):
         return torch.cat(a_, dim=-1), filt_var
 
 
-class filter_model(base._filter):
+class filter_model(FilterLikelihood):
     """
     Nonparametric GLM coupling filters. Is equivalent to multi-output GP time series. [1]
 
@@ -370,128 +372,3 @@ class filter_model(base._filter):
 
         return mean_conv, var_conv
 
-
-class hetero_filter_model(base._filter):
-    """
-    Nonparametric input-dependent GLM coupling filters.
-
-    """
-
-    def __init__(
-        self,
-        out_dim,
-        in_dim,
-        timesteps,
-        tbin,
-        filter_model,
-        inner_loop_bs=10,
-        tensor_type=torch.float,
-        mode="unfold",
-    ):
-        """
-        :param int out_dim: the number of output dimensions per input dimension (1 or neurons)
-        :param int in_dim: the number of input dimensions for the overall filter (neurons)
-        """
-        conv_groups = in_dim // out_dim
-        super().__init__(timesteps, conv_groups=conv_groups, tensor_type=tensor_type)
-        self.out_dim = out_dim
-        self.in_dim = in_dim
-        self.inner_bs = inner_loop_bs
-
-        assert (mode == "unfold") or (mode == "repeat")
-        self.mode = mode
-
-        assert filter_model.out_dims == in_dim * out_dim
-        self.add_module("filter_model", filter_model)
-        self.register_buffer("cov", torch.arange(timesteps)[None, None, :, None] * tbin)
-
-    def compute_filter(self, stim):
-        """
-        The sample dimension is the label index for all nonzero spike bins.
-
-        :param torch.Tensor stim: the stimulus variable at all nonzero bins of shape (samples, timestep, dims), note
-                                  the sample dimension includes the MC samples as well as the history shifts (KxT)
-        :returns: filter mean of shape (samples, n_out, n_in, timesteps), filter variance of same shape
-        :rtype: tuple of torch.tensor
-        """
-        cov = torch.cat(
-            (self.cov.expand(stim.shape[0], *self.cov.shape[1:]), stim), dim=-1
-        )  # sample x timesteps x dims
-        F_mu, F_var = self.filter_model.compute_F(cov)  # samples, neurons, timesteps
-        if isinstance(F_var, Number) is False:
-            F_var = F_var.view(stim.shape[0], self.out_dim, self.in_dim, -1)
-        return F_mu.view(stim.shape[0], self.out_dim, self.in_dim, -1), F_var
-
-    def KL_prior(self, importance_weighted=False):
-        return self.filter_model.KL_prior(importance_weighted)
-
-    def forward(self, input, stimulus):
-        """
-        The two modes of stimulus coupling are `unfold` and `repeat`, the first evaluates the filter GP at
-        stimulus values at the instantaneous time, whereas the latter uses the stimulus value at the time
-        one wants to evaluate the conditional rate expanded across the history.
-
-        :param torch.Tensor input: input spiketrain or covariates with shape (trials, neurons, timesteps)
-                                   or (samples, neurons, timesteps)
-        :param torch.Tensor stimulus: input stimulus of shape (trials, timesteps, dims)
-        :returns: filtered input of shape (trials, neurons, timesteps)
-        """
-        assert stimulus is not None
-        assert input.shape[0] == 1
-        # assert stimulus.shape[1] == input.shape[-1]-self.history_len+1
-
-        input_unfold = input.unfold(
-            -1, self.filter_len, 1
-        )  # samples, neurons, timesteps, fold_dim
-        if self.mode == "unfold":
-            stim_unfold = stimulus[:, :-1, :].unfold(
-                1, self.filter_len, 1
-            )  # samples, timesteps, dims, fold_dim
-        else:  # repeat
-            stim_ = stimulus[:, self.filter_len - 1 :, :]
-            stim_unfold = stim_[..., None].expand(
-                *stim_.shape, self.filter_len
-            )  # samples, timesteps, dims, fold_dim
-
-        K = stim_unfold.shape[0]
-        T = input_unfold.shape[-2]
-
-        inner_batches = np.ceil(T / self.inner_bs).astype(int)
-        a_ = []
-        a_var_ = []
-        for b in range(inner_batches):  # inner loop batching
-            stim_in = stim_unfold[
-                :, b * self.inner_bs : (b + 1) * self.inner_bs, ...
-            ].reshape(
-                -1, *stim_unfold.shape[-2:]
-            )  # KxT, D, D_fold
-            input_in = input_unfold[..., b * self.inner_bs : (b + 1) * self.inner_bs, :]
-
-            h_, v_ = self.compute_filter(
-                stim_in.permute(0, 2, 1)
-            )  # KxT, out, in, D_fold
-
-            if h_.shape[1] == 1:  # output dims
-                a = input_in * h_[:, 0, ...].view(K, -1, *h_.shape[-2:]).permute(
-                    0, 2, 1, 3
-                )  # K, N, T, D_fold
-                a_.append(a.sum(-1))  # K, N, T
-                if isinstance(v_, Number) is False:
-                    a_var = input_in * v_[:, 0, ...].view(
-                        K, -1, *v_.shape[-2:]
-                    ).permute(0, 2, 1, 3)
-                    a_var_.append(a_var.sum(-1))  # K, N, T
-
-            else:  # neurons
-                a = input_in[..., None, :] * h_.view(K, -1, *h_.shape[-3:]).permute(
-                    0, 2, 1, 3, 4
-                )  # K, N, T, n_in, D_fold
-                a_.append(a.sum(-1).sum(-1))  # K, N, T
-                if isinstance(v_, Number) is False:
-                    a_var = input_in[..., None, :] * v_.view(
-                        K, -1, *v_.shape[-3:]
-                    ).permute(0, 2, 1, 3, 4)
-                    a_var_.append(a_var.sum(-1).sum(-1))  # K, N, T
-
-        filt_var = 0 if len(a_var_) == 0 else torch.cat(a_var_, dim=-1)
-        return torch.cat(a_, dim=-1), filt_var

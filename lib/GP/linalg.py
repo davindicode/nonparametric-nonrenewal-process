@@ -132,6 +132,26 @@ def process_noise_covariance(A, Pinf):
     return Q
 
 
+def get_LGSSM_matrices(A, Pinf, timesteps):
+    Id = jnp.eye(Pinf.shape[0])
+    Zs = jnp.zeros_like(Pinf)
+
+    if len(A.shape) == 2:  # single dt value
+        Q = process_noise_covariance(A, Pinf)
+        As = jnp.stack([Id] + [A] * (timesteps - 1) + [Id], axis=0)
+        Qs = jnp.stack([Zs] + [Q] * (timesteps - 1) + [Zs], axis=0)
+    else:
+        Q = vmap(process_noise_covariance, (0, None), 0)(A, Pinf)
+        As = jnp.concatenate((Id[None, ...], A, Id[None, ...]), axis=0)
+        Qs = jnp.concatenate((Zs[None, ...], Q, Zs[None, ...]), axis=0)
+
+    return As, Qs
+
+
+def id_kronecker(dims, A):
+    return jnp.kron(jnp.eye(dims), A)
+
+
 
 def compute_conditional_statistics(
     kernel_state_transition, Pinf, t_eval, t, ind, mean_only, jitter
@@ -222,27 +242,7 @@ def pseudo_log_likelihood(post_mean, post_cov, site_obs, site_Lcov):
     )
     # diagonal of site_Lcov is thresholded in site_update() and constraints() to be >= 1e-3
     return site_log_lik
-    
 
-    
-def get_LGSSM_matrices(kernel, timedata, Pinf):
-    t, dt = timedata
-    Id = jnp.eye(Pinf.shape[0])
-    Zs = jnp.zeros_like(Pinf)
-
-    if dt.shape[0] == 1:
-        A = kernel.state_transition(dt[0])
-        Q = process_noise_covariance(A, Pinf)
-        As = jnp.stack([Id] + [A] * (t.shape[0] - 1) + [Id], axis=0)
-        Qs = jnp.stack([Zs] + [Q] * (t.shape[0] - 1) + [Zs], axis=0)
-    else:
-        As = vmap(kernel.state_transition)(dt)
-        Qs = vmap(process_noise_covariance, (0, None), 0)(As, Pinf)
-        As = jnp.concatenate((Id[None, ...], As, Id[None, ...]), axis=0)
-        Qs = jnp.concatenate((Zs[None, ...], Qs, Zs[None, ...]), axis=0)
-
-    return As, Qs
-    
     
     
 def evaluate_LGSSM_posterior(
@@ -347,7 +347,33 @@ def evaluate_LGSSM_posterior(
 vdiag = vmap(jnp.diag)
 
 
-def evaluate_sparse_posterior(
+
+def sparse_conditional(self):
+    num_induc = self.spatial_locs.shape[1]
+
+    Kzz = self.spatial_kernel.K(self.spatial_locs, self.spatial_locs)
+    Lzz, low = cho_factor(Kzz, lower=True)
+    Qzz = cho_solve((Lzz, low), np.eye(self.M))  # K_zz^(-1)
+
+
+    R = R.reshape((R.shape[0],) + (-1,) + self.z.value.shape[1:])
+    Krz = vmap(self.spatial_kernel, [0, None])(R, self.z.value)
+    K = Krz @ Qzz  # Krz x Kzz^{-1}
+    B = K @ Lzz
+
+    Krr = self.spatial_kernel(R, R)
+    X = X.reshape(-1, 1)
+    C_nystrom =  (Krr - K @ Krz.T)
+
+    #C_nystrom = vmap(self.conditional_covariance)(X, R, Krz, K)  # conditional covariance
+
+    return
+    
+
+
+
+
+def evaluate_tsparse_posterior(
     kernel, induc_locs, mean, x, lambda_1, chol_Lambda_2, mean_only, compute_KL, compute_aux, jitter
 ):
     """
@@ -387,7 +413,7 @@ def evaluate_sparse_posterior(
             (chol_Kzz[:, None, ...].repeat(num_samps, axis=1), True), Kzx
         ).transpose(0, 1, 3, 2)
 
-    Rinv_lambda_1 = cho_solve((chol_R, True), self.lambda_1)  # (out_dims, num_induc, 1)
+    Rinv_lambda_1 = cho_solve((chol_R, True), lambda_1)  # (out_dims, num_induc, 1)
     post_means = (
         Kxz @ Rinv_lambda_1[:, None, ...].repeat(num_samps, axis=1)
         + mean[:, None, None, None]

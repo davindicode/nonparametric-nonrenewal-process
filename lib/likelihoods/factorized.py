@@ -1,6 +1,8 @@
 import math
 from functools import partial
 
+
+
 import jax.numpy as np
 from jax import grad, jacrev, jit, random, tree_map, value_and_grad, vmap
 from jax.nn import softmax
@@ -12,7 +14,10 @@ from jax.scipy.special import erf, gammaln
 from ..utils.jax import expsum, mc_sample, sigmoid, softplus, softplus_inv
 from ..utils.linalg import gauss_hermite, get_blocks, inv
 
+from .base import FactorizedLikelihood
+
 _log_twopi = math.log(2 * math.pi)
+
 
 
 ### density likelihoods ###
