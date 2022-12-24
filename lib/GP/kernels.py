@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Callable, List
 import math
 #from functools import partial
 
@@ -9,69 +9,88 @@ from ..base import module
 import jax.numpy as jnp
 import jax.random as jr
 from jax import lax, tree_map, vmap
-from jax.scipy.linalg import block_diag, expm
+from jax.numpy.linalg import cholesky
+from jax.scipy.linalg import solve_triangular
+from jax.scipy.linalg import expm
 
 import equinox as eqx
 
-from ..utils.jax import softplus, softplus_inv, softplus_inv_list, softplus_list
-from ..utils.linalg import rotation_matrix, solve, solve_continuous_lyapunov
+from .linalg import get_LGSSM_matrices, id_kronecker, bdiag
+
+from ..utils.jax import softplus, softplus_inv
+from ..utils.linalg import rotation_matrix, solve_continuous_lyapunov
 
 _sqrt_twopi = math.sqrt(2 * math.pi)
 
 
 
 ### functions ###
-def broadcasting_elementwise(op, a, b):
-    """
-    Adapted from GPflow: https://github.com/GPflow/GPflow
-    http://www.apache.org/licenses/LICENSE-2.0
-    Apply binary operation `op` to every pair in tensors `a` and `b`.
-    :param op: binary operator on tensors, e.g. tf.add, tf.substract
-    :param a: tf.Tensor, shape [n_1, ..., n_a]
-    :param b: tf.Tensor, shape [m_1, ..., m_b]
-    :return: tf.Tensor, shape [n_1, ..., n_a, m_1, ..., m_b]
-    """
-    flatres = op(jnp.reshape(a, [-1, 1]), jnp.reshape(b, [1, -1]))
-    return flatres.reshape(a.shape[0], b.shape[0])
-
-
-def _safe_sqrt(x):
-    # Clipping around the (single) float precision which is ~1e-45.
-    return jnp.sqrt(jnp.maximum(x, 1e-36))
-
-
-def _scaled_dist_squared_Rn(X, Y, lengthscale):
+def _scaled_dist_squared_Rn(X, Y, lengthscale, diagonal):
     r"""
     Returns :math:`\|\frac{X-Z}{l}\|^2`
 
     :param jnp.array X: input of shape (out_dims, num_points, in_dims)
-    :return: distance of shape (out_dims, num_points, num_points_)
+    :return: distance of shape (out_dims, num_points, num_points)
     """
     scaled_X = X / lengthscale[:, None, :]
     scaled_Y = Y / lengthscale[:, None, :]
     X2 = (scaled_X**2).sum(-1, keepdims=True)
     Y2 = (scaled_Y**2).sum(-1, keepdims=True)
-    XY = scaled_X @ scaled_Y.transpose(0, 2, 1)
-    r2 = X2 - 2 * XY + Y2.transpose(0, 2, 1)
+    if diagonal:
+        XY = (scaled_X * scaled_Y).sum(-1, keepdims=True)
+        r2 = X2 - 2 * XY + Y2  # (out_dims, num_points, 1)
+    else:
+        XY = scaled_X @ scaled_Y.transpose(0, 2, 1)
+        r2 = X2 - 2 * XY + Y2.transpose(0, 2, 1)
     return jnp.maximum(r2, 0.0)
 
 
-def _scaled_dist_Rn(X, Y, lengthscale):
+def _scaled_dist_Rn(X, Y, lengthscale, diagonal):
     r"""
     Returns :math:`\|\frac{X-Z}{l}\|`
     """
-    return jnp.sqrt(_scaled_dist_squared_Rn(X, Y, lengthscale))
+    return jnp.sqrt(_scaled_dist_squared_Rn(X, Y, lengthscale, diagonal))
 
 
 
-### classes ###
-class StationaryKernel(module):
+
+
+### base classes ###
+class Kernel(module):
+    in_dims: int
+    out_dims: int
+
+    def __init__(self, in_dims, out_dims):
+        self.in_dims = in_dims
+        self.out_dims = out_dims
+
+    ### kernel ###
+    def K(self, X, Y, diagonal):
+        """
+        Kernel covariance function
+        """
+        raise NotImplementedError("Covariance function not implemented for this kernel")
+        
+        
+        
+class StationaryKernel(Kernel):
     """
-    The GP Kernel / prior class.
-    Implements methods for converting GP priors,
+    The stationary GP kernel class 
+        f(t) ~ GP(0,k(t,t')) = GP(0,k(t-t'))
+    """
+    
+    ### Fourier domain ###  
+    def sample_spectrum(self, prng_state, num_samps):
+        """ """
+        raise NotImplementedError("Spectrum density is not implemented")
+        
+    
+    
+class MarkovianKernel(StationaryKernel):
+    """
+    The stationary GP kernel class 
         f(t) ~ GP(0,k(t,t'))
-    into state space models.
-    Constructs a linear time-invariant (LTI) stochastic differential
+    with a linear time-invariant (LTI) stochastic differential
     equation (SDE) of the following form:
         dx(t)/dt = F x(t) + L w(t)
               yₙ ~ p(yₙ | f(tₙ)=H x(tₙ))
@@ -85,57 +104,147 @@ class StationaryKernel(module):
     Pinf   - Covariance of the stationary process
     """
 
-    in_dims: int
     state_dims: int
-    out_dims: int
 
     def __init__(self, in_dims, out_dims, state_dims):
-        self.in_dims = in_dims  # input dimensions (1 for temporal)
+        """
+        dimensions after readout with H
+        input dimensions (1 for temporal)
+        """
+        super().__init__(in_dims, out_dims)
         self.state_dims = state_dims  # state dynamics dimensions
-        self.out_dims = out_dims  # dimensions after readout with H
-
-    ### kernel ###
-    def K(self, X, X_):
-        """ """
-        raise NotImplementedError("Kernel function not implemented for this prior")
-
+        
     ### state space ###
-    def state_dynamics(self):
+    def _state_dynamics(self):
         """
         Returns F, L, Qc
         """
         raise NotImplementedError(
-            "Kernel to state space mapping not implemented for this prior"
+            "State space dynamics not implemented for this kernel"
         )
 
-    def state_transition(self, dt):
+    def _state_transition(self, dt):
         """
         Calculation of the discrete-time state transition matrix A = expm(FΔt).
-        :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
-        :param hyperparams: the kernel hyperparameters [array]
-        :return: state transition matrix A [sd, sd]
+        :param dt: scalar step size, Δtₙ = tₙ - tₙ₋₁
+        :return: state transition matrix A (state_dims, state_dims,)
         """
-        F, _, _, _, _ = self.kernel_to_state_space(hyp)
-        A = expm(F * dt)
-        return A
+        raise NotImplementedError(
+            "State space transition not implemented for this kernel"
+        )
 
-    def state_output(self):
+    def _state_output(self):
         """
         Returns H, minf, Pinf
         """
         raise NotImplementedError(
-            "Kernel to state space mapping not implemented for this prior"
+            "State space matrices not implemented for this kernel"
         )
+        
+    def state_dynamics(self):
+        """
+        Block diagonal from (out_dims, x_dims, x_dims) to (state_dims, state_dims)
+        """
+        F, L, Qc = self._state_dynamics()  # vmap over output dims
+        return bdiag(F), bdiag(L), bdiag(Qc)
 
-    def sample_spectrum(self, prng_state, num_samps):
-        """ """
-        raise NotImplementedError("Spectrum density is not implemented")
+    def state_transition(self, dt):
+        """
+        Block diagonal from (out_dims, x_dims, x_dims) to (state_dims, state_dims)
+        """
+        A = self._state_transition(dt)  # vmap over output dims
+        return bdiag(A)
+
+    def state_output(self):
+        """
+        Block diagonal from (out_dims, x_dims, x_dims) to (state_dims, state_dims)
+        """
+        H, minf, Pinf = self._state_output()  # vmap over output dims
+        return bdiag(H), minf.reshape(-1), bdiag(Pinf)
+    
+    def _get_LDS(self, timedata):
+        H, minf, Pinf = self._state_output()  # (out_dims, sd, sd)
+        
+        t, dt = timedata
+        if dt.shape[0] == 1:
+            A = self._state_transition(dt[0])  # (out_dims, sd, sd)
+        else:
+            A = vmap(self._state_transition, 0, 1)(dt)  # (out_dims, ts, sd, sd)
+        As, Qs = vmap(get_LGSSM_matrices, (0, 0, None), (1, 1))(
+            A, Pinf, t.shape[0])  # (ts, out_dims, sd, sd)
+        
+        return H, minf, Pinf, As, Qs
+    
+    def get_LDS(self, timedata):
+        """
+        Block diagonal state form to move out_dims to state dimensions
+        
+        :return:
+            matrices of shape (ts, sd, sd)
+        """
+        H, minf, Pinf, As, Qs = self._get_LDS(timedata)
+        H, minf, Pinf = bdiag(H), minf.reshape(-1), bdiag(Pinf)
+        
+        vbdiag = vmap(bdiag)  # vmap over timesteps
+        As, Qs = vbdiag(As), vbdiag(Qs)
+        return H, minf, Pinf, As, Qs
+    
+    ### representations ###
+    def spectral_representation(self, omega):
+        """
+        Calculation of the spectral representation of the kernel, from its state space parameters.
+        We return HS(\omega)H^T which is a scalar (directly in observation space.
+        
+        Note that in the LEG case this expression simplifies because of the structue of the process
+        (it assumes F = NN^T + R - R^T where N is the noise matrix)
+        """
+        F, L, Qc = self.state_dynamics()
+        H, _, _ = self.state_output()
+        
+        n = jnp.shape(F)[0]
+        tmp = F + 1j * jnp.eye(n) * omega
+        tmp_inv = jnp.linalg.inv(tmp)
+        conj_tmp_inv = jnp.linalg.inv(F - 1j * jnp.eye(n) * omega)
+        return H @ tmp_inv @ L @ Qc @ L.T @ conj_tmp_inv.T @ H.T
+
+    def temporal_representation(self, tau):
+        """
+        Calculation of the temporal representation of the kernel, from its state space parameters.
+        We return H P_inf*expm(F\tau)^TH^T
+        """
+        F, _, _ = self.state_dynamics()
+        H, _, P_inf = self.state_output()
+        
+        return H @ P_inf @ expm(F.T * tau) @ H.T
+
+
+#     ### LDS ###
+#     def compute_kernel(delta_t, F, Pinf, H):
+#         """
+#         delta_t is positive and increasing
+#         """
+#         A = vmap(expm)(F[None, ...] * delta_t[:, None, None])
+#         At = vmap(expm)(-F.T[None, ...] * delta_t[:, None, None])
+#         P = (A[..., None] * Pinf[None, None, ...]).sum(-2)
+#         P_ = (Pinf[None, ..., None] * At[:, None, ...]).sum(-2)
+
+#         delta_t = np.broadcast_to(delta_t[:, None, None], P.shape)
+#         Kt = H[None, ...] @ jnp.where(delta_t > 0.0, P, P_) @ H.T[None, ...]
+#         return Kt
+
+
+#     def discrete_transitions(F, L, Qc):
+#         """ """
+#         A = expm(F * dt)
+#         Pinf = solve_continuous_lyapunov(F, L @ L.T * Qc)
+#         Q = Pinf - A @ Pinf @ A.T
+#         return A, Pinf
+
 
     
 
-    
-
-class IID(StationaryKernel):
+### kernel classes ###
+class IID(MarkovianKernel):
     """
     GPLVM latent space, i.e. no dynamics
     """
@@ -149,19 +258,22 @@ class IID(StationaryKernel):
         super().__init__(in_dims, out_dims, state_dims)
         self.Qc = Qc
 
-    def state_dynamics(self):
+    @eqx.filter_vmap()
+    def _state_dynamics(self):
         F = []
         L = []
         Pinf = self.Qc
         return F, L, Qc
 
-    def state_output(self):
+    @eqx.filter_vmap()
+    def _state_output(self):
         H = jnp.ones(self.out_dims)
         minf = jnp.zeros((1,))  # stationary state mean
         Pinf = self.Qc
         return H, minf, Pinf
 
-    def state_transition(self, dt):
+    @eqx.filter_vmap(kwargs=dict(dt=None))
+    def _state_transition(self, dt):
         """
         Calculation of the closed form discrete-time state
         transition matrix A = expm(FΔt) for the Cosine prior
@@ -173,7 +285,7 @@ class IID(StationaryKernel):
 
     
 
-class Cosine(StationaryKernel):
+class Cosine(MarkovianKernel):
     """
     Cosine kernel in SDE form.
     Hyperparameters:
@@ -204,20 +316,23 @@ class Cosine(StationaryKernel):
     def omega(self):
         return softplus(self.pre_omega)
 
-    def state_dynamics(self):
+    @eqx.filter_vmap()
+    def _state_dynamics(self):
         omega = softplus(self.pre_omega)
         F = jnp.array([[0.0, -omega], [omega, 0.0]])
         L = []
         Qc = []
         return F, L, Qc
 
-    def state_output(self):
+    @eqx.filter_vmap()
+    def _state_output(self):
         H = jnp.array([1.0, 0.0])
         minf = jnp.zeros((1,))  # stationary state mean
         Pinf = jnp.eye(H.shape[1])
         return H, minf, Pinf
 
-    def state_transition(self, dt):
+    @eqx.filter_vmap(kwargs=dict(dt=None))
+    def _state_transition(self, dt):
         """
         Calculation of the closed form discrete-time state
         transition matrix A = expm(FΔt) for the Cosine prior
@@ -230,7 +345,7 @@ class Cosine(StationaryKernel):
     
 
 
-class LEG(StationaryKernel):
+class LEG(MarkovianKernel):
     """
     State-space formulation of the LEG model. The SDE takes the form
     dz = -G/2zdt + Ndw where G = NN^T + R - R^T
@@ -239,6 +354,7 @@ class LEG(StationaryKernel):
     N: jnp.ndarray
     R: jnp.ndarray
     B: jnp.ndarray
+    H: jnp.ndarray
     Lam: jnp.ndarray
 
     def __init__(self, N, R, B, Lam):
@@ -267,23 +383,26 @@ class LEG(StationaryKernel):
         G = Q + (self.R - self.R.T)
         return G, Q
 
-    def state_dynamics(self):
+    @eqx.filter_vmap()
+    def _state_dynamics(self):
         G, Q = self.parameterize()
         F = -G / 2.0
-        return F, Q
-
-    def state_output(self):
+        L = []
+        return F, L, Q
+    
+    @eqx.filter_vmap()
+    def _state_output(self):
         """
         Pinf is the solution of the Lyapunov equation F P + P F^T + L Qc L^T = 0
         Pinf = solve_continuous_lyapunov(F, Q)
         In this parameterization Pinf is just the identity
         """
-        #F, Q = self.state_dynamics()
         minf = jnp.zeros((state_dims,))
         Pinf = jnp.eye(self.state_dims)
         return self.H, minf, Pinf
 
-    def state_transition(self, dt):
+    @eqx.filter_vmap(kwargs=dict(dt=None))
+    def _state_transition(self, dt):
         """
         Calculation of the discrete-time state transition matrix A = expm(FΔt) for the Matern-7/2 prior.
         :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
@@ -314,7 +433,7 @@ class LEG(StationaryKernel):
     
 
 ### lengthscale ###
-class Lengthscale(StationaryKernel):
+class Lengthscale(MarkovianKernel):
     """
     Kernels based on lengthscales
     """
@@ -341,55 +460,25 @@ class Lengthscale(StationaryKernel):
         return softplus(self.pre_len)
 
     # kernel
-    def K(self, X, Y):
+    def K(self, X, Y, diagonal):
         """
         X and X_ have shapes (out_dims, num_points, in_dims)
         """
-        l = softplus(self.pre_len)
-        r_in = self.distance_metric(X, Y, l)
+        if Y is None:  # autocovariance
+            if diagonal:
+                return self._K_r(jnp.zeros((*X.shape[:2], 1)))
+            Y = X 
         
-        return self._K_r(r_in)
+        l = softplus(self.pre_len)
+        r_in = self.distance_metric(X, Y, l, diagonal)
+        K = self._K_r(r_in)  # (out_dims, pts, pts) or (out_dims, pts, 1)
+        return jnp.broadcast_to(K, (self.out_dims, *K.shape[1:]))
 
     def _K_r(self, r):
         raise NotImplementedError("kernel function not implemented")
 
     def _K_omega(self, omega):
         raise NotImplementedError("kernel spectrum not implemented")
-
-    # state space
-    def state_dynamics(self):
-        F, L, Qc = self._state_dynamics()  # vmap over output dims
-        return block_diag(*F), block_diag(*L), block_diag(*Qc)
-
-    def state_transition(self, dt):
-        A = self._state_transition(dt)  # vmap over output dims
-        return block_diag(*A)
-
-    def state_output(self):
-        H, minf, Pinf = self._state_output()  # vmap over output dims
-        return block_diag(*H), minf.reshape(-1), block_diag(*Pinf)
-    
-    def spectral_representation(self, omega):
-        """
-        Calculation of the spectral representation of the kernel, from its state space parameters.
-        We return HS(\omega)H^T which is a scalar (directly in observation space.
-        Note that in the LEG case this expression simplifies because of the structue of the process
-        (it assumes F = NN^T + R - R^T where N is the noise matrix)
-        """
-        F, L, Qc, H, _ = self.kernel_to_state_space()
-        n = jnp.shape(F)[0]
-        tmp = F + 1j * jnp.eye(n) * omega
-        tmp_inv = jnp.linalg.inv(tmp)
-        conj_tmp_inv = jnp.linalg.inv(F - 1j * jnp.eye(n) * omega)
-        return H @ tmp_inv @ L @ Qc @ L.T @ conj_tmp_inv.T @ H.T
-
-    def temporal_representation(self, tau):
-        """
-        Calculation of the temporal representation of the kernel, from its state space parameters.
-        We return H P_inf*expm(F\tau)^TH^T
-        """
-        F, _, _, H, P_inf = self.kernel_to_state_space()
-        return H @ P_inf @ expm(F.T * tau) @ H.T
 
 
 
@@ -563,7 +652,7 @@ class Matern32(Lengthscale):
         r  is the Euclidean distance between the input points, scaled by the lengthscales parameter ℓ,
         σ² is the variance parameter.
         """
-        variance = softplus(hyp["variance"])[:, None, None]
+        var = softplus(self.pre_var)[:, None, None]
         sqrt3 = jnp.sqrt(3.0)
         return variance * (1.0 + sqrt3 * r) * jnp.exp(-sqrt3 * r)
 
@@ -754,8 +843,7 @@ class Matern72(Lengthscale):
 
     # state space
     @eqx.filter_vmap
-    def _state_dynamics(self, hyp):
-        hyp = self.hyp if hyp is None else hyp
+    def _state_dynamics(self):
         var = softplus(self.pre_var)
         ell = softplus(self.pre_len[0])  # first dimension
 
@@ -845,49 +933,192 @@ class Matern72(Lengthscale):
 
 
 
-
 ### combinations ###
-class Independent(StationaryKernel):
+class MarkovSparseKronecker(MarkovianKernel):
     """
-    A stack of independent GP priors. 'components' is a list of GP kernels, and this class stacks
-    the state space models such that each component is fed to the likelihood.
-    This class differs from Sum only in the measurement model.
+    Kronecker product of a Markovian kernel with a sparse kernel
     """
+    markov_factor: MarkovianKernel
+    sparse_factor: Kernel
+        
+    induc_locs: jnp.ndarray
+        
+    def __init__(self, markov_factor, sparse_factor, induc_locs):
+        """
+        :param jnp.ndarray induc_locs: inducing locations of shape (out_dims, spatial_locs, x_dims)
+        """
+        in_dims = 1 + sparse_factor.in_dims
+        assert markov_factor.out_dims == sparse_factor.out_dims
+        num_induc = induc_locs.shape[0]
+        state_dims = markov_factor.state_dims * num_induc
+        super().__init__(in_dims, markov_factor.out_dims, state_dims)
+        self.markov_factor = markov_factor
+        self.sparse_factor = sparse_factor
+        self.induc_locs = induc_locs  # (out_dims, num_induc, x_dims)
+        
+    def sparse_conditional(self, x_eval, jitter):
+        """
+        The spatial conditional covariance and posterior mean on whitened u(t)
+        """
+        num_induc = self.induc_locs.shape[0]
 
-    def __init__(self, components):
-        hyp = []
+        Kxx = self.sparse_factor.K(x_eval[None, ...], None, True)  # (out_dims, ts, 1)
+        Kzz = self.sparse_factor.K(self.induc_locs, None, False)
+        
+        eps_I = jitter * jnp.eye(num_induc)[None, ...]
+        chol_Kzz = cholesky(Kzz + eps_I)
+        
+        Kzx = self.sparse_factor.K(
+            self.induc_locs, x_eval[None, ...], False)  # (outdims, num_induc, ts)
+        Linv_Kzx = solve_triangular(chol_Kzz, Kzx, lower=True)
+        
+        C_krr = Linv_Kzx.transpose(0, 2, 1)
+        C_nystrom =  Kxx - (C_krr**2).sum(-1, keepdims=True)  # (out_dims, ts, 1)
+        return C_krr, C_nystrom
+        
+    def state_transition(self, dt):
+        """
+        """
+        num_induc = self.induc_locs.shape[0]
+        A = self.markov_factor._state_transition(dt)  # (out_dims, state_dims, state_dims)
+        return id_kronecker(num_induc, A)  # kronecker structure
+    
+    def _get_LDS(self, timedata):
+        return self.markov_factor._get_LDS(timedata)
+    
+    def get_LDS(self, timedata):
+        """
+        :param jnp.ndarray Pinf: matrix of shape (out_dims, state_dims, state_dims)
+        """
+        num_induc = self.induc_locs.shape[0]
+        H, minf, Pinf, As, Qs = self._get_LDS(timedata)
+        
+        # kronecker structure
+        H, Pinf = id_kronecker(num_induc, H), id_kronecker(num_induc, Pinf)
+        minf = jnp.tile(minf, (1, num_induc))
+        As, Qs = id_kronecker(num_induc, As), id_kronecker(num_induc, Qs)
+        return H, minf, Pinf, As, Qs
+
+
+    
+
+    
+    
+
+class Product(Kernel):
+    """
+    The product kernel for handling multi-dimensional input
+    """
+    
+    kernels: List[Kernel]
+    dims_list: List[List[int]]
+    
+    def __init__(self, kernels, dims_list):
+        """
+        :param list dims_list: a list of dimension indices list per kernel that are used
+        """
+        assert len(dims_list) == len(kernels)
+        super().__init__(in_dims, out_dims)
+        self.kernels = kernels
+        self.dims_list = dims_list
+        
+    # kernel
+    def K(self, X, Y, diagonal):
+        """
+        :param jnp.ndarray X: input of shape (num_points, out_dims, dims)
+        """
+        K = 1.
+        for en, k in enumerate(self.kernels):
+            inds = self.dims_list[en]
+            K = K * k.K(X[..., inds], Y[..., inds], diagonal)
+            
+        return K
+    
+    
+class Sum(Kernel):
+    """
+    Sum kernels
+    """
+    kernels: List[Kernel]
+    
+    def __init__(self, kernels):
+        """
+        :param list dims_list: a list of dimension indices list per kernel that are used
+        """
+        assert len(dims_list) == len(kernels)
+        super().__init__(in_dims, out_dims)
+        self.kernels = kernels
+        self.dims_list = dims_list
+        
+    # kernel
+    def K(self, X, Y, diagonal):
+        """
+        :param jnp.ndarray X: input of shape (num_points, out_dims, dims)
+        """
+        K = 1.
+        for en, k in enumerate(self.kernels):
+            inds = self.dims_list[en]
+            K = K * k.K(X[..., inds], Y[..., inds], diagonal)
+            
+        return K
+    
+    
+    
+class GroupMarkovian(MarkovianKernel):
+    """
+    A group of LDSs with the same state dimension
+    """
+    def __init__(self, kernels):
+        self.kernels = kernels
+    
+    def get_LDS(self, discrete_state):
+        """
+        Compute the sequence of LDS matrices given discrete state
+        
+        :param jnp.ndarray discrete_state: discrete states of shape (ts, num_samps, K)
+        """
+        return
+    
+    
+    
+class StackMarkovian(MarkovianKernel):
+    """
+    A stack of independent GP LDSs
+    This class stacks the state space models such that each component is fed to the likelihood.
+    """
+    
+    kernels: List[MarkovianKernel]
+
+    def __init__(self, kernels):
         out_dims = 0
         state_dims = 0
-        in_dims = components[0].in_dims
-        for c in components:
-            hyp += [c.hyp]
-            out_dims += c.out_dims
-            state_dims += c.state_dims
-            if in_dims != c.in_dims:
+        in_dims = kernels[0].in_dims
+        
+        for k in kernels:
+            out_dims += k.out_dims
+            state_dims += k.state_dims
+            if in_dims != k.in_dims:
                 raise ValueError("Input dimensions must be the same for all kernels")
 
-        super().__init__(in_dims, out_dims, state_dims, hyp)
-        self.components = components
+        super().__init__(in_dims, out_dims, state_dims)
+        self.kernels = kernels
 
     # kernel
-    def K(self, X, X_, hyp=None):
-        hyp = self.hyp if hyp is None else hyp
-
-        for i in range(1, len(self.components)):
-            if i == 0:  # use only variance of first kernel component
-                variance = hyp[0][0]
-            else:
-                variance = 1.0
-            r_in = self.distance_metric(X, X_, hyp[i][1:])
-            return self.K_r(r_in, variance)
+    def K(self, X, Y, diagonal):
+        for i in range(1, len(self.kernels)):
+#             if i == 0:  # use only variance of first kernel component
+#                 variance = hyp[0][0]
+#             else:
+#                 variance = 1.0
+            r_in = self.distance_metric(X, Y, diagonal)
+            return self.K_r(r_in)
 
     # state space
-    def state_dynamics(self, hyp=None):
-        hyp = self.hyp if hyp is None else hyp
-
-        F, L, Qc = self.components[0].state_dynamics(hyp[0])
-        for i in range(1, len(self.components)):
-            F_, L_, Qc_ = self.components[i].state_dynamics(hyp[i])
+    def state_dynamics(self):
+        F, L, Qc = self.kernels[0].state_dynamics()
+        
+        for i in range(1, len(self.kernels)):
+            F_, L_, Qc_ = self.kernels[i].state_dynamics()
             F = jnp.block(
                 [
                     [F, jnp.zeros([F.shape[0], F_.shape[1]])],
@@ -908,17 +1139,18 @@ class Independent(StationaryKernel):
             )
         return F, L, Qc
 
-    def state_transition(self, dt, hyp=None):
+    def state_transition(self, dt):
         """
         Calculation of the discrete-time state transition matrix A = expm(FΔt) for a sum of GPs
+        
         :param dt: step size(s), Δt = tₙ - tₙ₋₁ [1]
         :param hyperparams: hyperparameters of the prior: [array]
         :return: state transition matrix A [D, D]
         """
-        hyp = self.hyp if hyp is None else hyp
-        A = self.components[0].state_transition(dt, hyp[0])
-        for i in range(1, len(self.components)):
-            A_ = self.components[i].state_transition(dt, hyp[i])
+        A = self.kernels[0].state_transition(dt)
+        
+        for i in range(1, len(self.kernels)):
+            A_ = self.kernels[i].state_transition(dt)
             A = jnp.block(
                 [
                     [A, jnp.zeros([A.shape[0], A_.shape[0]])],
@@ -927,11 +1159,11 @@ class Independent(StationaryKernel):
             )
         return A
 
-    def state_output(self, hyp=None):
-        hyp = self.hyp if hyp is None else hyp
-        H, minf, Pinf = self.components[0].state_output(hyp[0])
-        for i in range(1, len(self.components)):
-            H_, minf_, Pinf_ = self.components[i].state_output(hyp[i])
+    def state_output(self):
+        H, minf, Pinf = self.kernels[0].state_output()
+        
+        for i in range(1, len(self.kernels)):
+            H_, minf_, Pinf_ = self.kernels[i].state_output()
             H = jnp.block(
                 [
                     [H, jnp.zeros([H.shape[0], H_.shape[1]])],
@@ -947,42 +1179,28 @@ class Independent(StationaryKernel):
             )
 
         return H, minf, Pinf
+    
 
 
-
-class Product(object):
+class SumMarkovian(MarkovianKernel):
     """
-    The product kernel for handling multi-dimensional input
+    A sum of GP priors.
+    This class stacks the state space models to produce their sum.
+    This class differs from Independent only in the measurement model.
     """
+    
+    kernels: List[MarkovianKernel]
 
-    def __init__(self, components):
-        hyp = [components[0].hyp]
-        for i in range(1, len(components)):
-            hyp = hyp + [components[i].hyp]
-        self.components = components
-        self.hyp = hyp
+    def __init__(self, kernels):
+        super().__init__(in_dims, out_dims)
+        self.kernels = kernels
 
-
-class Sum(object):
-    """
-    A sum of GP priors. 'components' is a list of GP kernels, and this class stacks
-    the state space models to produce their sum.
-    """
-
-    def __init__(self, components):
-        hyp = [components[0].hyp]
-        for i in range(1, len(components)):
-            hyp = hyp + [components[i].hyp]
-        self.components = components
-        self.hyp = hyp
-
-    def kernel_to_state_space(self, hyperparams=None):
-        hyperparams = softplus_list(self.hyp) if hyperparams is None else hyperparams
-        F, L, Qc, H, Pinf = self.components[0].kernel_to_state_space(hyperparams[0])
-        for i in range(1, len(self.components)):
-            F_, L_, Qc_, H_, Pinf_ = self.components[i].kernel_to_state_space(
-                hyperparams[i]
-            )
+    def state_dynamics(self):
+        F, L, Qc = self.kernels[0].state_dynamics()
+        #H, Pinf = 
+        
+        for i in range(1, len(self.kernels)):
+            F_, L_, Qc_, H_, Pinf_ = self.kernels[i].state_dynamics()
             F = jnp.block(
                 [
                     [F, jnp.zeros([F.shape[0], F_.shape[1]])],
@@ -1010,25 +1228,23 @@ class Sum(object):
             )
         return F, L, Qc, H, Pinf
 
-    def measurement_model(self, r=None, hyperparams=None):
-        hyperparams = softplus_list(self.hyp) if hyperparams is None else hyperparams
-        H = self.components[0].measurement_model(r, hyperparams[0])
-        for i in range(1, len(self.components)):
-            H_ = self.components[i].measurement_model(r, hyperparams[i])
+    def measurement_model(self, r=None):
+        H = self.kernels[0].measurement_model(r)
+        for i in range(1, len(self.kernels)):
+            H_ = self.kernels[i].measurement_model(r)
             H = jnp.block([H, H_])
         return H
 
-    def state_transition(self, dt, hyperparams=None):
+    def state_transition(self, dt):
         """
         Calculation of the discrete-time state transition matrix A = expm(FΔt) for a sum of GPs
         :param dt: step size(s), Δt = tₙ - tₙ₋₁ [1]
         :param hyperparams: hyperparameters of the prior: [array]
         :return: state transition matrix A [D, D]
         """
-        hyperparams = softplus(self.hyp) if hyperparams is None else hyperparams
-        A = self.components[0].state_transition(dt, hyperparams[0])
-        for i in range(1, len(self.components)):
-            A_ = self.components[i].state_transition(dt, hyperparams[i])
+        A = self.kernels[0].state_transition(dt)
+        for i in range(1, len(self.kernels)):
+            A_ = self.kernels[i].state_transition(dt)
             A = jnp.block(
                 [
                     [A, jnp.zeros([A.shape[0], A_.shape[0]])],
@@ -1036,22 +1252,3 @@ class Sum(object):
                 ]
             )
         return A
-
-    def spectral_representation(self, omega, hyperparams=None):
-        """
-        Calculation of the spectral representation of the kernel, from its state space parameters. We return HS(\omega)H^T which is a scalar (directly in observation space.
-        Note that in the LEG case this expression simplifies because of the structue of the process (it assumes F = NN^T + R - R^T where N is the noise matrix)
-        """
-        F, L, Qc, H, _ = self.kernel_to_state_space(hyperparams)
-        n = jnp.shape(F)[0]
-        tmp = F + 1j * jnp.eye(n) * omega
-        tmp_inv = jnp.linalg.inv(tmp)
-        conj_tmp_inv = jnp.linalg.inv(F - 1j * jnp.eye(n) * omega)
-        return H @ tmp_inv @ L @ Qc @ L.T @ conj_tmp_inv.T @ H.T
-
-    def temporal_representation(self, tau, hyperparams=None):
-        """
-        Calculation of the temporal representation of the kernel, from its state space parameters. We return H P_inf*expm(F\tau)^TH^T
-        """
-        F, _, _, H, P_inf = self.kernel_to_state_space(hyperparams)
-        return H @ P_inf @ expm(F.T * tau) @ H.T

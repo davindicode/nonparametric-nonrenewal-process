@@ -1,5 +1,12 @@
 import math
+import numpy as np
+
 from functools import partial
+
+import equinox as eqx
+
+from .base import module
+
 
 import jax
 import jax.numpy as jnp
@@ -8,6 +15,10 @@ from jax import jit, lax, random, tree_map, value_and_grad, vmap
 from jax.numpy.linalg import cholesky
 
 from jax.scipy.linalg import cho_solve, solve_triangular
+
+
+from tqdm.autonotebook import tqdm
+
 
 _log_twopi = math.log(2 * math.pi)
 
@@ -47,17 +58,33 @@ def process_inputs(t, x_obs, y, dtype):
 
 
 ### base ###
-class SVI_batched(object):
-    """ """
+class SVI_deterministic_IO(module):
+    """
+    The input-ouput (IO) mapping is deterministic
+    
+    Examples: GPFA, GLM
+    """
 
     def __init__(self, dtype=jnp.float32):
         self.dtype = dtype
 
 
-class SVI_state_space(object):
+class SVI_stochastic_IO(module):
     """
-    Class for state space priors, handles data sequentially
+    The input-ouput (IO) mapping is stochastic
     """
+    in_size: int
+    hidden_size: int
+    out_size: int
+
+    # parameters in pytree
+    W_in: jnp.ndarray
+    W_rec: jnp.ndarray
+    W_out: jnp.ndarray
+    bias: jnp.ndarray
+    out_bias: jnp.ndarray
+
+    ltau_v: jnp.ndarray
 
     def __init__(self, state_space, dtype=jnp.float32):
         self.dtype = dtype
@@ -65,36 +92,6 @@ class SVI_state_space(object):
         self.state_space = state_space
 
         self.y = None  # no training data set
-
-    def set_data(self, t, x_obs, y, mask=None):
-        """
-        :param t: training inputs
-        :param y: training data / observations
-
-        :param y: observed data [N, obs_dim]
-        :param dt: step sizes Δtₙ = tₙ - tₙ₋₁ [N, 1]
-        """
-        self.t, self.dt, self.x_obs, self.y = process_inputs(t, x_obs, y, self.dtype)
-        self.mask = mask
-
-    def get_data(self):
-        """
-        Get data for Kalman filtering/smoothing
-        """
-        if self.y is None:
-            raise ValueError("Training data not set with set_data()")
-        return [self.t, self.dt, self.x_obs, self.y, self.mask]
-
-    def get_x_posterior(self):
-        raise NotImplementedError
-
-
-### classes ###
-class IF_SSGP(SVI_state_space):
-    """
-    Integrate-and-fire state space model
-    """
-
     def __init__(
         self,
         state_space,
@@ -143,6 +140,36 @@ class IF_SSGP(SVI_state_space):
         self.q_vh_ic = q_vh_ic
 
         self.jitter = jitter
+
+    def set_data(self, t, x_obs, y, mask=None):
+        """
+        :param t: training inputs
+        :param y: training data / observations
+
+        :param y: observed data [N, obs_dim]
+        :param dt: step sizes Δtₙ = tₙ - tₙ₋₁ [N, 1]
+        """
+        self.t, self.dt, self.x_obs, self.y = process_inputs(t, x_obs, y, self.dtype)
+        self.mask = mask
+
+    def get_data(self):
+        """
+        Get data for Kalman filtering/smoothing
+        """
+        if self.y is None:
+            raise ValueError("Training data not set with set_data()")
+        return [self.t, self.dt, self.x_obs, self.y, self.mask]
+
+    def get_x_posterior(self):
+        raise NotImplementedError
+
+    ### constrain ###
+    def apply_constraints(self):
+        """
+        Pool together contraints from model components
+        """
+        self.state_space.apply_constraints()
+    
 
     ### getters and setters ###
     def set_params(self, params):
@@ -452,13 +479,7 @@ class IF_SSGP(SVI_state_space):
         return
 
     
-    ### constrain ###
-    @partial(jit, static_argnums=(0,))
-    def constraints(self):
-        """
-        Pool together contraints from model components
-        """
-        self.state_space.constraints()
+    
         
         
     def train_grads(
@@ -566,153 +587,10 @@ class IF_SSGP(SVI_state_space):
         
     
 
-class PP_SSGP(SVI_state_space):
-    """
-    Point process state space Gaussian process
-    """
-
-    def __init__(self, state_space, mapping, likelihood, dtype=jnp.float32):
-        """
-        The state-space conjugate-computation variational inference class.
-
-        The stochastic differential equation (SDE) form of a Gaussian process (GP) model.
-        Implements methods for inference and learning in models with GP priors of the form
-            f(t) ~ GP(0,k(t,t'))
-        using state space methods, i.e. Kalman filtering and smoothing.
-        Constructs a linear time-invariant (LTI) stochastic differential equation (SDE) of the following form:
-            dx(t)/dt = F x(t) + L w(t)
-                  yₙ ~ p(yₙ | f(tₙ)=H x(tₙ))
-        where w(t) is a white noise process and where the state x(t) is Gaussian distributed with initial
-        state distribution x(t)~𝓝(0,Pinf).
-        Combined likelihood and mapping to compute p(y|z;theta) becomes the observation model
-        Refs:
-            Chang, Wilkinson, Khan & Solin 2020 "Fast variational learning in state space Gaussian process models"
-
-        :param prior: the model prior p(f)=GP(0,k(.,.)) object which constructs the required state space model matrices
-        :param likelihood: the likelihood model object which performs parameter updates and evaluates p(y|f)
-        """
-        x_dims = state_space.kernel.out_dims
-        super().__init__(x_dims, observation)
-        self.state_space = state_space
-        self.state_dims = state_space.kernel.state_dims
 
 
-class SRM_SSGP(SVI_state_space):
-    """
-    GLM or SRM model with noisy input
-    """
 
-    def __init__(self, state_space, mapping, likelihood, dtype=jnp.float32):
-        """
-        The state-space conjugate-computation variational inference class.
-        """
-        x_dims = state_space.kernel.out_dims
-        super().__init__(x_dims, observation)
-        self.state_space = state_space
-        self.state_dims = state_space.kernel.state_dims
-
-
-from functools import partial
-
-import equinox as eqx
-
-import jax
-import jax.lax as lax
-import jax.numpy as jnp
-import numpy as np
-
-from jax import jit
-
-from tqdm.autonotebook import tqdm
-
-
-class _RNN(eqx.Module):
-    in_size: int
-    hidden_size: int
-    out_size: int
-
-    # parameters in pytree
-    W_in: jnp.ndarray
-    W_rec: jnp.ndarray
-    W_out: jnp.ndarray
-    bias: jnp.ndarray
-    out_bias: jnp.ndarray
-
-    ltau_v: jnp.ndarray
-
-    def __init__(self, W_in, W_rec, W_out, bias, out_bias, ltau_v):
-        assert W_rec.shape[1] == W_rec.shape[0]
-        assert W_in.shape[0] == W_rec.shape[0]
-        assert W_out.shape[1] == W_rec.shape[0]
-        assert W_rec.shape[0] == bias.shape[0]
-        assert out_bias.shape[0] == W_out.shape[0]
-        assert ltau_v.shape[0] == W_rec.shape[0]
-
-        self.hidden_size = W_rec.shape[0]
-        self.in_size = W_in.shape[1]
-        self.out_size = W_out.shape[0]
-
-        self.W_in = jnp.array(W_in)
-        self.W_rec = jnp.array(W_rec)
-        self.W_out = jnp.array(W_out)
-        self.bias = jnp.array(bias)
-        self.out_bias = jnp.array(out_bias)
-        self.ltau_v = jnp.array(ltau_v)
-
-    def dv(self, dt, v, I_ext):
-        """
-        neuron dynamics
-        """
-        tau_v = jnp.exp(self.ltau_v)
-        dt_tv = dt / tau_v
-        dv = -v + self.r(v) @ self.W_rec.T + I_ext
-        return dv * dt_tv[None, :]
-
-    def I_ext(self, inp, priv_noise):
-        return inp @ self.W_in.T + self.bias[None, :] + priv_noise
-
-    def out(self, rate):
-        return rate @ self.W_out.T + self.out_bias[None, :]
-
-    def __call__(self, inputs, ic, dt, output_state):
-        """
-        :param jnp.ndarray inputs: a tuple of inputs of shape (time, tr, dims) and (time, tr, neurons)
-        :param jnp.ndarray ic: initial conditions of shape (tr, N, state_d)
-        """
-
-        def step(carry, inputs):
-            v = carry  # (tr, N)
-            inp, priv_noise = inputs
-
-            I_ext = self.I_ext(inp, priv_noise)
-
-            v = v + self.dv(dt, v, I_ext)
-            rate = self.r(v)
-            out = self.out(rate)
-
-            outputs = (out,)
-            if output_state:
-                outputs += (rate, v)
-            return v, outputs
-
-        _, outputs = lax.scan(step, ic, inputs)
-        return outputs  # (time, tr, N)
-
-
-class retanh_RNN(_RNN):
-    def r(self, v):
-        """
-        rate transfer function
-        """
-        return jnp.maximum(jnp.tanh(v), 0.0)
-
-
-class relu_RNN(_RNN):
-    def r(self, v):
-        """
-        rate transfer function
-        """
-        return jnp.maximum(v, 0.0)
+    
 
 
 class RNN_constraints:
@@ -753,62 +631,3 @@ class RNN_constraints:
         )
 
         return model
-
-
-### slow points ###
-def compute_jac(model, probe_state, probe_input):
-    """
-    :param jnp.ndarray probe_state: state of shape (evals, hidden_size)
-    """
-    f = lambda v, I: model.dv(1.0, v[None, :], I[None, :])[0, :]
-    J = jax.vmap(jax.jacfwd(f), 0, 0)(probe_state, probe_input)
-    return J
-
-
-def find_slow_points(
-    model,
-    optim,
-    initial_states,
-    probe_inputs,
-    iters,
-):
-    probe_states = initial_states
-    opt_state = optim.init(probe_states)
-    loss_tracker = []
-
-    @partial(jit, static_argnums=())
-    def velocity_squared(model, probe_state, probe_input):
-        vel = model.dv(1.0, probe_state, probe_input)
-        return (vel**2).mean(0).sum()
-
-    iterator = tqdm(range(iters))
-    for ep in iterator:
-
-        loss, grads = jax.value_and_grad(velocity_squared, argnums=1)(
-            model, probe_states, probe_inputs
-        )
-        loss = loss.item()
-        loss_tracker.append(loss)
-
-        updates, opt_state = optim.update(grads, opt_state)
-        probe_states = probe_states.at[...].add(updates)
-
-        loss_dict = {"loss": loss}
-        iterator.set_postfix(**loss_dict)
-
-    vel_squared = model.dv(1.0, probe_states, probe_inputs) ** 2
-    return probe_states, vel_squared, loss_tracker
-
-
-def filter_slow_points(slow_points, tol=1e-5):
-    unique_slow_points = jnp.empty((0, slow_points.shape[1]))
-    inds_list = []
-    for en, s in enumerate(slow_points):
-        if len(unique_slow_points) > 0:
-            dist_squared = ((s[None, :] - unique_slow_points) ** 2).sum(1)
-            if jnp.min(dist_squared, axis=0) < tol:
-                continue
-        unique_slow_points = jnp.append(unique_slow_points, s[None, :], axis=0)
-        inds_list.append(en)
-
-    return unique_slow_points, inds_list  # (num, dims)

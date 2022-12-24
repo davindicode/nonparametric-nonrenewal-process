@@ -19,32 +19,6 @@ def expsum(a, axis=0):
     return jnp.exp(a_max.sum(axis=axis)) * jnp.exp((a - a_max).sum(axis=axis))
 
 
-def softplus_list(x_):
-    """
-    Softplus positivity mapping, used for transforming parameters.
-    Loop over the elements of the paramter list so we can handle the special case
-    where an element is empty
-    """
-    y_ = [jnp.log(1 + jnp.exp(-jnp.abs(x_[0]))) + jnp.maximum(x_[0], 0)]
-    for i in range(1, len(x_)):
-        if x_[i] is not []:
-            y_ = y_ + [jnp.log(1 + jnp.exp(-jnp.abs(x_[i]))) + jnp.maximum(x_[i], 0)]
-    return y_
-
-
-def softplus_inv_list(x_):
-    """
-    Inverse of the softplus positiviy mapping, used for transforming parameters.
-    Loop over the elements of the paramter list so we can handle the special case
-    where an element is empty
-    """
-    y_ = x_
-    for i in range(len(x_)):
-        if x_[i] is not []:
-            y_[i] = jnp.log(1 - jnp.exp(-jnp.abs(x_[i]))) + jnp.maximum(x_[i], 0)
-    return y_
-
-
 def softplus(x):
     return jnp.log(1 + jnp.exp(-jnp.abs(x))) + jnp.maximum(
         x, 0
@@ -65,6 +39,12 @@ def softplus_inv(x):
         return jnp.log(1 - jnp.exp(-jnp.abs(x))) + jnp.maximum(
             x, 0
         )  # numerically stabilized
+    
+    
+def _safe_sqrt(x):
+    # Clipping around the (single) float precision which is ~1e-45.
+    return jnp.sqrt(jnp.maximum(x, 1e-36))
+
 
 
 ### Monte Carlo ###
