@@ -1,9 +1,13 @@
+import math
+
 import jax.numpy as jnp
 from jax import lax, tree_map, vmap
 from jax.numpy.linalg import cholesky
 from jax.scipy.linalg import block_diag, cho_solve, solve_triangular
 
 from ..utils.linalg import solve
+
+_log_twopi = math.log(2 * math.pi)
 
 
 
@@ -60,7 +64,7 @@ def kalman_filter(
 
 
 def rauch_tung_striebel_smoother(
-    filter_means, filter_covs, As, Qs, H, full_state=False
+    filter_means, filter_covs, As, Qs, H, return_gains=True, full_state=False
 ):
     """
     Run the RTS smoother to get p(fₙ|y₁,...,y_N)
@@ -89,7 +93,8 @@ def rauch_tung_striebel_smoother(
         s_P = f_P + G @ (s_P - predict_P) @ G.T
 
         carry = (s_m, s_P)
-        out = (s_m, s_P, G) if full_state else (H @ s_m, H @ s_P @ H.T, G)
+        out = (s_m, s_P) if full_state else (H @ s_m, H @ s_P @ H.T)
+        out += (G,) if return_gains else (None,)
         return carry, out
 
     init = (filter_means[-1], filter_covs[-1])
@@ -105,7 +110,7 @@ def process_noise_covariance(A, Pinf):
     return Q
 
 
-def get_LGSSM_matrices(A, Pinf, timesteps):
+def get_LTI_matrices(A, Pinf, timesteps):
     """
     Computes the transition and process noise matrices
     Handles both a time sequence and a single matrix input
@@ -156,10 +161,10 @@ def predict_between_sites(
     Predicts marginal states at new time points. (new time points should be sorted)
     Calculates the conditional density:
              p(xₙ|u₋, u₊) = 𝓝(Pₙ @ [u₋, u₊], Tₙ)
-    :param x_test: time points to generate observations for [N]
-    :param x: inducing state input locations [M]
-    :param kernel: prior object providing access to state transition functions
-    :param ind: an array containing the index of the inducing state to the left of every input [N]
+    
+    :param ind: time points indices to evaluate observations for (out_dims,)
+    :param A_fwd: forward transitions from inducing states (out_dims, sd, sd)
+    :param A_bwd: backward transitions from inducing states (out_dims, sd, sd)
     :return: parameters for the conditional mean and covariance
             P: [N, D, 2*D]
             T: [N, D, D]
@@ -212,7 +217,7 @@ def pseudo_log_likelihood(post_mean, post_cov, site_obs, site_Lcov):
 
 
 
-def fixed_interval_smoothing(H, m0, P0, As, Qs, compute_KL):
+def fixed_interval_smoothing(H, m0, P0, As, Qs, site_obs, site_Lcov, compute_logZ, return_gains):
     """
     filtering then smoothing
     """
@@ -225,32 +230,34 @@ def fixed_interval_smoothing(H, m0, P0, As, Qs, compute_KL):
         m0,
         P0,
         return_predict=False,
-        compute_logZ=compute_KL,
+        compute_logZ=compute_logZ,
     )
     smoother_means, smoother_covs, gains = rauch_tung_striebel_smoother(
-        filter_means, filter_covs, As[1:], Qs[1:], H, full_state=True
+        filter_means, filter_covs, As[1:], Qs[1:], H, return_gains, full_state=True
     )
     
     return smoother_means, smoother_covs, gains, logZ
 
     
     
-def evaluate_LGSSM_posterior(
+def evaluate_LTI_posterior(
     H, minf, Pinf, As, Qs, site_obs, site_Lcov, interpolate_sites, mean_only, compute_KL, jitter
 ):
     """
     predict at test locations X, which may includes training points
     (which are essentially fixed inducing points)
 
-    :param jnp.ndarray t_eval: evaluation times of shape (locs,)
+    :param jnp.ndarray Pinf: stationary covariance (sd, sd)
+    :param jnp.ndarray As: transition matrices of shape (locs, sd, sd)
     :return:
         means of shape (time, out, 1)
         covariances of shape (time, out, out)
     """    
     minf = minf[:, None]
+    interpolate = (interpolate_sites is not None)
 
     smoother_means, smoother_covs, gains, logZ = fixed_interval_smoothing(
-        H, minf, Pinf, As, Qs, compute_KL)
+        H, minf, Pinf, As, Qs, site_obs, site_Lcov, compute_KL, interpolate)
     
     if compute_KL:  # compute using pseudo likelihood
         post_means = H @ smoother_means
@@ -268,14 +275,14 @@ def evaluate_LGSSM_posterior(
     else:
         KL = 0.0
 
-    if interpolate_sites is not None:  # predict the state distribution at the test time steps
+    if interpolate:  # predict the state distribution at the test time steps
         ind_eval, A_fwd, A_bwd = interpolate_sites
         
         predict_between_sites_vmap = vmap(
             predict_between_sites,
             (0, 0, 0, None, None, None, None, None, None),
             0 if mean_only else (0, 0),
-        )
+        )  # vmap over eval_nums
         
         # add dummy states at either edge
         mean_aug = jnp.concatenate(

@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from ..base import module
 from .base import LTI
 from .markovian import LGSSM
+from .kernels import MarkovianKernel
 
 
 
@@ -189,18 +190,89 @@ class CTHMM(module):
     
     
     
+### switch states ###
+class Transition(module):
+    def __init__(self, N, R, B, Lam):
+        out_dims = B.shape[-1]
+        state_dims = N.shape[0]
+        in_dims = 1
+        super().__init__(in_dims, out_dims, state_dims)
+        self.N = N
+        self.R = R
+        self.B = B
+        self.Lam = Lam
+    
+    
+class WhiteNoiseSwitch(Transition):
+    """
+    White noise processes at different orders
+    """
+    N: jnp.ndarray
+    R: jnp.ndarray
+    B: jnp.ndarray
+    H: jnp.ndarray
+    Lam: jnp.ndarray
+
+    def __init__(self, N, R, B, Lam):
+        out_dims = B.shape[-1]
+        state_dims = N.shape[0]
+        in_dims = 1
+        super().__init__(in_dims, out_dims, state_dims)
+        self.N = N
+        self.R = R
+        self.B = B
+        self.Lam = Lam
+        
+
+    @eqx.filter_vmap()
+    def _state_dynamics(self):
+        G, Q = self.parameterize()
+        F = -G / 2.0
+        L = []
+        return F, L, Q
+    
+    @eqx.filter_vmap()
+    def _state_output(self):
+        """
+        Pinf is the solution of the Lyapunov equation F P + P F^T + L Qc L^T = 0
+        Pinf = solve_continuous_lyapunov(F, Q)
+        In this parameterization Pinf is just the identity
+        """
+        minf = jnp.zeros((state_dims,))
+        Pinf = jnp.eye(self.state_dims)
+        return self.H, minf, Pinf
+
+    @eqx.filter_vmap(kwargs=dict(dt=0))
+    def _state_transition(self, dt):
+        """
+        Calculation of the discrete-time state transition matrix A = expm(FΔt) for the Matern-7/2 prior.
+        :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
+        :param hyperparams: the kernel hyperparameters, lengthscale is in index 1 [2]
+        :return: state transition matrix A [4, 4]
+        """
+        G, _ = self.parameterize()
+        return expm(-dt * G / 2)
+    
+    
+    
 # switching LGSSM
-class SwitchingLTI(LTI):
+class SwitchingLTI(SSM):
     """
     In the switching formulation, every observation point is doubled to account 
     for infinitesimal switches inbetween
     """
     
     CTHMM: module
+    switch_transitions: Transition
+    markov_kernel_group: MarkovianKernel
     
-    def __init__(self, CTHMM, markov_kernel_group, site_locs, site_obs, site_Lcov, fixed_grid_locs=False):
-        super().__init__(markov_kernel_group, site_locs, site_obs, site_Lcov, fixed_grid_locs)
+    def __init__(self, CTHMM, markov_kernel_group, switch_transitions, site_locs, site_obs, site_Lcov, fixed_grid_locs=False):
+        super().__init__(site_locs, site_obs, site_Lcov)
         self.CTHMM = CTHMM
+        self.markov_kernel_group = markov_kernel_group
+        self.switch_transitions = switch_transitions
+        
+        self.fixed_grid_locs = fixed_grid_locs
     
     def sample_prior(self):
         """

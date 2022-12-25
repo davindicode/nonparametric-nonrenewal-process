@@ -15,7 +15,7 @@ from jax.scipy.linalg import expm
 
 import equinox as eqx
 
-from .linalg import get_LGSSM_matrices, id_kronecker, bdiag
+from .linalg import get_LTI_matrices, id_kronecker, bdiag
 
 from ..utils.jax import softplus, softplus_inv
 from ..utils.linalg import rotation_matrix, solve_continuous_lyapunov
@@ -126,6 +126,7 @@ class MarkovianKernel(StationaryKernel):
     def _state_transition(self, dt):
         """
         Calculation of the discrete-time state transition matrix A = expm(FΔt).
+        
         :param dt: scalar step size, Δtₙ = tₙ - tₙ₋₁
         :return: state transition matrix A (state_dims, state_dims,)
         """
@@ -151,38 +152,47 @@ class MarkovianKernel(StationaryKernel):
     def state_transition(self, dt):
         """
         Block diagonal from (out_dims, x_dims, x_dims) to (state_dims, state_dims)
+        
+        :param jnp.ndarray dt: time intervals of shape (out_dims,)
         """
         A = self._state_transition(dt)  # vmap over output dims
         return bdiag(A)
 
     def state_output(self):
         """
+        Pinf is the solution of the Lyapunov equation F P + P F^T + L Qc L^T = 0
+        Pinf = solve_continuous_lyapunov(F, Q)
+        
         Block diagonal from (out_dims, x_dims, x_dims) to (state_dims, state_dims)
         """
         H, minf, Pinf = self._state_output()  # vmap over output dims
         return bdiag(H), minf.reshape(-1), bdiag(Pinf)
     
-    def _get_LDS(self, timedata):
+    def _get_LDS(self, dt, timesteps):
+        """
+        :param jnp.ndarray t: time points of shape (out_dims, timelocs)
+        :param jnp.ndarray dt: time points of shape (out_dims, dt_locs)
+        """
         H, minf, Pinf = self._state_output()  # (out_dims, sd, sd)
+        dt = jnp.broadcast_to(dt, (Pinf.shape[0], dt.shape[1]))
         
-        t, dt = timedata
-        if dt.shape[0] == 1:
-            A = self._state_transition(dt[0])  # (out_dims, sd, sd)
+        if dt.shape[1] == 1:
+            A = self._state_transition(dt[:, 0])  # (out_dims, sd, sd)
         else:
-            A = vmap(self._state_transition, 0, 1)(dt)  # (out_dims, ts, sd, sd)
-        As, Qs = vmap(get_LGSSM_matrices, (0, 0, None), (1, 1))(
-            A, Pinf, t.shape[0])  # (ts, out_dims, sd, sd)
+            A = vmap(self._state_transition, 1, 1)(dt)  # (out_dims, ts, sd, sd)
+        As, Qs = vmap(get_LTI_matrices, (0, 0, None), (1, 1))(
+            A, Pinf, timesteps)  # (ts, out_dims, sd, sd)
         
         return H, minf, Pinf, As, Qs
     
-    def get_LDS(self, timedata):
+    def get_LDS(self, dt: jnp.ndarray, timesteps: int):
         """
         Block diagonal state form to move out_dims to state dimensions
         
         :return:
             matrices of shape (ts, sd, sd)
         """
-        H, minf, Pinf, As, Qs = self._get_LDS(timedata)
+        H, minf, Pinf, As, Qs = self._get_LDS(dt, timesteps)
         H, minf, Pinf = bdiag(H), minf.reshape(-1), bdiag(Pinf)
         
         vbdiag = vmap(bdiag)  # vmap over timesteps
@@ -217,8 +227,6 @@ class MarkovianKernel(StationaryKernel):
         
         return H @ P_inf @ expm(F.T * tau) @ H.T
 
-
-#     ### LDS ###
 #     def compute_kernel(delta_t, F, Pinf, H):
 #         """
 #         delta_t is positive and increasing
@@ -233,20 +241,12 @@ class MarkovianKernel(StationaryKernel):
 #         return Kt
 
 
-#     def discrete_transitions(F, L, Qc):
-#         """ """
-#         A = expm(F * dt)
-#         Pinf = solve_continuous_lyapunov(F, L @ L.T * Qc)
-#         Q = Pinf - A @ Pinf @ A.T
-#         return A, Pinf
-
-
     
 
 ### kernel classes ###
 class IID(MarkovianKernel):
     """
-    GPLVM latent space, i.e. no dynamics
+    Independent in time, no dynamics
     """
 
     Qc: jnp.ndarray
@@ -272,14 +272,10 @@ class IID(MarkovianKernel):
         Pinf = self.Qc
         return H, minf, Pinf
 
-    @eqx.filter_vmap(kwargs=dict(dt=None))
+    @eqx.filter_vmap(kwargs=dict(dt=0))
     def _state_transition(self, dt):
         """
         Calculation of the closed form discrete-time state
-        transition matrix A = expm(FΔt) for the Cosine prior
-        :param dt: step size(s), Δt = tₙ - tₙ₋₁ [M+1, 1]
-        :param hyperparams: hyperparameters of the prior: frequency [1, 1]
-        :return: state transition matrix A [M+1, D, D]
         """
         return jnp.zeros((self.state_dims, self.state_dims))
 
@@ -331,11 +327,12 @@ class Cosine(MarkovianKernel):
         Pinf = jnp.eye(H.shape[1])
         return H, minf, Pinf
 
-    @eqx.filter_vmap(kwargs=dict(dt=None))
+    @eqx.filter_vmap(kwargs=dict(dt=0))
     def _state_transition(self, dt):
         """
         Calculation of the closed form discrete-time state
         transition matrix A = expm(FΔt) for the Cosine prior
+        
         :param dt: step size(s), Δt = tₙ - tₙ₋₁ [M+1, 1]
         :param hyperparams: hyperparameters of the prior: frequency [1, 1]
         :return: state transition matrix A [M+1, D, D]
@@ -393,18 +390,15 @@ class LEG(MarkovianKernel):
     @eqx.filter_vmap()
     def _state_output(self):
         """
-        Pinf is the solution of the Lyapunov equation F P + P F^T + L Qc L^T = 0
-        Pinf = solve_continuous_lyapunov(F, Q)
         In this parameterization Pinf is just the identity
         """
         minf = jnp.zeros((state_dims,))
         Pinf = jnp.eye(self.state_dims)
         return self.H, minf, Pinf
 
-    @eqx.filter_vmap(kwargs=dict(dt=None))
+    @eqx.filter_vmap(kwargs=dict(dt=0))
     def _state_transition(self, dt):
         """
-        Calculation of the discrete-time state transition matrix A = expm(FΔt) for the Matern-7/2 prior.
         :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
         :param hyperparams: the kernel hyperparameters, lengthscale is in index 1 [2]
         :return: state transition matrix A [4, 4]
@@ -414,11 +408,13 @@ class LEG(MarkovianKernel):
 
     def temporal_representation(self, tau):
         """
-        Calculation of the temporal representation of the kernel, from its state space parameters. We return H P_inf*expm(F\tau)^TH^T
+        Calculation of the temporal representation of the kernel, from its state space parameters
+        :return:
+            H P_inf*expm(F\tau)^TH^T
         """
         F, Q = self.state_dynamics()
         H, _, P_inf = self.state_output()
-        cond = jnp.sum(tau) >= 0.0
+        cond = (jnp.sum(tau) >= 0.0)
 
         def pos_tau():
             return H @ P_inf @ expm(tau * F.T) @ H.T
@@ -435,7 +431,7 @@ class LEG(MarkovianKernel):
 ### lengthscale ###
 class Lengthscale(MarkovianKernel):
     """
-    Kernels based on lengthscales
+    Stationary kernels based on lengthscales
     """
                      
     pre_len: jnp.ndarray
@@ -462,7 +458,8 @@ class Lengthscale(MarkovianKernel):
     # kernel
     def K(self, X, Y, diagonal):
         """
-        X and X_ have shapes (out_dims, num_points, in_dims)
+        :param jnp.ndarray X: first input (out_dims, num_points, in_dims)
+        :param jnp.ndarray Y: second input (out_dims, num_points, in_dims)
         """
         if Y is None:  # autocovariance
             if diagonal:
@@ -599,10 +596,9 @@ class Matern12(Lengthscale):
         Qc = 2.0 * (var / ell)[None, None]
         return F, L, Qc
 
-    @eqx.filter_vmap(kwargs=dict(dt=None))
+    @eqx.filter_vmap(kwargs=dict(dt=0))
     def _state_transition(self, dt):
         """
-        Calculation of the discrete-time state transition matrix A = expm(FΔt) for the exponential prior.
         :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
         :param hyperparams: the kernel hyperparameters, lengthscale is in index 1 [2]
         :return: state transition matrix A [1, 1]
@@ -627,6 +623,7 @@ class Matern32(Lengthscale):
     Hyperparameters:
         variance, σ²
         lengthscale, l
+        
     The associated continuous-time state space model matrices are:
     letting λ = √3/l
     F      = ( 0   1
@@ -667,11 +664,10 @@ class Matern32(Lengthscale):
         Qc = jnp.array([[12.0 * 3.0**0.5 / ell**3.0 * var]])
         return F, L, Qc
 
-    @eqx.filter_vmap(kwargs=dict(dt=None))
+    @eqx.filter_vmap(kwargs=dict(dt=0))
     def _state_transition(self, dt):
         """
-        Calculation of the discrete-time state transition matrix A = expm(FΔt) for the Matern-3/2 prior.
-        :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
+        :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁
         :param hyperparams: the kernel hyperparameters, lengthscale is in index 1 [2]
         :return: state transition matrix A [2, 2]
         """
@@ -750,10 +746,9 @@ class Matern52(Lengthscale):
         Qc = jnp.array([[var * 400.0 * 5.0**0.5 / 3.0 / ell**5.0]])
         return F, L, Qc
 
-    @eqx.filter_vmap(kwargs=dict(dt=None))
+    @eqx.filter_vmap(kwargs=dict(dt=0))
     def _state_transition(self, dt):
         """
-        Calculation of the discrete-time state transition matrix A = expm(FΔt) for the Matern-5/2 prior.
         :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
         :param hyperparams: the kernel hyperparameters, lengthscale is in index 1 [2]
         :return: state transition matrix A [3, 3]
@@ -861,7 +856,7 @@ class Matern72(Lengthscale):
 
         return F, L, Qc
 
-    @eqx.filter_vmap(kwargs=dict(dt=None))
+    @eqx.filter_vmap(kwargs=dict(dt=0))
     def _state_transition(self, dt):
         ell = softplus(self.pre_len[0])  # first dimension
 
@@ -978,20 +973,21 @@ class MarkovSparseKronecker(MarkovianKernel):
         
     def state_transition(self, dt):
         """
+        
         """
         num_induc = self.induc_locs.shape[0]
         A = self.markov_factor._state_transition(dt)  # (out_dims, state_dims, state_dims)
         return id_kronecker(num_induc, A)  # kronecker structure
     
-    def _get_LDS(self, timedata):
-        return self.markov_factor._get_LDS(timedata)
+    def _get_LDS(self, dt, timesteps):
+        return self.markov_factor._get_LDS(dt, timesteps)
     
-    def get_LDS(self, timedata):
+    def get_LDS(self, dt, timesteps):
         """
         :param jnp.ndarray Pinf: matrix of shape (out_dims, state_dims, state_dims)
         """
         num_induc = self.induc_locs.shape[0]
-        H, minf, Pinf, As, Qs = self._get_LDS(timedata)
+        H, minf, Pinf, As, Qs = self._get_LDS(dt, timesteps)
         
         # kronecker structure
         H, Pinf = id_kronecker(num_induc, H), id_kronecker(num_induc, Pinf)
@@ -1000,10 +996,6 @@ class MarkovSparseKronecker(MarkovianKernel):
         return H, minf, Pinf, As, Qs
 
 
-    
-
-    
-    
 
 class Product(Kernel):
     """
@@ -1018,6 +1010,10 @@ class Product(Kernel):
         :param list dims_list: a list of dimension indices list per kernel that are used
         """
         assert len(dims_list) == len(kernels)
+        in_dims = max([max(dl) for dl in dims_list]) + 1
+        out_dims = kernels[0].out_dims
+        for k in kernels[1:]:
+            assert k.out_dims == out_dims
         super().__init__(in_dims, out_dims)
         self.kernels = kernels
         self.dims_list = dims_list

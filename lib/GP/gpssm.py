@@ -25,9 +25,13 @@ class DTGPSSM(module):
     state_posterior: LGSSM
     
     def __init__(self, dynamics_function, chol_process_noise, p0_mean, p0_Lcov, state_posterior):
+        assert dynamics_function.kernel.out_dims == dynamics_function.kernel.in_dims
         super().__init__()
         self.dynamics_function = dynamics_function
         self.chol_process_noise = chol_process_noise
+        
+        self.p0_mean = p0_mean
+        self.p0_Lcov = p0_Lcov
         
         self.state_posterior = state_posterior
 #         if state_estimation == 'UKF':
@@ -59,10 +63,16 @@ class DTGPSSM(module):
             model,
             replace_fn=update,
         )
+        
+        model = eqx.tree_at(
+            lambda tree: tree.p0_Lcov,
+            model,
+            replace_fn=update,
+        )
 
         return model
        
-    def sample_prior(self, prng_state, x0, timesteps, jitter):
+    def sample_prior(self, prng_state, num_samps, timesteps, jitter):
         """
         Sample from the model prior
         
@@ -71,76 +81,72 @@ class DTGPSSM(module):
         :return:
             f_sample: the prior samples [S, N_samp]
         """
-        num_samps = x0.shape[0]
+        x_dims = self.dynamics_function.kernel.in_dims
         
-        eps_I = jitter * jnp.eye(self.markov_kernel.state_dims)
-        tsteps = timedata[0].shape[0]
+        eps_I = jitter * jnp.eye(x_dims)
 
-        prng_states = jr.split(prng_state, num_samps)  # (num_samps, 2)
+        prng_states = jr.split(prng_state, 1 + timesteps)  # (num_samps, 2)
+        
+        prng_state, procnoise_keys = prng_states[0], prng_states[1:]
 
-        if self.dynamics_function.self.RFF_num_feats > 0:  # RFF prior sampling
+        if self.dynamics_function.RFF_num_feats > 0:  # RFF prior sampling
             def step(carry, inputs):
-                x, prng_state = carry
-                A, Q, prng_state = inputs
+                x, prng_prior = carry  # (1, num_samps, x_dims)
+                prng_state = inputs
 
-                num_samps = 10
-                xx = np.linspace(-8., 8., 100)[:, None, None].repeat(num_samps, axis=1)
+                fx = self.dynamics_function.sample_prior(prng_prior, x, jitter)  # (1, samp, x_dims)
+                
+                noise = self.chol_process_noise[None, ...] @ jr.normal(prng_state, shape=(num_samps, x_dims, 1))
+                x = x + fx + noise[None, ..., 0]
 
-                obs_pts = 4
-                x_obs = np.linspace(-5., 5., obs_pts)[None, :, None]
-                f_obs = np.linspace(-5., 5., obs_pts)[None, :, None]
+                return (x, prng_prior), x[0, ...]
 
-                pf_x = obs.sample_prior(prng_state, xx, jitter)  # (evals, samp, f_dim)
-
-
-                q_samp = L @ jr.normal(prng_state, shape=(self.markov_kernel.state_dims, 1))
-                m = A @ m + q_samp
-                f = H @ m
-                return m, f
-
-            def sample_i(prng_state):
-                m0 = cholesky(Pinf) @ jr.normal(
-                    prng_state, shape=(self.markov_kernel.state_dims, 1)
-                )
-                _, f_sample = lax.scan(step, init=(x0, prng_state), xs=())
-                return f_sample
+            x0 = (self.p0_Lcov[None, ...] @ jr.normal(
+                prng_state, shape=(num_samps, x_dims, 1)
+            ))[None, ..., 0]  # (1, num_samps, x_dims)
+            prng_state, _ = jr.split(prng_state)
+            _, x_samples = lax.scan(step, init=(x0, prng_state), xs=procnoise_keys)
             
         else:  # autoregressive sampling using conditionals
             def step(carry, inputs):
-                m = carry
-                A, Q, prng_state = inputs
-
-                num_samps = 10
-                xx = np.linspace(-8., 8., 100)[:, None, None].repeat(num_samps, axis=1)
-
-                obs_pts = 4
-                x_obs = np.linspace(-5., 5., obs_pts)[None, :, None]
-                f_obs = np.linspace(-5., 5., obs_pts)[None, :, None]
+                x, x_obs, f_obs = carry  # (1, num_samps, x_dims)
+                prng_state = inputs
+    
+                x = x[None, ..., 0]
 
 
-                qf_m, qf_c = dynamics_function.evaluate_conditional(
-                    xx, x_obs, f_obs, mean_only=False, diag_cov=False, jitter=1e-6)
+                qf_m, qf_v = self.dynamics_function.evaluate_conditional(
+                    x, x_obs, f_obs, mean_only=False, diag_cov=True, jitter=1e-6)
 
+                fx = qf_m + qf_v @ jr.normal(prng_state, shape=(num_samps, x_dims, 1))  # (out_dims, num_samps, 1)
+                prng_state, _ = jr.split(prng_state)
+                
+                x_obs = jnp.concatenate((x_obs, x), axis=1)  # (out_dims, obs_pts, 1)
+                f_obs = jnp.concatenate((f_obs, fx), axis=1)  # (out_dims, obs_pts, 1)
+                
+                noise = self.chol_process_noise[None, ...] @ jr.normal(prng_state, shape=(num_samps, x_dims, 1))
+                x = x + fx + noise
+                
+                return (x, x_obs, f_obs), x
 
-                q_samp = L @ jr.normal(prng_state, shape=(self.markov_kernel.state_dims, 1))
-                m = A @ m + q_samp
-                f = H @ m
-                return m, f
+            x0 = self.p0_Lcov[None, ...] @ jr.normal(
+                prng_state, shape=(num_samps, x_dims, 1)
+            )
+            carry = (x0, jnp.empty((x_dims, 0, x_dims)), jnp.empty((x_dims, 0, x_dims)))
+            x_samples = jnp.empty((timesteps, num_samps, x_dims, 1))
+            for t in range(timesteps):
+                carry, x_sample = step(carry, procnoise_keys[t, ...])
+                x_samples = x_samples.at[t, ...].set(x_sample)
+            #_, x_samples = lax.scan(step, init=x0, xs=procnoise_keys)
 
-            def sample_i(prng_state):
-                m0 = cholesky(Pinf) @ jr.normal(
-                    prng_state, shape=(self.markov_kernel.state_dims, 1)
-                )
-                procnoise_keys = jr.split(prng_state, tsteps)
-                _, f_sample = lax.scan(step, init=m0, xs=(As[:-1], Qs[:-1], procnoise_keys))
-                return f_sample
-
-        x_samples = vmap(sample_i, 0, 1)(prng_states)
         return x_samples  # (time, tr, state_dims, 1)
     
     
     def evaluate_posterior(self, ):
-        return
+        """
+        The augmented KL divergence includes terms due to the state-space mapping
+        """
+        return aug_KL
     
     
     
@@ -148,7 +154,7 @@ class DTGPSSM(module):
         """
         """
         
-        if self.dynamics_function.self.RFF_num_feats > 0:  # RFF prior sampling
+        if self.dynamics_function.RFF_num_feats > 0:  # RFF prior sampling
             return
         else:  # autoregressive sampling using conditionals
             return
