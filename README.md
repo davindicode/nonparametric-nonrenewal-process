@@ -15,7 +15,13 @@ and supports scalability of deep learning via PyTorch.
 
 
 ## Dependencies:
-#. JAX
-#. NumPy
-#. SciPy
-#. tqdm
+#. [JAX](https://jax.readthedocs.io/en/latest/#)
+#. [NumPy](https://numpy.org/)
+#. [SciPy](https://scipy.org/)
+#. [tqdm](https://github.com/tqdm/tqdm)
+
+Formatting
+#. [ufmt](https://pypi.org/project/ufmt/)
+
+Code analysis linter
+#. [pylint](https://www.pylint.org/)

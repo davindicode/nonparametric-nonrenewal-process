@@ -153,8 +153,9 @@ class MarkovianKernel(StationaryKernel):
         """
         Block diagonal from (out_dims, x_dims, x_dims) to (state_dims, state_dims)
         
-        :param jnp.ndarray dt: time intervals of shape (out_dims,)
+        :param jnp.ndarray dt: time intervals of shape broadcastable with (out_dims,)
         """
+        dt = jnp.broadcast_to(dt, (self.out_dims,))
         A = self._state_transition(dt)  # vmap over output dims
         return bdiag(A)
 
@@ -170,7 +171,7 @@ class MarkovianKernel(StationaryKernel):
     
     def _get_LDS(self, dt, timesteps):
         """
-        :param jnp.ndarray t: time points of shape (out_dims, timelocs)
+        :param jnp.ndarray t: time points of shape broadcastable with (out_dims, timelocs)
         :param jnp.ndarray dt: time points of shape (out_dims, dt_locs)
         """
         H, minf, Pinf = self._state_output()  # (out_dims, sd, sd)
@@ -189,6 +190,7 @@ class MarkovianKernel(StationaryKernel):
         """
         Block diagonal state form to move out_dims to state dimensions
         
+        :param jnp.ndarray t: time points of shape broadcastable with (out_dims, timelocs)
         :return:
             matrices of shape (ts, sd, sd)
         """
@@ -954,17 +956,19 @@ class MarkovSparseKronecker(MarkovianKernel):
     def sparse_conditional(self, x_eval, jitter):
         """
         The spatial conditional covariance and posterior mean on whitened u(t)
+        
+        :param jnp.ndarray x_eval: evaluation locations shape (out_dims, ts, x_dims)
         """
-        num_induc = self.induc_locs.shape[0]
+        num_induc = self.induc_locs.shape[1]
 
-        Kxx = self.sparse_factor.K(x_eval[None, ...], None, True)  # (out_dims, ts, 1)
+        Kxx = self.sparse_factor.K(x_eval, None, True)  # (out_dims, ts, 1)
         Kzz = self.sparse_factor.K(self.induc_locs, None, False)
         
-        eps_I = jitter * jnp.eye(num_induc)[None, ...]
+        eps_I = jitter * jnp.eye(num_induc)
         chol_Kzz = cholesky(Kzz + eps_I)
         
         Kzx = self.sparse_factor.K(
-            self.induc_locs, x_eval[None, ...], False)  # (outdims, num_induc, ts)
+            self.induc_locs, x_eval, False)  # (outdims, num_induc, ts)
         Linv_Kzx = solve_triangular(chol_Kzz, Kzx, lower=True)
         
         C_krr = Linv_Kzx.transpose(0, 2, 1)
@@ -973,20 +977,21 @@ class MarkovSparseKronecker(MarkovianKernel):
         
     def state_transition(self, dt):
         """
-        
+        :return:
+            state transition matrices with Kronecker factorization
         """
-        num_induc = self.induc_locs.shape[0]
+        num_induc = self.induc_locs.shape[1]
         A = self.markov_factor._state_transition(dt)  # (out_dims, state_dims, state_dims)
-        return id_kronecker(num_induc, A)  # kronecker structure
+        return id_kronecker(num_induc, A)  # (out_dims, num_induc*state_dims, num_induc*state_dims)
     
     def _get_LDS(self, dt, timesteps):
         return self.markov_factor._get_LDS(dt, timesteps)
     
     def get_LDS(self, dt, timesteps):
         """
-        :param jnp.ndarray Pinf: matrix of shape (out_dims, state_dims, state_dims)
+        :param jnp.ndarray dt: time intervals of shape (out_dims, dt_locs)
         """
-        num_induc = self.induc_locs.shape[0]
+        num_induc = self.induc_locs.shape[1]
         H, minf, Pinf, As, Qs = self._get_LDS(dt, timesteps)
         
         # kronecker structure
@@ -1026,7 +1031,7 @@ class Product(Kernel):
         K = 1.
         for en, k in enumerate(self.kernels):
             inds = self.dims_list[en]
-            K = K * k.K(X[..., inds], Y[..., inds], diagonal)
+            K = K * k.K(X[..., inds], None if Y is None else Y[..., inds], diagonal)
             
         return K
     

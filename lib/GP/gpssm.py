@@ -79,7 +79,7 @@ class DTGPSSM(module):
         :param jnp.ndarray x0: the initial state (num_samps, state_dims)
         :param t: the input locations at which to sample (defaults to train+test set) [N_samp, 1]
         :return:
-            f_sample: the prior samples [S, N_samp]
+            x_samples: the prior samples (num_samps, ts, x_dims)
         """
         x_dims = self.dynamics_function.kernel.in_dims
         
@@ -91,19 +91,18 @@ class DTGPSSM(module):
 
         if self.dynamics_function.RFF_num_feats > 0:  # RFF prior sampling
             def step(carry, inputs):
-                x, prng_prior = carry  # (1, num_samps, x_dims)
+                x, prng_prior = carry  # (num_samps, x_dims, 1)
                 prng_state = inputs
 
-                fx = self.dynamics_function.sample_prior(prng_prior, x, jitter)  # (1, samp, x_dims)
-                
+                fx = self.dynamics_function.sample_prior(prng_prior, x, jitter)  # (samp, x_dims, 1)
                 noise = self.chol_process_noise[None, ...] @ jr.normal(prng_state, shape=(num_samps, x_dims, 1))
-                x = x + fx + noise[None, ..., 0]
+                x = x + fx + noise
 
-                return (x, prng_prior), x[0, ...]
+                return (x, prng_prior), x[..., 0]
 
             x0 = (self.p0_Lcov[None, ...] @ jr.normal(
                 prng_state, shape=(num_samps, x_dims, 1)
-            ))[None, ..., 0]  # (1, num_samps, x_dims)
+            ))  # (num_samps, x_dims, 1)
             prng_state, _ = jr.split(prng_state)
             _, x_samples = lax.scan(step, init=(x0, prng_state), xs=procnoise_keys)
             
@@ -113,7 +112,6 @@ class DTGPSSM(module):
                 prng_state = inputs
     
                 x = x[None, ..., 0]
-
 
                 qf_m, qf_v = self.dynamics_function.evaluate_conditional(
                     x, x_obs, f_obs, mean_only=False, diag_cov=True, jitter=1e-6)
@@ -139,7 +137,7 @@ class DTGPSSM(module):
                 x_samples = x_samples.at[t, ...].set(x_sample)
             #_, x_samples = lax.scan(step, init=x0, xs=procnoise_keys)
 
-        return x_samples  # (time, tr, state_dims, 1)
+        return x_samples.transpose(1, 0, 2)  # (num_samps, time, state_dims)
     
     
     def evaluate_posterior(self, ):

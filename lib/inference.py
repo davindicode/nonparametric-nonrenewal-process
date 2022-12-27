@@ -5,20 +5,18 @@ from functools import partial
 
 import equinox as eqx
 
-from .base import module
-
-
 import jax
+from jax import jit, lax, random, tree_map, value_and_grad, vmap
+
 import jax.numpy as jnp
 import jax.random as jr
-from jax import jit, lax, random, tree_map, value_and_grad, vmap
+
 from jax.numpy.linalg import cholesky
-
 from jax.scipy.linalg import cho_solve, solve_triangular
-
 
 from tqdm.autonotebook import tqdm
 
+from .base import module
 
 _log_twopi = math.log(2 * math.pi)
 
@@ -78,7 +76,6 @@ class ELBO_GPLVM(module):
         self.y = None  # no training data set
 
     ### variational inference ###
-    @partial(jit, static_argnums=(0, 4))
     def filter_smoother(
         self, learned_all_params, fixed_all_params, prng_state, num_samps
     ):

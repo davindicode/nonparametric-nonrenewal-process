@@ -1,4 +1,4 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from . import gpssm, kernels, markovian, sparse, switching
+from . import gpssm, kernels, markovian, sparse, spatiotemporal, switching

@@ -3,9 +3,10 @@ from jax import lax, vmap
 import jax.random as jr
 import jax.numpy as jnp
 
+import equinox as eqx
 
 from ..base import module
-from .base import LTI
+from .base import SSM
 from .markovian import LGSSM
 from .kernels import MarkovianKernel
 
@@ -267,12 +268,23 @@ class SwitchingLTI(SSM):
     markov_kernel_group: MarkovianKernel
     
     def __init__(self, CTHMM, markov_kernel_group, switch_transitions, site_locs, site_obs, site_Lcov, fixed_grid_locs=False):
+        # insert switch transitions
+        
         super().__init__(site_locs, site_obs, site_Lcov)
         self.CTHMM = CTHMM
         self.markov_kernel_group = markov_kernel_group
         self.switch_transitions = switch_transitions
         
         self.fixed_grid_locs = fixed_grid_locs
+        
+    def get_LDS(self):
+        H, minf, Pinf, As, Qs = self.markov_kernel.get_LDS(dt, tsteps)
+        
+        Id = jnp.eye(self.As.shape[-1])
+        Zs = jnp.zeros_like(Id)
+        As = jnp.concatenate((Id[None, ...], self.As, Id[None, ...]), axis=0)
+        Qs = jnp.concatenate((Zs[None, ...], self.Qs, Zs[None, ...]), axis=0)
+        return self.H, self.minf, self.P0, As, Qs
     
     def sample_prior(self):
         """

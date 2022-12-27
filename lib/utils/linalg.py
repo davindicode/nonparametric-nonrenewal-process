@@ -16,17 +16,7 @@ from scipy.interpolate import interp1d
 
 
 ### linear algebra ###
-def enforce_positive_diagonal(K, lower_lim=1e-6):
-    """
-    Check whether matrix K has positive diagonal elements.
-    If not, then replace the negative elements with default value 0.01
-    """
-    K_diag = jnp.diag(jnp.diag(K))
-    K = jnp.where(jnp.any(jnp.diag(K) < 0), jnp.where(K_diag < 0, lower_lim, K_diag), K)
-    return K
-
-
-def solve(P, Q):
+def solve_PSD(P, Q):
     """
     Compute P^-1 Q, where P is a PSD matrix, using the Cholesky factoristion
     """
@@ -34,7 +24,7 @@ def solve(P, Q):
     return cho_solve(Lt, Q)
 
 
-def inv(P):
+def inv_PSD(P):
     """
     Compute the inverse of a PSD matrix using the Cholesky factorisation
     """
@@ -45,6 +35,7 @@ def inv(P):
 def rotation_matrix(dt, omega):
     """
     Discrete time rotation matrix
+    
     :param dt: step size [1]
     :param omega: frequency [1]
     :return:
@@ -63,7 +54,8 @@ def solve_continuous_lyapunov(A, Q):
     """
     Solves the continuous Lyapunov equation A@X + X@A.T + Q = 0, using the vectorized form i.e
     (In  ⊗ A)vec(X) + (A ⊗ In)vec(X) = -vec(Q)
-    This returns the opposite of the scipy.linalg.solve_continuous_lyapunov solver but not sure why  (for stable systems, for unstable systems results seem completely disconnected)
+    This returns the opposite of the scipy.linalg.solve_continuous_lyapunov solver 
+    (for stable systems, for unstable systems results seem completely disconnected)
     """
     n = jnp.shape(A)[0]
     In = jnp.eye(n)
@@ -73,12 +65,14 @@ def solve_continuous_lyapunov(A, Q):
     return jnp.reshape(vecX, (n, n))
 
 
-# this one seems to match the scipy result
 def solve_discrete_lyapunov(A, Q):
     """
+    this one seems to match the scipy result
+    
     Solves the continuous Lyapunov equation A@X + X@A.T + Q = 0, using the vectorized form i.e
     (I_{n^2}  - A.T⊗A)vec(X)= vec(Q)
-    This returns the same as the scipy.linalg.solve_discrete_lyapunov solver (for stable systems, for unstable systems results seem completely disconnected)
+    This returns the same as the scipy.linalg.solve_discrete_lyapunov solver 
+    (for stable systems, for unstable systems results seem completely disconnected)
     """
     n = jnp.shape(A)[0]
     In2 = jnp.eye(n * n)
@@ -87,19 +81,6 @@ def solve_discrete_lyapunov(A, Q):
     vecX = jnp.linalg.solve(T, vecQ)
     return jnp.reshape(vecX, (n, n))
 
-
-def eigenvalues(w):
-    eigs = np.linalg.eigvals(w)
-    re = eigs.real
-    im = eigs.imag
-    return np.concatenate([re[:, None], im[:, None]], axis=1)
-
-
-def jeigenvalues(w):
-    eigs = jnp.linalg.eigvals(w)
-    re = eigs.real
-    im = eigs.imag
-    return jnp.concatenate([re[:, None], im[:, None]], axis=1)
 
 
 def get_blocks(A, num_blocks, block_size):
@@ -116,6 +97,7 @@ def get_blocks(A, num_blocks, block_size):
 def discretegrid(xy, w, nt):
     """
     Convert spatial observations to a discrete intensity grid
+    
     :param xy: observed spatial locations as a two-column vector
     :param w: observation window, i.e. discrete grid to be mapped to, [xmin xmax ymin ymax]
     :param nt: two-element vector defining number of bins in both directions

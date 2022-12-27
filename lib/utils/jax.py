@@ -46,13 +46,17 @@ def _safe_sqrt(x):
     return jnp.sqrt(jnp.maximum(x, 1e-36))
 
 
+def constrain_diagonal(K, lower_lim=1e-6):
+    """
+    Enforce matrix K has diagonal elements with lower limit
+    """
+    K_diag = jnp.diag(jnp.diag(K))
+    K = jnp.where(jnp.any(jnp.diag(K) < 0), jnp.where(K_diag < 0, lower_lim, K_diag), K)
+    return K
+
+
 
 ### Monte Carlo ###
-def sample_gaussian_noise(key, mean, Lcov):
-    gaussian_sample = mean + Lcov @ random.normal(key, shape=mean.shape)
-    return gaussian_sample
-
-
 def mc_sample(dim, key, approx_points):
     z = random.normal(key, shape=(dim, approx_points))
     w = np.ones((approx_points,)) / approx_points

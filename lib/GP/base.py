@@ -8,7 +8,6 @@ from jax.numpy.linalg import cholesky
 from jax.scipy.linalg import solve_triangular
 
 from ..base import module
-from ..utils.jax import sample_gaussian_noise
 
 from .kernels import Kernel, MarkovianKernel
 from .linalg import mvn_conditional
@@ -46,29 +45,29 @@ class GP(module):
 
         return model
         
-    
     def evaluate_conditional(self, x, x_obs, f_obs, mean_only, diag_cov, jitter):
         """
         Compute the conditional distribution
         
-        :param jnp.array x: shape (time, num_samps, in_dims)
-        :param jnp.array x_obs: shape (out_dims, obs_pts, in_dims)
+        :param jnp.array x: shape (num_samps, out_dims, time, in_dims)
+        :param jnp.array x_obs: shape (num_samps, out_dims, obs_pts, in_dims)
+        :param jnp.array f_obs: shape (num_samps, out_dims, obs_pts, 1)
         :return:
-            conditional mean of shape (out_dims, num_samps, ts, 1)
-            conditional covariance of shape (out_dims, num_samps, ts, 1)
+            conditional mean of shape (num_samps, out_dims, ts, 1)
+            conditional covariance of shape (num_samps, out_dims, ts, 1)
         """
         cond_out = vmap(
             mvn_conditional, 
-            (2, None, None, None, None, None, None), 
-            1 if mean_only else (1, 1),
+            (0, 0, 0, None, None, None, None), 
+            0 if mean_only else (0, 0),
         )(
-            x[None, ...], x_obs, f_obs, self.kernel.K, mean_only, diag_cov, jitter
+            x, x_obs, f_obs, self.kernel.K, mean_only, diag_cov, jitter
         )
         
         if mean_only:
-            return cond_out + self.mean[:, None, None, None]
+            return cond_out + self.mean[None, :, None, None]
         else:
-            return cond_out[0] + self.mean[:, None, None, None], cond_out[1]
+            return cond_out[0] + self.mean[None, :, None, None], cond_out[1]
         
         
     def sample_prior(self, prng_state, x, jitter):
@@ -76,22 +75,22 @@ class GP(module):
         Prior distribution p(f(x)) = N(0, K_xx)
         Can use approx_points as number of points
 
-        :param jnp.array x: shape (time, num_samps, out_dims, in_dims)
+        :param jnp.array x: shape (num_samps, out_dims, time, in_dims)
         :return:
-            sample of shape (time, num_samps, out_dims)
+            sample of shape (num_samps, out_dims, time)
         """
         in_dims = self.kernel.in_dims
         out_dims = self.kernel.out_dims
         
-        if x.ndim == 3:
-            x = x[..., None, :]  # (time, num_samps, out_dims, in_dims)
-        ts, num_samps = x.shape[:2]
+        #if x.ndim == 3:
+        #    x = x[..., None, :]  # (time, num_samps, out_dims, in_dims)
+        num_samps, ts = x.shape[0], x.shape[2]
 
         if self.RFF_num_feats > 0:  # random Fourier features
             prng_keys = jr.split(prng_state, 2)
             ks, amplitude = self.kernel.sample_spectrum(
                 prng_keys[0], num_samps, self.RFF_num_feats
-            )  # (num_samps, out_dims, feats, in_dims)
+            )  # (num_samps, out_dims, feats, in_dims), (out_dims,)
             phi = (
                 2
                 * jnp.pi
@@ -99,26 +98,22 @@ class GP(module):
                     prng_keys[1], shape=(num_samps, out_dims, self.RFF_num_feats)
                 )
             )
-
-            samples = self.mean[None, None, :] + amplitude * jnp.sqrt(
-                2.0 / self.RFF_num_feats
-            ) * (jnp.cos((ks[None, ...] * x[..., None, :]).sum(-1) + phi)).sum(
-                -1
-            )  # (time, num_samps, out_dims)
+            cos_terms = jnp.cos(
+                (ks[..., None, :, :] * x[..., None, :]).sum(-1) + phi[..., None, :]
+            )  # (num_samps, out_dims, time, feats)
+            amps = amplitude[None, :, None] * jnp.sqrt(2.0 / self.RFF_num_feats)  # (num_samps, out_dims, feats)
+            samples = self.mean[None, :, None] + amps * cos_terms.sum(-1)  # (num_samps, out_dims, time)
 
         else:
-            Kxx = vmap(self.kernel.K, (1, None, None), 1)(
-                x.transpose(2, 1, 0, 3), None, False
-            )  # (out_dims, num_samps, time, time)
-            eps_I = jnp.broadcast_to(jitter * jnp.eye(ts), (out_dims, 1, ts, ts))
-            cov = Kxx + eps_I
-            mean = jnp.broadcast_to(
-                self.mean[:, None, None, None], (out_dims, num_samps, ts, 1)
-            )
-            samples = sample_gaussian_noise(prng_state, mean, cov)[..., 0].transpose(
-                2, 1, 0
-            )
-
+            Kxx = vmap(self.kernel.K, (0, None, None), 0)(
+                x, None, False
+            )  # (num_samps, out_dims, time, time)
+            eps_I = jitter * jnp.eye(ts)
+            Lcov = cholesky(Kxx + eps_I)
+            mean = self.mean[None, :, None, None] # match (num_samps, out_dims, ts, 1)
+            samples = mean + Lcov @ jr.normal(prng_state, shape=(num_samps, out_dims, ts, 1))
+            samples = samples[..., 0]
+            
         return samples
     
     

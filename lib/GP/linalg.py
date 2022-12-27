@@ -5,7 +5,7 @@ from jax import lax, tree_map, vmap
 from jax.numpy.linalg import cholesky
 from jax.scipy.linalg import block_diag, cho_solve, solve_triangular
 
-from ..utils.linalg import solve
+from ..utils.linalg import solve_PSD
 
 _log_twopi = math.log(2 * math.pi)
 
@@ -40,7 +40,7 @@ def kalman_filter(
         predict_cov = HP @ H.T
 
         S = predict_cov + pseudo_Lcov @ pseudo_Lcov.T
-        K = solve(S, HP).T
+        K = solve_PSD(S, HP).T
         eta = pseudo_mean - predict_mean
 
         f_m = m_ + K @ eta
@@ -87,7 +87,7 @@ def rauch_tung_striebel_smoother(
         A_f_P = A @ f_P
         predict_P = A_f_P @ A.T + Q
 
-        G = solve(predict_P, A_f_P).T  # G = F * A' * P^{-1} = (P^{-1} * A * F)'
+        G = solve_PSD(predict_P, A_f_P).T  # G = F * A' * P^{-1} = (P^{-1} * A * F)'
 
         s_m = f_m + G @ (s_m - predict_m)
         s_P = f_P + G @ (s_P - predict_P) @ G.T
@@ -241,7 +241,7 @@ def fixed_interval_smoothing(H, m0, P0, As, Qs, site_obs, site_Lcov, compute_log
     
     
 def evaluate_LTI_posterior(
-    H, minf, Pinf, As, Qs, site_obs, site_Lcov, interpolate_sites, mean_only, compute_KL, jitter
+    H, minf, Pinf, As, Qs, site_obs, site_Lcov, ind_eval, A_fwd, A_bwd, mean_only, compute_KL, jitter
 ):
     """
     predict at test locations X, which may includes training points
@@ -254,7 +254,7 @@ def evaluate_LTI_posterior(
         covariances of shape (time, out, out)
     """    
     minf = minf[:, None]
-    interpolate = (interpolate_sites is not None)
+    interpolate = (ind_eval is not None)
 
     smoother_means, smoother_covs, gains, logZ = fixed_interval_smoothing(
         H, minf, Pinf, As, Qs, site_obs, site_Lcov, compute_KL, interpolate)
@@ -262,7 +262,7 @@ def evaluate_LTI_posterior(
     if compute_KL:  # compute using pseudo likelihood
         post_means = H @ smoother_means
         post_covs = H @ smoother_covs @ H.T
-    elif interpolate_sites is None:  # evaluate at observed locs
+    elif interpolate is False:  # evaluate at observed locs
         post_means = H @ smoother_means
         post_covs = None if mean_only else H @ smoother_covs @ H.T
         
@@ -275,9 +275,7 @@ def evaluate_LTI_posterior(
     else:
         KL = 0.0
 
-    if interpolate:  # predict the state distribution at the test time steps
-        ind_eval, A_fwd, A_bwd = interpolate_sites
-        
+    if interpolate:  # predict the state distribution at the test time steps      
         predict_between_sites_vmap = vmap(
             predict_between_sites,
             (0, 0, 0, None, None, None, None, None, None),
@@ -363,69 +361,69 @@ def evaluate_qsparse_posterior(
     mean_only, diag_cov, compute_KL, compute_aux, jitter
 ):
     """
-    :param jnp.array x: input of shape (time, num_samps, in_dims)
+    :param jnp.ndarray induc_locs: inducing point locations (out_dims, num_induc, in_dims)
+    :param jnp.array x: input of shape (num_samps, out_dims or 1, time, in_dims)
     :returns:
-        means of shape (out_dims, num_samps, time, 1)
-        covariances of shape (out_dims, num_samps, time, time)
+        means of shape (num_samps, out_dims, time, 1)
+        covariances of shape (num_samps, out_dims, time, time)
     """
     in_dims = kernel.in_dims
     out_dims = kernel.out_dims
-    ts, num_samps = x.shape[:2]
-    
+    num_samps, ts = x.shape[0], x.shape[2]
     num_induc = induc_locs.shape[1]
-    eps_I = jitter * jnp.eye(num_induc)[None, ...]
+    
+    eps_I = jitter * jnp.eye(num_induc)
 
     Kzz = kernel.K(induc_locs, None, False)
     chol_Kzz = cholesky(Kzz + eps_I)  # (out_dims, num_induc, num_induc)
     
-    Kzx = vmap(kernel.K, (None, 2, None), 1)(
-        induc_locs, x[None, ...], False
-    )  # (out_dims, num_samps, num_induc, time)
+    Kzx = vmap(kernel.K, (None, 0, None), 2)(
+        induc_locs, x, False
+    )  # (out_dims, num_induc, num_samps, time)
+    Kzx = Kzx.reshape(out_dims, num_induc, -1)
 
     if whitened:
         v = u_mu
         L = u_Lcov
         W = solve_triangular(
-            chol_Kzz, Kzx.transpose(0, 2, 1, 3).reshape(out_dims, num_induc, -1), lower=True
-        ).transpose(0, 2, 1).reshape(out_dims, num_samps, -1, num_induc)
+            chol_Kzz, Kzx, lower=True
+        )
         
     else:
-        tpl = (u_mu, Kzx.transpose(0, 2, 1, 3).reshape(out_dims, num_induc, -1))
+        tpl = (u_mu, Kzx)
         if mean_only is False or compute_KL:
             tpl += (u_Lcov,)
             
-        stacked = jnp.concatenate(tpl, axis=-1)  # (out_dims, num_induc, 1 + num_induc + num_samps*ts)
+        stacked = jnp.concatenate(tpl, axis=-1)  # (out_dims, num_induc, 1 + num_samps*ts + num_induc)
         Linv_stacked = solve_triangular(chol_Kzz, stacked, lower=True)
         
         v = Linv_stacked[..., :1]
-        W = Linv_stacked[..., 1:-num_induc].transpose(0, 2, 1).reshape(
-            out_dims, num_samps, -1, num_induc, 
-        )
+        W = Linv_stacked[..., 1:-num_induc]
         if mean_only is False or compute_KL:
             L = Linv_stacked[..., -num_induc:]
     
+    W = W.reshape(out_dims, num_induc, num_samps, ts).transpose(2, 0, 3, 1)
     post_means = (
-        W @ v[:, None, ...].repeat(num_samps, axis=1) + mean[:, None, None, None]
-    )  # (out_dims, num_samps, time, 1)
+        W @ v[None, ...].repeat(num_samps, axis=0) + mean[None, :, None, None]
+    )  # (num_samps, out_dims, time, 1)
 
     if mean_only is False:
-        WL = W @ L[:, None, ...].repeat(num_samps, axis=1)
+        WL = W @ L[None, ...].repeat(num_samps, axis=0)
         
-        Kxx = vmap(kernel.K, (2, None, None), 1)(
-            x[None, ...], None, diag_cov, 
-        )  # (out_dims, num_samps, time, time)
+        Kxx = vmap(kernel.K, (0, None, None), 0)(
+            x, None, diag_cov, 
+        )  # (num_samps, out_dims, time, time or 1)
         
         if diag_cov:
             post_covs = (
-                Kxx[..., jnp.arange(ts), jnp.arange(ts)][..., None] + \
-                (WL**2 - W**2).sum(-1, keepdims=True)
-            )  # (out_dims, num_samps, time, time)
+                Kxx + (WL**2 - W**2).sum(-1, keepdims=True)
+            )  # (num_samps, out_dims, time, 1)
             
         else:
             post_covs = (
                 Kxx - W @ W.transpose(0, 1, 3, 2) + \
                 WL @ WL.transpose(0, 1, 3, 2)
-            )  # (out_dims, num_samps, time, 1)
+            )  # (num_samps, out_dims, time, 1)
             
     else:
         post_covs = None
@@ -453,18 +451,18 @@ def evaluate_tsparse_posterior(
     mean_only, diag_cov, compute_KL, compute_aux, jitter
 ):
     """
-    :param jnp.array x: input of shape (time, num_samps, in_dims)
+    :param jnp.array x: input of shape (num_samps, out_dims or 1, time, in_dims)
     :returns:
         means of shape (out_dims, num_samps, time, 1)
         covariances of shape (out_dims, num_samps, time, time)
     """
     in_dims = kernel.in_dims
     out_dims = kernel.out_dims
-    ts, num_samps = x.shape[:2]
-
+    num_samps, ts = x.shape[0], x.shape[2]
     num_induc = induc_locs.shape[1]
-    eps_I = jitter * jnp.eye(num_induc)[None, ...]
-
+    
+    eps_I = jitter * jnp.eye(num_induc)
+    
     Kzz = kernel.K(induc_locs, None, False)
     if mean_only is False or compute_KL:
         chol_Kzz = cholesky(Kzz + eps_I)  # (out_dims, num_induc, num_induc)
@@ -472,38 +470,38 @@ def evaluate_tsparse_posterior(
     induc_cov = chol_Lambda_2 @ chol_Lambda_2.transpose(0, 2, 1)
     chol_R = cholesky(Kzz + induc_cov)  # (out_dims, num_induc, num_induc)
 
-    Kzx = vmap(kernel.K, (None, 2, None), 1)(
-        induc_locs, x[None, ...], False
-    )  # (out_dims, num_samps, num_induc, time)
-    Kxz = Kzx.transpose(0, 1, 3, 2)  # (out_dims, num_samps, time, num_induc)
+    Kzx = vmap(kernel.K, (None, 0, None), 0)(
+        induc_locs, x, False
+    )  # (num_samps, out_dims, num_induc, time)
+    Kxz = Kzx.transpose(0, 1, 3, 2)  # (num_samps, out_dims, time, num_induc)
 
     Kxz_Rinv = cho_solve(
-        (chol_R[:, None, ...].repeat(num_samps, axis=1), True), Kzx
-    ).transpose(0, 1, 3, 2)  # (out_dims, num_samps, time, num_induc)      
+        (chol_R[None, ...].repeat(num_samps, axis=0), True), Kzx
+    ).transpose(0, 1, 3, 2)  # (num_samps, out_dims, time, num_induc)      
     
     post_means = (
-        Kxz_Rinv @ lambda_1[:, None, ...].repeat(num_samps, axis=1)
-        + mean[:, None, None, None]
-    )  # (out_dims, num_samps, time, 1)
+        Kxz_Rinv @ lambda_1[None, ...].repeat(num_samps, axis=0)
+        + mean[None, :, None, None]
+    )  # (num_samps, out_dims, time, 1)
 
     if mean_only is False:
-        Kxx = vmap(kernel.K, (2, None, None), 1)(
-            x[None, ...], None, diag_cov
-        )  # (out_dims, num_samps, time, time)
+        Kxx = vmap(kernel.K, (0, None, None), 0)(
+            x, None, diag_cov
+        )  # (num_samps, out_dims, time, time or 1)
         
         W = solve_triangular(
-            chol_Kzz, Kzx.transpose(0, 2, 1, 3).reshape(out_dims, num_induc, -1), lower=True
-        ).transpose(0, 2, 1).reshape(out_dims, num_samps, -1, num_induc)
+            chol_Kzz, Kzx.transpose(1, 2, 0, 3).reshape(out_dims, num_induc, -1), lower=True
+        ).reshape(out_dims, num_induc, num_samps, ts).transpose(2, 0, 3, 1)
 
         if diag_cov:
             post_covs = (
                 Kxx - (W**2).sum(-1, keepdims=True) + \
                 (Kxz_Rinv * Kxz).sum(-1, keepdims=True)
-            )  # (out_dims, num_samps, time, 1)
+            )  # (num_samps, out_dims, time, 1)
         else:
             post_covs = (
                 Kxx - W @ W.transpose(0, 1, 3, 2) + Kxz_Rinv @ Kzx
-            )  # (out_dims, num_samps, time, time)
+            )  # (num_samps, out_dims, time, time)
     else:
         post_covs = None
 
