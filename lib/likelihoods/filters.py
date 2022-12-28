@@ -1,10 +1,9 @@
 from numbers import Number
 
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn.parameter import Parameter
+
+import jax
+import jax.numpy as jnp
 
 from tqdm.autonotebook import tqdm
 
@@ -24,8 +23,7 @@ class sigmoid_refractory(FilterLikelihood):
         tau,
         beta,
         timesteps,
-        learnable=[True, True, True],
-        tensor_type=torch.float,
+        #tensor_type=torch.float,
     ):
         """ """
         if a.shape != tau.shape or a.shape != beta.shape:
@@ -41,25 +39,16 @@ class sigmoid_refractory(FilterLikelihood):
         conv_groups = a.shape[1] // a.shape[2]
         super().__init__(timesteps, conv_groups=conv_groups, tensor_type=tensor_type)
 
-        if learnable[0]:
-            self.register_parameter("a", Parameter(a.type(self.tensor_type)))
-        else:
-            self.register_buffer("a", a.type(self.tensor_type))
-        if learnable[1]:
-            self.register_parameter("tau", Parameter(tau.type(self.tensor_type)))
-        else:
-            self.register_buffer("tau", tau.type(self.tensor_type))
-        if learnable[2]:
-            self.register_parameter("beta", Parameter(beta.type(self.tensor_type)))
-        else:
-            self.register_buffer("beta", beta.type(self.tensor_type))
-
+        self.a = a
+        self.tau = tau
+        self.beta = beta
+        
     def compute_filter(self):
         """
         :returns: filter of shape (post, pre, timesteps)
         :rtype: torch.tensor
         """
-        t_ = torch.arange(self.filter_len, device=self.a.device, dtype=self.tensor_type)
+        t_ = jnp.arange(self.filter_len, device=self.a.device, dtype=self.tensor_type)
         t = self.tau - self.filter_len + t_[None, None, :]
         return self.a * torch.sigmoid(self.beta * t)  # (post, pre, timesteps)
 

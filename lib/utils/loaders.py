@@ -39,7 +39,7 @@ def ISILoader(DataLoader):
     """
     Loading inter-spike intervals of some point process time series
     """
-    def __init__(self, obs_inputs):
+    def __init__(self, obs_inputs, tensor_type, allow_duplicate, dequantize):
         super().__init__()
         
         

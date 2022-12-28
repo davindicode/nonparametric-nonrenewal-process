@@ -227,20 +227,16 @@ class MarkovianKernel(StationaryKernel):
         F, _, _ = self.state_dynamics()
         H, _, P_inf = self.state_output()
         
-        return H @ P_inf @ expm(F.T * tau) @ H.T
+        #return H @ P_inf @ expm(F.T * tau) @ H.T
 
-#     def compute_kernel(delta_t, F, Pinf, H):
-#         """
-#         delta_t is positive and increasing
-#         """
-#         A = vmap(expm)(F[None, ...] * delta_t[:, None, None])
-#         At = vmap(expm)(-F.T[None, ...] * delta_t[:, None, None])
-#         P = (A[..., None] * Pinf[None, None, ...]).sum(-2)
-#         P_ = (Pinf[None, ..., None] * At[:, None, ...]).sum(-2)
+        A = vmap(expm)(F[None, ...] * delta_t[:, None, None])
+        At = vmap(expm)(-F.T[None, ...] * delta_t[:, None, None])
+        P = (A[..., None] * Pinf[None, None, ...]).sum(-2)
+        P_ = (Pinf[None, ..., None] * At[:, None, ...]).sum(-2)
 
-#         delta_t = np.broadcast_to(delta_t[:, None, None], P.shape)
-#         Kt = H[None, ...] @ jnp.where(delta_t > 0.0, P, P_) @ H.T[None, ...]
-#         return Kt
+        delta_t = np.broadcast_to(delta_t[:, None, None], P.shape)
+        Kt = H[None, ...] @ jnp.where(delta_t > 0.0, P, P_) @ H.T[None, ...]
+        return Kt
 
 
     
@@ -1085,7 +1081,7 @@ class GroupMarkovian(MarkovianKernel):
 class StackMarkovian(MarkovianKernel):
     """
     A stack of independent GP LDSs
-    This class stacks the state space models such that each component is fed to the likelihood.
+    This class stacks the state space models, each process increasing the readout dimensions
     """
     
     kernels: List[MarkovianKernel]

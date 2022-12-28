@@ -7,6 +7,7 @@ from .base import module
 class FactorizedLikelihood(module):
     """
     The likelihood model class, p(yₙ|fₙ) factorized across time points
+    fₙ can be a vector (multiple parameters per observation)
 
     variational_expectation() computes all E_q(f) related quantities and its derivatives for NGD
     We allow multiple f (vector fₙ) to correspond to a single yₙ as in heteroscedastic likelihoods
@@ -15,12 +16,12 @@ class FactorizedLikelihood(module):
     to certain likelihood classes.
     """
 
-    def __init__(self, out_dims, f_dims, hyp):
+    def __init__(self, obs_dims, f_dims):
         """
         all hyperparameters stored are pre-transformation
         :param hyp: (hyper)parameters of the likelihood model
         """
-        self.hyp = hyp
+        super().__init__()
         self.f_dims = f_dims
         self.out_dims = out_dims
         self.num_f_per_out = self.f_dims // self.out_dims
@@ -196,9 +197,9 @@ class RenewalLikelihood(module):
     """
 
     def __init__(
-        self, tbin, neurons, inv_link, tensor_type, allow_duplicate, dequantize
+        self, tbin, neurons, inv_link,
     ):
-        super().__init__(tbin, neurons, neurons, inv_link, tensor_type)
+        super().__init__()
         self.allow_duplicate = allow_duplicate
         self.dequant = dequantize
 

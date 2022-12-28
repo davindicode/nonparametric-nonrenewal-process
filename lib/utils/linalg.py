@@ -1,7 +1,6 @@
 # from sklearn.cross_decomposition import CCA
-
-
 import itertools
+import numpy as np
 
 import jax.numpy as jnp
 
@@ -10,9 +9,8 @@ from jax import random, tree_map, vmap
 from jax.numpy.linalg import cholesky
 from jax.scipy.linalg import cho_factor, cho_solve, expm
 
-from jax.scipy.special import erfc
 from numpy.polynomial.hermite import hermgauss
-from scipy.interpolate import interp1d
+from numpy.polynomial.legendre import leggauss
 
 
 ### linear algebra ###
@@ -134,6 +132,16 @@ def gauss_hermite(dim, num_quad_pts):
     sigma_pts = np.array(list(itertools.product(*(gh_x,) * dim)))  # H**DxD
     weights = np.prod(np.array(list(itertools.product(*(gh_w,) * dim))), 1)  # H**D
 
-    sigma_pts = jnp.sqrt(2.0) * sigma_pts.T
-    weights = weights.T * jnp.pi ** (-dim / 2.0)  # scale weights by 1/√π
+    sigma_pts = np.sqrt(2.0) * sigma_pts
+    weights = weights * np.pi ** (-dim / 2.0)  # scale weights by 1/√π
+    return sigma_pts, weights
+
+
+def gauss_legendre(dim, num_quad_pts):
+    """
+    Gauss-Legendre
+    """
+    gl_x, gl_w = leggauss(num_quad_pts)
+    sigma_pts = np.array(list(itertools.product(*(gl_x,) * dim)))  # H**DxD
+    weights = np.prod(np.array(list(itertools.product(*(gl_w,) * dim))), 1)  # H**D
     return sigma_pts, weights

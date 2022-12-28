@@ -47,8 +47,6 @@ def t_from_q_svgp_moments(Kzz, u_mu, u_Lcov):
     
     :param jnp.ndarray u_Lcov: cholesky factor of covariance (out_dims, num_induc, num_induc)
     """
-    Kzz = self.kernel.K(self.induc_locs, None, False)
-
     lambda_1 = Kzz @ cho_solve((u_Lcov, True), u_mu)
     chol_Lambda_2 = Kzz @ cho_solve((u_Lcov, True), Kzz) - Kzz
     return lambda_1, chol_Lambda_2
@@ -56,24 +54,13 @@ def t_from_q_svgp_moments(Kzz, u_mu, u_Lcov):
 
 
 
-
-class qSVGP(GP):
+class SparseGP(GP):
     """
-    References:
-    1. Gaussian Processes for Big Data, James Hensman, Nicolo Fusi, Neil D. Lawrence
+    GP with sparse approximation to the posterior
     """
     induc_locs: jnp.ndarray
         
-    # variational parameters
-    u_mu: jnp.ndarray
-    u_Lcov: jnp.ndarray
-    whitened: bool
-
-    def __init__(self, kernel, mean, induc_locs, u_mu, u_Lcov, RFF_num_feats=0, whitened=False):
-        """
-        :param induc_locs: inducing point locations z, array of shape (out_dims, num_induc, in_dims)
-        :param variance: The observation noise variance, σ²
-        """
+    def __init__(self, kernel, mean, RFF_num_feats, induc_locs):
         if induc_locs.shape[2] != kernel.in_dims:
             raise ValueError(
                 "Dimensions of inducing locations do not match kernel input dimensions"
@@ -82,51 +69,9 @@ class qSVGP(GP):
             raise ValueError(
                 "Dimensions of inducing locations do not match kernel output dimensions"
             )
-
         super().__init__(kernel, mean, RFF_num_feats)
         self.induc_locs = induc_locs  # (num_induc, out_dims, in_dims)
         
-        self.u_mu = u_mu
-        self.u_Lcov = u_Lcov
-        self.whitened = whitened
-        
-    def apply_constraints(self):
-        """
-        PSD constraint
-        """
-        model = super().apply_constraints()
-        
-        def update(Lcov):
-            epdfunc = lambda x: constrain_diagonal(x, lower_lim=1e-2)
-            Lcov = vmap(epdfunc)(jnp.tril(Lcov))
-            #Lcov = jnp.tril(Lcov) if self.spatial_MF else Lcov
-            return Lcov
-
-        model = eqx.tree_at(
-            lambda tree: tree.u_Lcov,
-            model,
-            replace_fn=update,
-        )
-
-        return model
-    
-    def evaluate_posterior(
-        self, x, mean_only, diag_cov, compute_KL, compute_aux, jitter
-    ):
-        """
-        :param jnp.array x: input of shape (num_samps, out_dims or 1, time, in_dims)
-        :returns:
-            means of shape (out_dims, num_samps, time, 1)
-            covariances of shape (out_dims, num_samps, time, time)
-        """
-        post_means, post_covs, KL, aux = evaluate_qsparse_posterior(
-            self.kernel, self.induc_locs, self.mean, x, 
-            self.u_mu, self.u_Lcov, self.whitened, 
-            mean_only, diag_cov, compute_KL, compute_aux, jitter
-        )
-
-        return post_means, post_covs, KL, aux
-    
     def sample_posterior(self, prng_state, x, jitter, compute_KL):
         """
         Sample from posterior q(f|x)
@@ -182,10 +127,72 @@ class qSVGP(GP):
             samples = samples[..., 0]
 
         return samples, KL
+
+
+
+
+class qSVGP(SparseGP):
+    """
+    References:
+    1. Gaussian Processes for Big Data, James Hensman, Nicolo Fusi, Neil D. Lawrence
+    """    
+    # variational parameters
+    u_mu: jnp.ndarray
+    u_Lcov: jnp.ndarray
+    whitened: bool
+
+    def __init__(self, kernel, mean, induc_locs, u_mu, u_Lcov, RFF_num_feats=0, whitened=False):
+        """
+        :param induc_locs: inducing point locations z, array of shape (out_dims, num_induc, in_dims)
+        :param variance: The observation noise variance, σ²
+        """
+        super().__init__(kernel, mean, RFF_num_feats, induc_locs)
+        self.u_mu = u_mu
+        self.u_Lcov = u_Lcov
+        self.whitened = whitened
+        
+    def apply_constraints(self):
+        """
+        PSD constraint
+        """
+        model = super().apply_constraints()
+        
+        def update(Lcov):
+            epdfunc = lambda x: constrain_diagonal(x, lower_lim=1e-2)
+            Lcov = vmap(epdfunc)(jnp.tril(Lcov))
+            #Lcov = jnp.tril(Lcov) if self.spatial_MF else Lcov
+            return Lcov
+
+        model = eqx.tree_at(
+            lambda tree: tree.u_Lcov,
+            model,
+            replace_fn=update,
+        )
+
+        return model
+    
+    def evaluate_posterior(
+        self, x, mean_only, diag_cov, compute_KL, compute_aux, jitter
+    ):
+        """
+        :param jnp.array x: input of shape (num_samps, out_dims or 1, time, in_dims)
+        :returns:
+            means of shape (out_dims, num_samps, time, 1)
+            covariances of shape (out_dims, num_samps, time, time)
+        """
+        post_means, post_covs, KL, aux = evaluate_qsparse_posterior(
+            self.kernel, self.induc_locs, self.mean, x, 
+            self.u_mu, self.u_Lcov, self.whitened, 
+            mean_only, diag_cov, compute_KL, compute_aux, jitter
+        )
+
+        return post_means, post_covs, KL, aux
+    
+    
     
 
 
-class tSVGP(GP):
+class tSVGP(SparseGP):
     """
     Sparse variational Gaussian process
 
@@ -198,8 +205,6 @@ class tSVGP(GP):
     References:
         [1] site-based Sparse Variational Gaussian Processes
     """
-    induc_locs: jnp.ndarray
-        
     # variational parameters
     lambda_1: jnp.ndarray
     chol_Lambda_2: jnp.ndarray
@@ -209,18 +214,7 @@ class tSVGP(GP):
         :param induc_locs: inducing point locations z, array of shape (out_dims, num_induc, in_dims)
         :param variance: The observation noise variance, σ²
         """
-        if induc_locs.shape[2] != kernel.in_dims:
-            raise ValueError(
-                "Dimensions of inducing locations do not match kernel input dimensions"
-            )
-        if induc_locs.shape[0] != kernel.out_dims:
-            raise ValueError(
-                "Dimensions of inducing locations do not match kernel output dimensions"
-            )
-
-        super().__init__(kernel, mean, RFF_num_feats)
-        self.induc_locs = induc_locs  # (num_induc, out_dims, in_dims)
-
+        super().__init__(kernel, mean, RFF_num_feats, induc_locs)
         self.lambda_1 = lambda_1
         self.chol_Lambda_2 = chol_Lambda_2
 
@@ -260,58 +254,58 @@ class tSVGP(GP):
 
         return post_means, post_covs, KL, aux
 
-    def sample_posterior(self, prng_state, x, jitter, compute_KL):
-        """
-        Sample from posterior q(f|x)
+#     def sample_posterior(self, prng_state, x, jitter, compute_KL):
+#         """
+#         Sample from posterior q(f|x)
 
-        :param jnp.array x: input of shape (num_samps, out_dims or 1, time, in_dims)
-        :return:
-            sample of shape (time, num_samps, out_dims)
-        """
-        num_samps, ts = x.shape[0], x.shape[2]
-        in_dims = self.kernel.in_dims
-        out_dims = self.kernel.out_dims
-        num_induc = self.induc_locs.shape[1]
+#         :param jnp.array x: input of shape (num_samps, out_dims or 1, time, in_dims)
+#         :return:
+#             sample of shape (time, num_samps, out_dims)
+#         """
+#         num_samps, ts = x.shape[0], x.shape[2]
+#         in_dims = self.kernel.in_dims
+#         out_dims = self.kernel.out_dims
+#         num_induc = self.induc_locs.shape[1]
         
-        if self.RFF_num_feats > 0:
-            post_means, _, KL, aux = self.evaluate_posterior(
-                x, True, False, compute_KL, True, jitter
-            )
-            Kxz_Rinv, = aux
+#         if self.RFF_num_feats > 0:
+#             post_means, _, KL, aux = self.evaluate_posterior(
+#                 x, True, False, compute_KL, True, jitter
+#             )
+#             Kxz_Rinv, = aux
 
-            prng_keys = jr.split(prng_state, 2)
+#             prng_keys = jr.split(prng_state, 2)
 
-            x_aug = jnp.concatenate(
-                (
-                    jnp.broadcast_to(x, (num_samps, out_dims, ts, in_dims)),
-                    self.induc_locs[None, ...].repeat(num_samps, axis=0),
-                ),
-                axis=2,
-            )  # (num_samps, out_dims, num_locs, in_dims)
+#             x_aug = jnp.concatenate(
+#                 (
+#                     jnp.broadcast_to(x, (num_samps, out_dims, ts, in_dims)),
+#                     self.induc_locs[None, ...].repeat(num_samps, axis=0),
+#                 ),
+#                 axis=2,
+#             )  # (num_samps, out_dims, num_locs, in_dims)
             
-            prior_samps = self.sample_prior(prng_keys[0], x_aug, jitter)  # (num_samps, out_dims, num_locs)
-            prior_samps_x, prior_samps_z = prior_samps[..., :ts], prior_samps[..., ts:]
+#             prior_samps = self.sample_prior(prng_keys[0], x_aug, jitter)  # (num_samps, out_dims, num_locs)
+#             prior_samps_x, prior_samps_z = prior_samps[..., :ts], prior_samps[..., ts:]
 
-            Ln = self.chol_Lambda_2[None, ...].repeat(num_samps, axis=0)
-            noise = solve_triangular(
-                Ln, jr.normal(prng_keys[1], shape=(num_samps, out_dims, num_induc, 1)), lower=True)
+#             Ln = self.chol_Lambda_2[None, ...].repeat(num_samps, axis=0)
+#             noise = solve_triangular(
+#                 Ln, jr.normal(prng_keys[1], shape=(num_samps, out_dims, num_induc, 1)), lower=True)
             
-            prior_samps_z = prior_samps_z[..., None]
-            smoothed_samps = Kxz_Rinv @ (prior_samps_z + noise)
-            smoothed_samps = smoothed_samps[..., 0]
-            post_means = post_means[..., 0]
+#             prior_samps_z = prior_samps_z[..., None]
+#             smoothed_samps = Kxz_Rinv @ (prior_samps_z + noise)
+#             smoothed_samps = smoothed_samps[..., 0]
+#             post_means = post_means[..., 0]
 
-            # Matheron's rule pathwise samplig
-            samples = prior_samps_x + post_means - smoothed_samps
+#             # Matheron's rule pathwise samplig
+#             samples = prior_samps_x + post_means - smoothed_samps
 
-        else:
-            post_means, post_covs, KL, _ = self.evaluate_posterior(
-                x, False, False, compute_KL, False, jitter
-            )
-            eps_I = jitter * jnp.eye(post_means.shape[-2])
-            post_Lcovs = cholesky(post_covs + eps_I)
+#         else:
+#             post_means, post_covs, KL, _ = self.evaluate_posterior(
+#                 x, False, False, compute_KL, False, jitter
+#             )
+#             eps_I = jitter * jnp.eye(post_means.shape[-2])
+#             post_Lcovs = cholesky(post_covs + eps_I)
             
-            samples = post_means + post_Lcovs @ jr.normal(prng_state, shape=post_means.shape)
-            samples = samples[..., 0]
+#             samples = post_means + post_Lcovs @ jr.normal(prng_state, shape=post_means.shape)
+#             samples = samples[..., 0]
 
-        return samples, KL
+#         return samples, KL

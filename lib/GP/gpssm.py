@@ -86,23 +86,24 @@ class DTGPSSM(module):
         eps_I = jitter * jnp.eye(x_dims)
 
         prng_states = jr.split(prng_state, 1 + timesteps)  # (num_samps, 2)
-        
         prng_state, procnoise_keys = prng_states[0], prng_states[1:]
 
         if self.dynamics_function.RFF_num_feats > 0:  # RFF prior sampling
             def step(carry, inputs):
-                x, prng_prior = carry  # (num_samps, x_dims, 1)
+                x, prng_prior = carry  # (num_samps, x_dims)
                 prng_state = inputs
 
-                fx = self.dynamics_function.sample_prior(prng_prior, x, jitter)  # (samp, x_dims, 1)
-                noise = self.chol_process_noise[None, ...] @ jr.normal(prng_state, shape=(num_samps, x_dims, 1))
-                x = x + fx + noise
+                fx = self.dynamics_function.sample_prior(
+                    prng_prior, x[:, None, None, :], jitter)  # (samp, x_dims, 1)
+                noise = self.chol_process_noise[None, ...] @ jr.normal(
+                    prng_state, shape=(num_samps, x_dims, 1))
+                x = x + fx[..., 0] + noise[..., 0]
 
-                return (x, prng_prior), x[..., 0]
+                return (x, prng_prior), x
 
             x0 = (self.p0_Lcov[None, ...] @ jr.normal(
                 prng_state, shape=(num_samps, x_dims, 1)
-            ))  # (num_samps, x_dims, 1)
+            ))[..., 0]  # (num_samps, x_dims)
             prng_state, _ = jr.split(prng_state)
             _, x_samples = lax.scan(step, init=(x0, prng_state), xs=procnoise_keys)
             
@@ -144,19 +145,42 @@ class DTGPSSM(module):
         """
         The augmented KL divergence includes terms due to the state-space mapping
         """
-        return aug_KL
+        return post_mean, post_cov, aug_KL
     
     
-    
-    def sample_posterior(self, prng_state, x0, timesteps, jitter):
+    def sample_posterior(self, prng_state, num_samps, timesteps, jitter):
         """
         """
+        x_dims = self.dynamics_function.kernel.in_dims
+        
+        eps_I = jitter * jnp.eye(x_dims)
+
+        prng_states = jr.split(prng_state, 1 + timesteps)  # (num_samps, 2)
+        prng_state, procnoise_keys = prng_states[0], prng_states[1:]
         
         if self.dynamics_function.RFF_num_feats > 0:  # RFF prior sampling
-            return
+            def step(carry, inputs):
+                x, prng_prior = carry  # (num_samps, x_dims)
+                prng_state = inputs
+
+                fx, _ = self.dynamics_function.sample_posterior(
+                    prng_prior, x[:, None, None, :], jitter, compute_KL=False)  # (samp, x_dims, 1)
+                noise = self.chol_process_noise[None, ...] @ jr.normal(
+                    prng_state, shape=(num_samps, x_dims, 1))
+                x = x + fx[..., 0] + noise[..., 0]
+
+                return (x, prng_prior), x
+
+            x0 = (self.p0_Lcov[None, ...] @ jr.normal(
+                prng_state, shape=(num_samps, x_dims, 1)
+            ))[..., 0]  # (num_samps, x_dims)
+            prng_state, _ = jr.split(prng_state)
+            _, x_samples = lax.scan(step, init=(x0, prng_state), xs=procnoise_keys)
+            
         else:  # autoregressive sampling using conditionals
             return
         
+        return x_samples.transpose(1, 0, 2)  # (num_samps, time, state_dims)
         
         
 #     def compute_jac(self, probe_state, probe_input):

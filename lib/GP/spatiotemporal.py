@@ -10,15 +10,8 @@ from ..utils.jax import constrain_diagonal
 from .linalg import evaluate_LTI_posterior
 from .base import SSM
 from .kernels import MarkovSparseKronecker
-from .markovian import interpolation_times, order_times
+from .markovian import interpolation_times, order_times, vmap_outdims
 
-
-
-@eqx.filter_vmap(args=(0, 0, 0, 1, 1, 0, 0, 1, 1, 1, None, None, None), out=(0, 0, 0))
-def vmap_outdims(H, minf, Pinf, As, Qs, site_obs, site_Lcov, ind_eval, A_fwd, A_bwd, mean_only, compute_KL, jitter):
-    return evaluate_LTI_posterior(
-        H, minf, Pinf, As, Qs, site_obs, site_Lcov, ind_eval, A_fwd, A_bwd, mean_only, compute_KL, jitter, 
-    )
 
 
 @eqx.filter_vmap(args=(None, None, None, None, None, -3, -3, None, None, None, None, None, None), out=(0, 0, 0))
@@ -147,10 +140,10 @@ class KroneckerLTI(SSM):
             
         C_krr, C_nystrom = self.markov_sparse_kernel.sparse_conditional(x_eval, jitter)
         Kmarkov = self.markov_sparse_kernel.markov_factor.K(t_eval, None, True)  # (out_dims, ts, 1)
-        W = C_krr[..., None, :]  # (out_dims, timesteps, 1, spatial_locs)
-        post_means = (W @ post_means_)[..., 0]  # (out_dims, timesteps, 1)
-        post_covs = (W @ post_covs_ @ W.transpose(0, 1, 3, 2))[..., 0] + Kmarkov * C_nystrom
         
+        post_means = (C_krr * post_means_[..., 0]).sum(-1, keepdims=True)  # (out_dims, timesteps, 1)
+        W = C_krr[..., None, :]  # (out_dims, timesteps, 1, spatial_locs)
+        post_covs = (W @ post_covs_ @ W.transpose(0, 1, 3, 2))[..., 0] + Kmarkov * C_nystrom
         return post_means, post_covs, KL.sum()  # sum over out_dims
         
     ### sample ###

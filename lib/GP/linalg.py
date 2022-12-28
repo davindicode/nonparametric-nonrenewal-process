@@ -408,6 +408,7 @@ def evaluate_qsparse_posterior(
     )  # (num_samps, out_dims, time, 1)
 
     if mean_only is False:
+        #LinvSLinv = L @ L.transpose(0, 2, 1)  # (out_dims, num_induc, num_induc)
         WL = W @ L[None, ...].repeat(num_samps, axis=0)
         
         Kxx = vmap(kernel.K, (0, None, None), 0)(
@@ -415,15 +416,15 @@ def evaluate_qsparse_posterior(
         )  # (num_samps, out_dims, time, time or 1)
         
         if diag_cov:
-            post_covs = (
-                Kxx + (WL**2 - W**2).sum(-1, keepdims=True)
+            post_covs = jnp.maximum(
+                Kxx + (WL**2 - W**2).sum(-1, keepdims=True), 0.
             )  # (num_samps, out_dims, time, 1)
             
         else:
             post_covs = (
                 Kxx - W @ W.transpose(0, 1, 3, 2) + \
                 WL @ WL.transpose(0, 1, 3, 2)
-            )  # (num_samps, out_dims, time, 1)
+            )  # (num_samps, out_dims, time, time)
             
     else:
         post_covs = None
@@ -464,7 +465,7 @@ def evaluate_tsparse_posterior(
     eps_I = jitter * jnp.eye(num_induc)
     
     Kzz = kernel.K(induc_locs, None, False)
-    if mean_only is False or compute_KL:
+    if mean_only is False or compute_KL or compute_aux:
         chol_Kzz = cholesky(Kzz + eps_I)  # (out_dims, num_induc, num_induc)
         
     induc_cov = chol_Lambda_2 @ chol_Lambda_2.transpose(0, 2, 1)
@@ -484,19 +485,20 @@ def evaluate_tsparse_posterior(
         + mean[None, :, None, None]
     )  # (num_samps, out_dims, time, 1)
 
+    if mean_only is False or compute_aux:
+        W = solve_triangular(
+            chol_Kzz, Kzx.transpose(1, 2, 0, 3).reshape(out_dims, num_induc, -1), lower=True
+        ).reshape(out_dims, num_induc, num_samps, ts).transpose(2, 0, 3, 1)
+        
     if mean_only is False:
         Kxx = vmap(kernel.K, (0, None, None), 0)(
             x, None, diag_cov
         )  # (num_samps, out_dims, time, time or 1)
         
-        W = solve_triangular(
-            chol_Kzz, Kzx.transpose(1, 2, 0, 3).reshape(out_dims, num_induc, -1), lower=True
-        ).reshape(out_dims, num_induc, num_samps, ts).transpose(2, 0, 3, 1)
-
         if diag_cov:
-            post_covs = (
+            post_covs = jnp.maximum(
                 Kxx - (W**2).sum(-1, keepdims=True) + \
-                (Kxz_Rinv * Kxz).sum(-1, keepdims=True)
+                (Kxz_Rinv * Kxz).sum(-1, keepdims=True), 0.
             )  # (num_samps, out_dims, time, 1)
         else:
             post_covs = (
@@ -520,9 +522,5 @@ def evaluate_tsparse_posterior(
     else:
         KL = 0.0
 
-    if compute_aux:
-        aux = (Kxz_Rinv,)  # squeeze shape
-    else:
-        aux = None
-
+    aux = (chol_Kzz, W) if compute_aux else None
     return post_means, post_covs, KL, aux

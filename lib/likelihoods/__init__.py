@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
 
-# from .independent import likelihoods
+from . import warping
 
 # from .filters import (
 #     filter_model,

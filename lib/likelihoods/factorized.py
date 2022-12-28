@@ -27,18 +27,18 @@ class Gaussian(FactorizedLikelihood):
         p(yₙ|fₙ) = 𝓝(yₙ|fₙ,σ²)
     """
 
-    def __init__(self, out_dims, variance):
+    def __init__(self, out_dims, pre_variance):
         """
-        :param variance: The observation noise variance, σ²
+        :param jnp.ndarray pre_variance: The observation noise variance, σ² (out_dims,)
         """
-        super().__init__(out_dims, out_dims, hyp={"variance": variance})
+        super().__init__(out_dims, out_dims)
+        self.pre_variance = pre_variance
 
     @property
     def variance(self):
-        return softplus(self.hyp.values()[0])
+        return softplus(self.pre_variance)
 
-    @partial(jit, static_argnums=(0,))
-    def log_likelihood(self, f, y, hyp=None):
+    def log_likelihood(self, f, y):
         """
         Evaluate the log-Gaussian function log𝓝(yₙ|fₙ,σ²).
         Can be used to evaluate Q approximation/cubature points.
@@ -49,17 +49,14 @@ class Gaussian(FactorizedLikelihood):
         :return:
             log𝓝(yₙ|fₙ,σ²), where σ² is the observation noise [out_dims, Q]
         """
-        hyp = self.hyp if params is None else params
-        obs_var = np.maximum(softplus(hyp["variance"]), 1e-8)
+        obs_var = jnp.maximum(softplus(self.pre_variance), 1e-8)
 
-        ll = jax.vmap(jax.scipy.stats.norm.logpdf, in_axes=(None, 1, None), out_axes=1)(
-            f, y, obs_var
-        )
-        # var = var[:, None]
-        # ll = -.5 * (_log_twopi * np.log(var) + (y - f)**2 / var)
+#         ll = jax.vmap(jax.scipy.stats.norm.logpdf, in_axes=(None, 1, None), out_axes=1)(
+#             f, y, obs_var
+#         )
+        ll = -.5 * (_log_twopi * np.log(obs_var) + (y - f)**2 / obs_var)
         return ll
 
-    @partial(jit, static_argnums=(0, 8))
     def variational_expectation(
         self, lik_params, prng_state, jitter, y, mask, f_mean, f_cov, derivatives=True
     ):
@@ -105,6 +102,7 @@ class Gaussian(FactorizedLikelihood):
         log_lik = log_lik.sum()  # sum over out_dims
         return log_lik, dlambda_1, dlambda_2
 
+    
 
 class HeteroscedasticGaussian(FactorizedLikelihood):
     """
@@ -116,7 +114,7 @@ class HeteroscedasticGaussian(FactorizedLikelihood):
         """
         :param link: link function, either 'exp' or 'softplus' (note that the link is modified with an offset)
         """
-        super().__init__(out_dims, 2 * out_dims, None)
+        super().__init__(out_dims, 2 * out_dims)
         if link == "exp":
             self.link_fn = lambda x: np.exp(x)
             self.dlink_fn = lambda x: np.exp(x)
@@ -193,11 +191,13 @@ class Bernoulli(FactorizedLikelihood):
         )
 
 
+
 ### count likelihoods ###
 class CountLikelihood(FactorizedLikelihood):
     def __init__(self, out_dims, f_dims, tbin, hyp):
         super().__init__(out_dims, f_dims, hyp)
         self.tbin = tbin
+        
 
 
 class Poisson(CountLikelihood):
@@ -212,7 +212,7 @@ class Poisson(CountLikelihood):
         """
         :param link: link function, either 'exp' or 'logistic'
         """
-        super().__init__(out_dims, out_dims, tbin, None)
+        super().__init__(out_dims, out_dims, tbin)
         self.tbin = tbin
         self.link = link
         if link == "exp":
@@ -304,7 +304,7 @@ class NegativeBinomial(CountLikelihood):
         """
         :param link: link function, either 'exp' or 'logistic'
         """
-        super().__init__(out_dims, out_dims, tbin, hyp)
+        super().__init__(out_dims, out_dims, tbin)
         self.link = link
         if link == "exp":
             self.link_fn = lambda mu: np.exp(mu)
@@ -385,7 +385,7 @@ class UniversalCount(CountLikelihood):
         """
         :param link: link function, either 'exp' or 'logistic'
         """
-        super().__init__(out_dims, C * out_dims, tbin, hyp)
+        super().__init__(out_dims, C * out_dims, tbin)
         self.K = K
 
     @partial(jit, static_argnums=(0,))

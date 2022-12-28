@@ -193,27 +193,26 @@ class CTHMM(module):
     
 ### switch states ###
 class Transition(module):
-    def __init__(self, N, R, B, Lam):
-        out_dims = B.shape[-1]
-        state_dims = N.shape[0]
-        in_dims = 1
-        super().__init__(in_dims, out_dims, state_dims)
-        self.N = N
-        self.R = R
-        self.B = B
-        self.Lam = Lam
+    """
+    Transition matrices
+    """
+    A: jnp.ndarray
+    Q: jnp.ndarray
+        
+    def __init__(self, A, Q):
+        """
+        :parma jnp.ndarray A: transition matrices (num_switches, sd, sd)
+        :parma jnp.ndarray Q: process noise matrices (num_switches, sd, sd)
+        """
+        super().__init__()
+        self.A = A
+        self.Q = Q
     
     
 class WhiteNoiseSwitch(Transition):
     """
     White noise processes at different orders
     """
-    N: jnp.ndarray
-    R: jnp.ndarray
-    B: jnp.ndarray
-    H: jnp.ndarray
-    Lam: jnp.ndarray
-
     def __init__(self, N, R, B, Lam):
         out_dims = B.shape[-1]
         state_dims = N.shape[0]
@@ -263,13 +262,16 @@ class SwitchingLTI(SSM):
     for infinitesimal switches inbetween
     """
     
+    switch_logits: jnp.ndarray
+    
     CTHMM: module
     switch_transitions: Transition
     markov_kernel_group: MarkovianKernel
     
-    def __init__(self, CTHMM, markov_kernel_group, switch_transitions, site_locs, site_obs, site_Lcov, fixed_grid_locs=False):
-        # insert switch transitions
-        
+    def __init__(self, CTHMM, switch_logits, markov_kernel_group, switch_transitions, site_locs, site_obs, site_Lcov, fixed_grid_locs=False):
+        """
+        :param jnp.ndarray switch_logits: matrix of logit vectors for event at switch (K, K, switches)
+        """
         super().__init__(site_locs, site_obs, site_Lcov)
         self.CTHMM = CTHMM
         self.markov_kernel_group = markov_kernel_group
@@ -277,23 +279,62 @@ class SwitchingLTI(SSM):
         
         self.fixed_grid_locs = fixed_grid_locs
         
-    def get_LDS(self):
+    def apply_constraints(self):
+        """
+        PSD constraint
+        """
+        kernel = self.kernel.apply_constraints(self.kernel)
+        
+        model = jax.tree_map(lambda p: p, self)  # copy
+        model = eqx.tree_at(
+            lambda tree: tree.kernel,
+            model,
+            replace_fn=lambda _: kernel,
+        )
+
+        return model
+        
+    def get_conditional_LDS(self, dt, tsteps, s_path):
+        """
+        Insert switches
+        """
         H, minf, Pinf, As, Qs = self.markov_kernel.get_LDS(dt, tsteps)
         
         Id = jnp.eye(self.As.shape[-1])
         Zs = jnp.zeros_like(Id)
         As = jnp.concatenate((Id[None, ...], self.As, Id[None, ...]), axis=0)
         Qs = jnp.concatenate((Zs[None, ...], self.Qs, Zs[None, ...]), axis=0)
-        return self.H, self.minf, self.P0, As, Qs
+        
+        return self.H, self.minf, Pinf, As, Qs
+    
+    def get_site_params(self):
+        """
+        Insert unobserved locations
+        """
+        site_obs = self.site_obs
+        site_Lcov = self.site_Lcov
+        return site_obs, site_Lcov
     
     def sample_prior(self):
         """
         Sample from the joint prior
         """
         prng_state, num_samps, timesteps = self.CTHMM.sample_prior()
+        
+        H, minf, Pinf, As, Qs = self.get_conditional_LDS()
+        
+        
+        
+        
+        return x_samples, s_samples
     
     
-    def evaluate_conditional_posterior(self):
+    def evaluate_conditional_posterior(self, s_path):
+        """
+        Compute posterior conditioned on HMM path
+        """
+        site_obs, site_Lcovs = self.get_site_params()
+        H, minf, Pinf, As, Qs, site_obs, site_Lcov = self.get_conditional_LDS()
         return
     
     def sample_posterior(self):
