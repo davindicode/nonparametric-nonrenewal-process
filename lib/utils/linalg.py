@@ -13,6 +13,7 @@ from numpy.polynomial.hermite import hermgauss
 from numpy.polynomial.legendre import leggauss
 
 
+
 ### linear algebra ###
 def solve_PSD(P, Q):
     """

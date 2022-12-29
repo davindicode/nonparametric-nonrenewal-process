@@ -1,5 +1,18 @@
 import jax.numpy as jnp
 
+# This module contains some missing ops from jax
+import functools
+
+
+from jax import vmap
+from jax.numpy import array
+from jax.numpy import concatenate
+from jax.numpy import ones
+from jax.numpy import zeros
+from jax.tree_util import register_pytree_node_class
+
+from ..utils.linalg import gauss_legendre
+
 
 
 def newton_cotes(f, h, order='trapezoid'):
@@ -77,6 +90,44 @@ def get_ISIs(timeline, spike_ind, prng_state, minimum=1e-8):
 
 
 
+def conditional_intensity_to_renewal(log_rhotau_eval, tau_eval, t_ren, time_transf, num_quad_pts = 100):
+    """
+    Compute renewal density given rho(ISI)
+    """
+    tau_ren, _ = time_transf(t_ren, inverse=False)
+    t_eval, log_dt_dtau_eval = time_transf(tau_eval, inverse=True)
+    
+    def quad_integrate(a, b, sigma_pts, weights):
+        # transform interval
+        sigma_pts = 0.5*(sigma_pts + 1)*(b - a) + a
+        weights *= jnp.prod( 0.5*(b - a) )
+        return sigma_pts, weights
+    
+    vvinterp = vmap(vmap(jnp.interp, (None, None, 0), 0), (None, None, 2), 2)
+    
+    # compute rho(tau) and rho(t)
+    rhotau_eval = jnp.exp(log_rhotau_eval)
+    #rhotau_ren = vvinterp(tau_ren, tau_eval, rhotau_eval)
+    
+    rhot_eval = jnp.exp(log_rhotau_eval - log_dt_dtau_eval[None, :, None])
+    rhot_ren = vvinterp(t_ren, tau_eval, rhot_eval)
+    
+    # compute int rho(tau) dtau
+    sigma_pts, weights = gauss_legendre(1, num_quad_pts)
+    locs, ws = vmap(quad_integrate, (None, 0, None, None), (0, 0))(
+        0., tau_ren, sigma_pts, weights)
+    
+    
+    quad_rhotau_ren = vmap(vvinterp, (1, None, None), 2)(locs[..., 0], tau_eval, rhotau_eval)
+    int_rhotau_ren = (quad_rhotau_ren * ws[None, ..., None]).sum(-2)
+    
+    # compute renewal density
+    exp_negintrhot = jnp.exp(-int_rhotau_ren)
+    renewal_density = rhot_ren * exp_negintrhot
+    return renewal_density
+
+
+
 # class DecayingSquaredExponential(Lengthscale):
 #     r"""
 #     Implementation of Decaying Squared Exponential kernel:
@@ -150,49 +201,6 @@ def get_ISIs(timeline, spike_ind, prng_state, minimum=1e-8):
 #                 + (((Z - self.beta) / self.lengthscale_beta) ** 2).sum(-1)[..., None, :]
 #             )
 #         )
-
-
-
-# This module contains some missing ops from jax
-import functools
-
-import jax.numpy as np
-from jax import vmap
-from jax.numpy import array
-from jax.numpy import concatenate
-from jax.numpy import ones
-from jax.numpy import zeros
-from jax.tree_util import register_pytree_node_class
-
-__all__ = ["interp"]
-
-
-@functools.partial(vmap, in_axes=(0, None, None))
-def interp(x, xp, fp):
-    """
-    Simple equivalent of np.interp that compute a linear interpolation.
-
-    We are not doing any checks, so make sure your query points are lying
-    inside the array.
-
-    TODO: Implement proper interpolation!
-
-    x, xp, fp need to be 1d arrays
-    """
-    # First we find the nearest neighbour
-    ind = np.argmin((x - xp) ** 2)
-
-    # Perform linear interpolation
-    ind = np.clip(ind, 1, len(xp) - 2)
-
-    xi = xp[ind]
-    # Figure out if we are on the right or the left of nearest
-    s = np.sign(np.clip(x, xp[1], xp[-2]) - xi).astype(np.int64)
-    a = (fp[ind + np.copysign(1, s).astype(np.int64)] - fp[ind]) / (
-        xp[ind + np.copysign(1, s).astype(np.int64)] - xp[ind]
-    )
-    b = fp[ind] - a * xp[ind]
-    return a * x + b
 
 
 

@@ -7,12 +7,46 @@ import jax.numpy as jnp
 
 from tqdm.autonotebook import tqdm
 
-from .base import FilterLikelihood
+from .base import FilteredLikelihood
 
 
 
 ### filters ###
-class sigmoid_refractory(FilterLikelihood):
+class _filter(nn.Module):
+    """
+    GLM coupling filter base class.
+    """
+
+    def __init__(self, filter_len, conv_groups, tensor_type):
+        """
+        Filter length includes instantaneous part
+        """
+        super().__init__()
+        self.conv_groups = conv_groups
+        self.tensor_type = tensor_type
+        if filter_len <= 0:
+            raise ValueError("Filter length must be bigger than zero")
+        self.filter_len = filter_len
+
+    def forward(self):
+        """
+        Return filter values.
+        """
+        raise NotImplementedError
+
+    def KL_prior(self, importance_weighted):
+        """
+        Prior of the filter model.
+        """
+        return 0
+
+    def constrain(self):
+        return
+
+    
+    
+    
+class sigmoid_refractory(FilteredLikelihood):
     """
     Step refractory filter
     """
@@ -25,7 +59,9 @@ class sigmoid_refractory(FilterLikelihood):
         timesteps,
         #tensor_type=torch.float,
     ):
-        """ """
+        """
+        :param jnp.ndarray a: parameter a of shape ()
+        """
         if a.shape != tau.shape or a.shape != beta.shape:
             raise ValueError("Parameters a, beta and tau must match in shape")
         if len(a.shape) == 2:
@@ -66,7 +102,7 @@ class sigmoid_refractory(FilterLikelihood):
 
     
 
-class raised_cosine_bumps(FilterLikelihood):
+class RaisedCosineBumps(FilteredLikelihood):
     """
     Raised cosine basis [1], takes the form of
 
@@ -165,7 +201,7 @@ class raised_cosine_bumps(FilterLikelihood):
         return F.conv1d(input, h_, groups=self.conv_groups), 0
 
 
-class hetero_raised_cosine_bumps(FilterLikelihood):
+class HeteroRaisedCosineBumps(FilteredLikelihood):
     """
     Raised cosine basis with weights input dependent
     """
@@ -290,8 +326,9 @@ class hetero_raised_cosine_bumps(FilterLikelihood):
         filt_var = 0 if len(a_var_) == 0 else torch.cat(a_var_, dim=-1)
         return torch.cat(a_, dim=-1), filt_var
 
+    
 
-class filter_model(FilterLikelihood):
+class GPGLM(FilterLikelihood):
     """
     Nonparametric GLM coupling filters. Is equivalent to multi-output GP time series. [1]
 

@@ -1,23 +1,25 @@
 import numbers
+import math
 
 import numpy as np
-import scipy.special as scsps
-import scipy.stats as scstats
+#import scipy.special as scsps
+#import scipy.stats as scstats
 
-import torch
-from torch.distributions import Bernoulli
-from torch.nn.parameter import Parameter
+import jax
+import jax.numpy as jnp
+#import jax.scipy as jsc
+from jax.scipy.special import erf, gammaln
 
 from tqdm.autonotebook import tqdm
 
 from .base import RenewalLikelihood
 
-
+_log_twopi = math.log( 2 * math.pi )
 
 
 
 ### sampling ###
-def gen_IRP(interval_dist, rate, tbin, samples=100):
+def gen_IRP(interval_dist, rate, dt, samples=100):
     """
     Sample event times from an Inhomogenous Renewal Process with a given rate function
     samples is an algorithm parameter, should be around the expect number of spikes
@@ -34,7 +36,7 @@ def gen_IRP(interval_dist, rate, tbin, samples=100):
     N = rate.shape[1]  # neurons
     trials = rate.shape[0]
     T = (
-        np.transpose(np.cumsum(rate, axis=-1), (2, 0, 1)) * tbin
+        np.transpose(np.cumsum(rate, axis=-1), (2, 0, 1)) * dt
     )  # actual time to rescaled, (time, trials, neuron)
 
     psT = 0
@@ -83,202 +85,146 @@ def gen_IRP(interval_dist, rate, tbin, samples=100):
     return st_new  # list of len trials x neurons
 
 
-def gen_IBP(intensity):
-    """
-    Sample of the Inhomogenous Bernoulli Process
 
-    :param numpy.array intensity: intensity of the Bernoulli process at array index
-    :returns: sample of binary variables with same shape as intensity
-    :rtype: numpy.array
-    """
-    b = Bernoulli(torch.tensor(intensity))
-    return b.sample().numpy()
-
-
-
-# Poisson point process
-class Poisson_pp(base._likelihood):
-    def __init__(
-        self, tbin, neurons, inv_link, tensor_type=torch.float, allow_duplicate=True
-    ):
-        super().__init__(tbin, neurons, neurons, inv_link, tensor_type)
-        self.allow_duplicate = allow_duplicate
-
-    def set_Y(self, spikes, batch_info):
-        """
-        Get all the activity into batches useable format for quick log-likelihood evaluation
-        Tensor shapes: self.spikes (neuron_dim, batch_dim)
-
-        tfact is the log of time_bin times the spike count
-        """
-        if self.allow_duplicate is False and spikes.max() > 1:  # only binary trains
-            raise ValueError("Only binary spike trains are accepted in set_Y() here")
-        super().set_Y(spikes, batch_info)
-
-    def sample_helper(self, h, b, neuron, samples):
-        """
-        NLL helper function for sample evaluation. Note that spikes is batched including history
-        when the model uses history couplings, hence we sample the spike batches without the
-        history segments from this function.
-        """
-        rates = self.f(h)  # watch out for underflow or overflow here
-        batch_edge, _, _ = self.batch_info
-        spikes = self.all_spikes[:, neuron, batch_edge[b] : batch_edge[b + 1]].to(
-            self.tbin.device
-        )
-        if (
-            self.trials != 1 and samples > 1 and self.trials < h.shape[0]
-        ):  # cannot rely on broadcasting
-            spikes = spikes.repeat(samples, 1, 1)  # MC x trials
-
-        if self.inv_link == "exp":  # spike count times log rate
-            n_l_rates = spikes * h
-        else:
-            n_l_rates = spikes * torch.log(rates + 1e-12)
-
-        return rates, n_l_rates, spikes
-
-    def nll(self, b, rates, n_l_rates):
-        nll = -n_l_rates + rates * self.tbin
-        return nll.sum(1)
-
-    def objective(self, F_mu, F_var, XZ, b, neuron, samples=10, mode="MC"):
-        """
-        Computes the terms for variational expectation :math:`\mathbb{E}_{q(f)q(z)}[]`, which
-        can be used to compute different likelihood objectives.
-        The returned tensor will have sample dimension as MC over :math:`q(z)`, depending
-        on the evaluation mode will be MC or GH or exact over the likelihood samples. This
-        is all combined in to the same dimension to be summed over. The weights :math:`w_s`
-        are the quadrature weights or equal weights for MC, with appropriate normalization.
-
-        :param int samples: number of MC samples or GH points (exact will ignore and give 1)
-
-        :returns: negative likelihood term of shape (samples, timesteps), sample weights (samples, 1
-        :rtype: tuple of torch.tensors
-        """
-        if mode == "MC":
-            h = self.mc_gen(F_mu, F_var, samples, neuron)  # h has only observed neurons
-            rates, n_l_rates, spikes = self.sample_helper(h, b, neuron, samples)
-            ws = torch.tensor(1.0 / rates.shape[0])
-        elif mode == "GH":
-            h, ws = self.gh_gen(F_mu, F_var, samples, neuron)
-            rates, n_l_rates, spikes = self.sample_helper(h, b, neuron, samples)
-            ws = ws[:, None]
-        elif mode == "direct":
-            rates, n_l_rates, spikes = self.sample_helper(
-                F_mu[:, neuron, :], b, neuron, samples
-            )
-            ws = torch.tensor(1.0 / rates.shape[0])
-        else:
-            raise NotImplementedError
-
-        return self.nll(b, rates, n_l_rates), ws
-
-    def sample(self, rate, neuron=None, XZ=None):
-        """
-        Approximate by a Bernoulli process, slight bias introduced as spike means at least one spike
-
-        :param numpy.array rate: input rate of shape (trials, neuron, timestep)
-        :returns: spike train of shape (trials, neuron, timesteps)
-        :rtype: np.array
-        """
-        neuron = self._validate_neuron(neuron)
-        return gen_IBP(rate[:, neuron, :] * self.tbin.item())
-
-
-# renewal distributions
-
-
-
+### renewal densities ###
 class Gamma(RenewalLikelihood):
     """
     Gamma renewal process
     """
+    shape: jnp.ndarray
 
     def __init__(
         self,
-        tbin,
         neurons,
-        inv_link,
+        dt,
+        link_fn,
         shape,
-        tensor_type=torch.float,
-        allow_duplicate=True,
-        dequantize=True,
+        array_type=jnp.float32,
     ):
         """
         Renewal parameters shape can be shared for all neurons or independent.
         """
-        super().__init__(
-            tbin, neurons, inv_link, tensor_type, allow_duplicate, dequantize
-        )
-        self.register_parameter("shape", Parameter(shape.type(self.tensor_type)))
+        super().__init__(neurons, dt, inv_link, array_type)
+        self.shape = jnp.array(shape, dtype=self.array_type)
 
-    def constrain(self):
-        self.shape.data = torch.clamp(self.shape.data, min=1e-5, max=2.5)
-
-    def nll(self, n_l_rates, rISI, neuron):
+    def apply_constraints(self):
         """
-        Gamma case, approximates the spiketrain NLL (takes tbin into account for NLL).
+        constrain shape parameter in numerically stable regime
+        """
+        def update(shape):
+            return jnp.minimum(jnp.maximum(shape, 1e-5), 2.5)
+        
+        model = jax.tree_map(lambda p: p, self)  # copy
+        model = eqx.tree_at(
+            lambda tree: tree.shape,
+            model,
+            replace_fn=lambda _: kernel,
+        )
+
+        return model
+    
+    def log_renewal_density(self, ISI):
+        """
+        # d_Lambda_i = rates[:self.spiketimes[0]].sum()*self.dt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
+        # d_Lambda_f = rates[self.spiketimes[ii]:].sum()*self.dt
+        # l_start = jnp.empty((len(neuron)), device=self.dt.device)
+        # l_end = jnp.empty((len(neuron)), device=self.dt.device)
+        # l_start[n_enu] = jnp.log(sps.gammaincc(self.shape.item(), d_Lambda_i))
+        # l_end[n_enu] = jnp.log(sps.gammaincc(self.shape.item(), d_Lambda_f))
+        """
+        shape_ = self.shape.expand(1, self.F_dims)[:, neuron]
+        
+        #shape = self.shape[n].data.cpu().numpy()
+        intervals = jnp.zeros((samples_, len(neuron)))
+        T = jnp.empty(
+            (samples_, len(neuron)), 
+        )  # MC samples, neurons
+        l_Lambda = jnp.empty((samples_, len(neuron)))
+        
+        if len(isi) > 0:  # nonzero number of ISIs
+            intervals[tr :: self.trials, n_enu] = isi.shape[-1]
+            T[tr :: self.trials, n_enu] = isi.sum(-1)
+            l_Lambda[tr :: self.trials, n_enu] = jnp.log(isi + 1e-12).sum(-1)
+
+        else:
+            T[
+                tr :: self.trials, n_enu
+            ] = 0  # TODO: minibatching ISIs approximate due to b.c.
+            l_Lambda[tr :: self.trials, n_enu] = 0
+                
+        ll = (
+            -(shape_ - 1) * l_Lambda
+            + T
+            + intervals[None, :] * gammaln(shape_)
+        )
+        
+        return ll
+    
+    def cum_renewal_density(self, ISI):
+        return
+    
+    def log_conditional_intensity(self, ISI):
+        return
+
+    def nll(self, rescaled_ISI, neuron):
+        """
+        Gamma case, approximates the spiketrain NLL (takes dt into account for NLL).
+        
+        Ignore the end points of the spike train
+        
 
         :param np.ndarray neuron: fit over given neurons, must be an array
-        :param torch.Tensor F_mu: F_mu product with shape (samples, neurons, timesteps)
-        :param torch.Tensor F_var: variance of the F_mu values, same shape
+        :param jnp.ndarray F_mu: F_mu product with shape (samples, neurons, timesteps)
+        :param jnp.ndarray F_var: variance of the F_mu values, same shape
         :param int b: batch number
         :param np.ndarray neuron: neuron indices that are used
         :param int samples: number of MC samples for likelihood evaluation
         :returns: NLL array over sample dimensions
-        :rtype: torch.tensor
+        :rtype: jnp.ndarray
         """
         samples_ = n_l_rates.shape[
             0
         ]  # ll_samplesxcov_samples, in case of trials trial_num=cov_samples
-        shape_ = self.shape.expand(1, self.F_dims)[:, neuron]
-
-        # Ignore the end points of the spike train
-        # d_Lambda_i = rates[:self.spiketimes[0]].sum()*self.tbin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
-        # d_Lambda_f = rates[self.spiketimes[ii]:].sum()*self.tbin
-        # l_start = torch.empty((len(neuron)), device=self.tbin.device)
-        # l_end = torch.empty((len(neuron)), device=self.tbin.device)
-        # l_start[n_enu] = torch.log(sps.gammaincc(self.shape.item(), d_Lambda_i))
-        # l_end[n_enu] = torch.log(sps.gammaincc(self.shape.item(), d_Lambda_f))
-
-        intervals = torch.zeros((samples_, len(neuron)), device=self.tbin.device)
-        T = torch.empty(
-            (samples_, len(neuron)), device=self.tbin.device
-        )  # MC samples, neurons
-        l_Lambda = torch.empty((samples_, len(neuron)), device=self.tbin.device)
         for tr, isis in enumerate(rISI):  # over trials
             for n_enu, isi in enumerate(isis):  # over neurons
-                if len(isi) > 0:  # nonzero number of ISIs
-                    intervals[tr :: self.trials, n_enu] = isi.shape[-1]
-                    T[tr :: self.trials, n_enu] = isi.sum(-1)
-                    l_Lambda[tr :: self.trials, n_enu] = torch.log(isi + 1e-12).sum(-1)
-
-                else:
-                    T[
-                        tr :: self.trials, n_enu
-                    ] = 0  # TODO: minibatching ISIs approximate due to b.c.
-                    l_Lambda[tr :: self.trials, n_enu] = 0
-
-        nll = (
-            -(shape_ - 1) * l_Lambda
-            - n_l_rates
-            + T
-            + intervals[None, :] * torch.lgamma(shape_)
-        )
+                ll = self.log_renewal_density()
+                
+        nll = - n_l_rates - ll
         return nll.sum(1, keepdims=True)  # sum over neurons, keep as dummy time index
 
-    def objective(self, F_mu, F_var, XZ, b, neuron, samples=10, mode="MC"):
-        return super().objective(
-            F_mu, F_var, XZ, b, neuron, self.shape, samples=samples, mode=mode
-        )
+    def objective(self, spiketimes, pre_rates, covariates, neuron, num_ISIs):
+        """
+        :param jnp.ndarray pre_rates: pre-link rates (mc, out_dims, ts)
+        :param List spiketimes: list of spike time indices arrays per neuron
+        :param jnp.ndarray covariates: covariates time series (mc, out_dims, ts, in_dims)
+        """
+        mc, ts = covariates.shape[0], covariates.shape[2]
+        
+        # map posterior samples
+        rates = self.link_fn(pre_rates)
+        taus = self.dt * jnp.cumsum(rates, axis=2)
+        
+        # rate rescaling
+        rISI = jnp.empty((mc, self.out_dims, num_ISIs))
+        
+        for en, spkinds in enumerate(spiketimes):
+            isi_count = jnp.maximum(spkinds.shape[0] - 1, 0)
+            
+            def body(i, val):
+                val[:, en, i] = taus[:, i]
+                return val
+            
+            rISI[:, en, :] = lax.fori_loop(0, isi_count, body, rISI[:, en, :])
+            
+        # NLL
+        ll = jnp.nansum(self.log_renewal_density(rISI), axis=2)  # (mc, out_dims)
+        
+        nll = - n_l_rates - ll
+        return nll
+    
+    
 
-    def ISI_dist(self, n):
-        shape = self.shape[n].data.cpu().numpy()
-        return ISI_gamma(shape, scale=1.0 / shape)
-
-
-class log_Normal(_renewal_model):
+class LogNormal(RenewalLikelihood):
     """
     Log-normal ISI distribution
     Ignores the end points of the spike train in each batch
@@ -286,28 +232,74 @@ class log_Normal(_renewal_model):
 
     def __init__(
         self,
-        tbin,
         neurons,
         inv_link,
         sigma,
-        tensor_type=torch.float,
-        allow_duplicate=True,
-        dequantize=True,
+        array_type=jnp.float32,
     ):
         """
         :param np.ndarray sigma: :math:`$sigma$` parameter which is > 0
         """
-        super().__init__(
-            tbin, neurons, inv_link, tensor_type, allow_duplicate, dequantize
-        )
-        # self.register_parameter('mu', Parameter(torch.tensor(mu, dtype=self.tensor_type)))
-        self.register_parameter("sigma", Parameter(sigma.type(self.tensor_type)))
-        self.register_buffer(
-            "twopi_fact", 0.5 * torch.tensor(2 * np.pi, dtype=self.tensor_type).log()
+        super().__init__(neurons, inv_link, array_type)
+        self.sigma = jnp.array(sigma, dtype=self.array_type)
+
+    def apply_constraints(self):
+        """
+        constrain sigma parameter in numerically stable regime
+        """
+        def update(sigma):
+            return jnp.maximum(sigma, 1e-5)
+        
+        model = jax.tree_map(lambda p: p, self)  # copy
+        model = eqx.tree_at(
+            lambda tree: tree.sigma,
+            model,
+            replace_fn=lambda _: kernel,
         )
 
-    def constrain(self):
-        self.sigma.data = torch.clamp(self.sigma.data, min=1e-5)
+        return model
+    
+    def log_renewal_density(self, ISI):
+        """
+        # d_Lambda_i = rates[:self.spiketimes[0]].sum()*self.dt
+        # d_Lambda_f = rates[self.spiketimes[ii]:].sum()*self.dt
+        # l_start = jnp.empty((len(neuron)), device=self.dt.device)
+        # l_end = jnp.empty((len(neuron)), device=self.dt.device)
+        # l_start[n_enu] = jnp.log(sps.gammaincc(self.shape.item(), d_Lambda_i))
+        # l_end[n_enu] = jnp.log(sps.gammaincc(self.shape.item(), d_Lambda_f))
+        """
+        sigma_ = self.sigma.expand(1, self.F_dims)[:, neuron]
+        
+        l_Lambda = jnp.empty((samples_, len(neuron)))
+        quad_term = jnp.empty((samples_, len(neuron)))
+        norm_term = jnp.empty((samples_, len(neuron)))
+        for tr, isis in enumerate(rISI):
+            for n_enu, isi in enumerate(isis):
+                if len(isi) > 0:  # nonzero number of ISIs
+                    intervals = isi.shape[1]
+                    l_Lambda[tr :: self.trials, n_enu] = jnp.log(isi + 1e-12).sum(-1)
+                    quad_term[tr :: self.trials, n_enu] = 0.5 * (
+                        (jnp.log(isi + 1e-12) / sigma_[:, n_enu : n_enu + 1]) ** 2
+                    ).sum(
+                        -1
+                    )  # -mu_[:, n_enu:n_enu+1]
+                    norm_term[tr :: self.trials, n_enu] = intervals * (
+                        jnp.log(sigma_[0, n_enu]) + 0.5 * _log_twopi
+                    )
+
+                else:
+                    l_Lambda[tr :: self.trials, n_enu] = 0
+                    quad_term[tr :: self.trials, n_enu] = 0
+                    norm_term[tr :: self.trials, n_enu] = 0
+
+        ll = norm_term + l_Lambda + quad_term
+        return ll
+    
+    def cum_renewal_density(self, ISI):
+        return
+    
+    def log_conditional_intensity(self, ISI):
+        return
 
     def set_Y(self, spikes, batch_info):
         super().set_Y(spikes, batch_info)
@@ -319,38 +311,15 @@ class log_Normal(_renewal_model):
         .. math:: p(f^* \mid X_{new}, X, y, k, X_u, u_{loc}, u_{scale\_tril})
             = \mathcal{N}(loc, cov).
 
-        :param torch.Tensor n_l_rates: log rates at spike times (samples, neurons, timesteps)
-        :param torch.Tensor rISI: modified rate rescaled ISIs
+        :param jnp.ndarray n_l_rates: log rates at spike times (samples, neurons, timesteps)
+        :param jnp.ndarray rISI: modified rate rescaled ISIs
         :param np.ndarray neuron: neuron indices that are used
         :returns: spike train negative log likelihood of shape (timesteps, samples (dummy dimension))
-        :rtype: torch.tensor
+        :rtype: jnp.ndarray
         """
-        sigma_ = self.sigma.expand(1, self.F_dims)[:, neuron]
         samples_ = n_l_rates.shape[0]
-
-        l_Lambda = torch.empty((samples_, len(neuron)), device=self.tbin.device)
-        quad_term = torch.empty((samples_, len(neuron)), device=self.tbin.device)
-        norm_term = torch.empty((samples_, len(neuron)), device=self.tbin.device)
-        for tr, isis in enumerate(rISI):
-            for n_enu, isi in enumerate(isis):
-                if len(isi) > 0:  # nonzero number of ISIs
-                    intervals = isi.shape[1]
-                    l_Lambda[tr :: self.trials, n_enu] = torch.log(isi + 1e-12).sum(-1)
-                    quad_term[tr :: self.trials, n_enu] = 0.5 * (
-                        (torch.log(isi + 1e-12) / sigma_[:, n_enu : n_enu + 1]) ** 2
-                    ).sum(
-                        -1
-                    )  # -mu_[:, n_enu:n_enu+1]
-                    norm_term[tr :: self.trials, n_enu] = intervals * (
-                        torch.log(sigma_[0, n_enu]) + self.twopi_fact
-                    )
-
-                else:
-                    l_Lambda[tr :: self.trials, n_enu] = 0
-                    quad_term[tr :: self.trials, n_enu] = 0
-                    norm_term[tr :: self.trials, n_enu] = 0
-
-        nll = -n_l_rates + norm_term + l_Lambda + quad_term
+                    
+        nll = -n_l_rates + ll
         return nll.sum(1, keepdims=True)
 
     def objective(self, F_mu, F_var, XZ, b, neuron, samples=10, mode="MC"):
@@ -360,7 +329,7 @@ class log_Normal(_renewal_model):
             XZ,
             b,
             neuron,
-            torch.exp(-self.sigma**2 / 2.0),
+            jnp.exp(-self.sigma**2 / 2.0),
             samples=samples,
             mode=mode,
         )
@@ -370,59 +339,59 @@ class log_Normal(_renewal_model):
         return ISI_logNormal(sigma, scale=np.exp(sigma**2 / 2.0))
 
 
-class inv_Gaussian(_renewal_model):
+    
+    
+class InverseGaussian(RenewalLikelihood):
     """
     Inverse Gaussian ISI distribution
     Ignores the end points of the spike train in each batch
     """
+    mu: jnp.ndarray
 
     def __init__(
         self,
-        tbin,
         neurons,
         inv_link,
         mu,
-        tensor_type=torch.float,
-        allow_duplicate=True,
-        dequantize=True,
+        array_type=jnp.float32,
     ):
         """
         :param np.ndarray mu: :math:`$mu$` parameter which is > 0
         """
-        super().__init__(
-            tbin, neurons, inv_link, tensor_type, allow_duplicate, dequantize
-        )
-        self.register_parameter("mu", Parameter(mu.type(self.tensor_type)))
-        # self.register_parameter('lambd', Parameter(torch.tensor(lambd, dtype=self.tensor_type)))
-        self.register_buffer(
-            "twopi_fact", 0.5 * torch.tensor(2 * np.pi, dtype=self.tensor_type).log()
-        )
-
-    def constrain(self):
-        self.mu.data = torch.clamp(self.mu.data, min=1e-5)
-        
-    def set_Y(self, spikes, batch_info):
-        super().set_Y(spikes, batch_info)
-
-    def nll(self, n_l_rates, rISI, neuron):
+        super().__init__(neurons, inv_link, array_type)
+        self.mu = jnp.array(mu, dtype=self.array_type)
+    
+    def apply_constraints(self):
         """
-        :param torch.Tensor F_mu: F_mu product with shape (samples, neurons, timesteps)
-        :param torch.Tensor F_var: variance of the F_mu values, same shape
-        :param int b: batch number
-        :param np.ndarray neuron: neuron indices that are used
-        :param int samples: number of MC samples for likelihood evaluation
+        constrain sigma parameter in numerically stable regime
+        """
+        def update(mu):
+            return jnp.maximum(mu, 1e-5)
+        
+        model = jax.tree_map(lambda p: p, self)  # copy
+        model = eqx.tree_at(
+            lambda tree: tree.mu,
+            model,
+            replace_fn=lambda _: kernel,
+        )
+
+        return model
+        
+    def log_renewal_density(self, n):
+        """
+        Note the scale parameter here is the inverse of the scale parameter in nll(), as the scale
+        parameter here is :math:`\tau/s` while in nll() is refers to :math:`d\tau = s*r(t) \, \mathrm{d}t`
         """
         mu_ = self.mu.expand(1, self.F_dims)[:, neuron]
-        samples_ = n_l_rates.shape[0]
-
-        l_Lambda = torch.empty((samples_, len(neuron)), device=self.tbin.device)
-        quad_term = torch.empty((samples_, len(neuron)), device=self.tbin.device)
-        norm_term = torch.empty((samples_, len(neuron)), device=self.tbin.device)
+        
+        l_Lambda = jnp.empty((samples_, len(neuron)))
+        quad_term = jnp.empty((samples_, len(neuron)))
+        norm_term = jnp.empty((samples_, len(neuron)))
         for tr, isis in enumerate(rISI):
             for n_enu, isi in enumerate(isis):
                 if len(isi) > 0:  # nonzero number of ISIs
                     intervals = isi.shape[1]
-                    l_Lambda[tr :: self.trials, n_enu] = torch.log(isi + 1e-12).sum(-1)
+                    l_Lambda[tr :: self.trials, n_enu] = jnp.log(isi + 1e-12).sum(-1)
                     quad_term[tr :: self.trials, n_enu] = 0.5 * (
                         ((isi - mu_[:, n_enu : n_enu + 1]) / mu_[:, n_enu : n_enu + 1])
                         ** 2
@@ -431,27 +400,42 @@ class inv_Gaussian(_renewal_model):
                         -1
                     )  # (lambd_[:, n_enu:n_enu+1])
                     norm_term[tr :: self.trials, n_enu] = intervals * (
-                        self.twopi_fact
-                    )  # - 0.5*torch.log(lambd_[0, n_enu])
+                        0.5 * _log_twopi
+                    )  # - 0.5*jnp.log(lambd_[0, n_enu])
 
                 else:
                     l_Lambda[tr :: self.trials, n_enu] = 0
                     quad_term[tr :: self.trials, n_enu] = 0
                     norm_term[tr :: self.trials, n_enu] = 0
 
-        nll = -n_l_rates + norm_term + 1.5 * l_Lambda + quad_term
+        ll = norm_term + 1.5 * l_Lambda + quad_term
+        return ll
+    
+    def cum_renewal_density(self, ISI):
+        return
+    
+    def log_conditional_intensity(self, ISI):
+        return
+
+        
+    def set_Y(self, spikes, batch_info):
+        super().set_Y(spikes, batch_info)
+
+    def nll(self, n_l_rates, rISI, neuron):
+        """
+        :param jnp.ndarray F_mu: F_mu product with shape (samples, neurons, timesteps)
+        :param jnp.ndarray F_var: variance of the F_mu values, same shape
+        :param int b: batch number
+        :param np.ndarray neuron: neuron indices that are used
+        :param int samples: number of MC samples for likelihood evaluation
+        """
+        
+        samples_ = n_l_rates.shape[0]
+        
+        nll = -n_l_rates + ll 
         return nll.sum(1, keepdims=True)
 
     def objective(self, F_mu, F_var, XZ, b, neuron, samples=10, mode="MC"):
         return super().objective(
             F_mu, F_var, XZ, b, neuron, 1.0 / self.mu, samples=samples, mode=mode
         )
-
-    def ISI_dist(self, n):
-        """
-        Note the scale parameter here is the inverse of the scale parameter in nll(), as the scale
-        parameter here is :math:`\tau/s` while in nll() is refers to :math:`d\tau = s*r(t) \, \mathrm{d}t`
-        """
-        # self.lambd[n].data.cpu().numpy()
-        mu = self.mu[n].data.cpu().numpy()
-        return ISI_invGauss(mu, scale=mu)

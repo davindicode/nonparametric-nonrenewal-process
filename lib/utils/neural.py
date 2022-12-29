@@ -5,6 +5,8 @@ import jax.random as jr
 from jax import lax
 
 
+
+# spike trains
 def get_lagged_ISIs(spiketrain, lags):
     """
     :param np.ndarray spiketrain: input spike trains of shape (time, neurons)
@@ -32,7 +34,47 @@ def get_lagged_ISIs(spiketrain, lags):
     return lagged_ISIs
 
 
-### spike trains ###
+def train_to_ind(train, allow_duplicate):
+    if allow_duplicate:
+        duplicate = False
+        spike_ind = train.nonzero().flatten()
+        bigger = torch.where(train > 1)[0]
+        add_on = (spike_ind,)
+        for b in bigger:
+            add_on += (
+                b * torch.ones(int(train[b]) - 1, device=train.device, dtype=int),
+            )
+
+        if len(add_on) > 1:
+            duplicate = True
+        spike_ind = torch.cat(add_on)
+        return torch.sort(spike_ind)[0], duplicate
+    else:
+        return torch.nonzero(train).flatten(), False
+
+    
+    
+def ind_to_train(self, ind, timesteps):
+    train = torch.zeros((timesteps))
+    train[ind] += 1
+    return train
+
+
+
+def covariates_at_spikes(spiketimes, behaviour_data):
+    """
+    Returns tuple of covariate arrays at spiketimes for all neurons
+    """
+    cov_s = tuple([] for n in behaviour_data)
+    units = len(spiketimes)
+    for u in range(units):
+        for k, cov_t in enumerate(behaviour_data):
+            cov_s[k].append(cov_t[spiketimes[u]])
+
+    return cov_s
+
+
+
 def bin_data(
     bin_size,
     bin_time,
@@ -105,16 +147,3 @@ def binned_to_indices(spiketrain):
         add_on += (b * np.ones(int(spiketrain[b]) - 1, dtype=int),)
     spike_ind = np.concatenate(add_on)
     return np.sort(spike_ind)
-
-
-def covariates_at_spikes(spiketimes, behaviour_data):
-    """
-    Returns tuple of covariate arrays at spiketimes for all neurons
-    """
-    cov_s = tuple([] for n in behaviour_data)
-    units = len(spiketimes)
-    for u in range(units):
-        for k, cov_t in enumerate(behaviour_data):
-            cov_s[k].append(cov_t[spiketimes[u]])
-
-    return cov_s

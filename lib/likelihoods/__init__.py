@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from . import warping
+from . import factorized, renewal, warping
 
 # from .filters import (
 #     filter_model,
@@ -14,7 +14,6 @@ from . import warping
 # from .point_process import (
 #     Gamma,
 #     gen_CMP,
-#     gen_IBP,
 #     gen_IRP,
 #     inv_Gaussian,
 #     ISI_gamma,
@@ -24,3 +23,5 @@ from . import warping
 #     log_Normal,
 #     Poisson_pp,
 # )
+
+#__all__ = ["interp"]

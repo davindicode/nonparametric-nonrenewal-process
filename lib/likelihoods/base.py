@@ -1,4 +1,6 @@
-from .base import module
+from typing import Any, Callable
+
+from ..base import module
 
 
 
@@ -15,8 +17,11 @@ class FactorizedLikelihood(module):
     The default functions here use cubature/MC approximation methods, exact integration is specific
     to certain likelihood classes.
     """
+    f_dims: int
+    out_dims: int
+    array_type: Any
 
-    def __init__(self, obs_dims, f_dims):
+    def __init__(self, obs_dims, f_dims, array_type):
         """
         all hyperparameters stored are pre-transformation
         :param hyp: (hyper)parameters of the likelihood model
@@ -24,9 +29,9 @@ class FactorizedLikelihood(module):
         super().__init__()
         self.f_dims = f_dims
         self.out_dims = out_dims
-        self.num_f_per_out = self.f_dims // self.out_dims
+        self.array_type = array_type
+        # num_f_per_out = self.f_dims // self.out_dims
 
-    @partial(jit, static_argnums=(0, 5))
     def grads_log_likelihood_n(self, f_mean, df_points, y, lik_params, derivatives):
         """
         Factorization over data points n, vmap over out_dims
@@ -71,11 +76,6 @@ class FactorizedLikelihood(module):
             "direct evaluation of this log-likelihood is not implemented"
         )
 
-    @staticmethod
-    def link_fn(latent_mean):
-        return latent_mean
-
-    @partial(jit, static_argnums=(0, 8))
     def variational_expectation(
         self, lik_params, prng_state, jitter, y, mask, f_mean, f_cov, derivatives=False
     ):
@@ -195,65 +195,16 @@ class RenewalLikelihood(module):
     """
     Renewal model base class
     """
+    link_fn: Callable
+    dt: float
 
     def __init__(
-        self, tbin, neurons, inv_link,
+        self, out_dims, dt, link_fn, 
     ):
         super().__init__()
-        self.allow_duplicate = allow_duplicate
-        self.dequant = dequantize
-
-    def train_to_ind(self, train):
-        if self.allow_duplicate:
-            duplicate = False
-            spike_ind = train.nonzero().flatten()
-            bigger = torch.where(train > 1)[0]
-            add_on = (spike_ind,)
-            for b in bigger:
-                add_on += (
-                    b * torch.ones(int(train[b]) - 1, device=train.device, dtype=int),
-                )
-
-            if len(add_on) > 1:
-                duplicate = True
-            spike_ind = torch.cat(add_on)
-            return torch.sort(spike_ind)[0], duplicate
-        else:
-            return torch.nonzero(train).flatten(), False
-
-    def ind_to_train(self, ind, timesteps):
-        train = torch.zeros((timesteps))
-        train[ind] += 1
-        return train
-
-    
-
-    def set_Y(self, spikes, batch_info):
-        """
-        Get all the activity into batches useable format for quick log-likelihood evaluation
-        Tensor shapes: self.act [neuron_dim, batch_dim]
-        """
-        if self.allow_duplicate is False and spikes.max() > 1:  # only binary trains
-            raise ValueError("Only binary spike trains are accepted in set_Y() here")
-        super().set_Y(spikes, batch_info)
-        batch_edge, _, _ = self.batch_info
-
-        self.spiketimes = []
-        self.intervals = torch.empty((self.batches, self.trials, self.neurons))
-        self.duplicate = np.empty((self.batches, self.trials, self.neurons), dtype=bool)
-        for b in range(self.batches):
-            spk = self.all_spikes[..., batch_edge[b] : batch_edge[b + 1]]
-            spiketimes = []
-            for tr in range(self.trials):
-                cont = []
-                for k in range(self.neurons):
-                    s, self.duplicate[b, tr, k] = self.train_to_ind(spk[tr, k])
-                    cont.append(s)
-                    self.intervals[b, tr, k] = len(s) - 1
-                spiketimes.append(cont)
-            self.spiketimes.append(
-                spiketimes
-            )  # batch list of trial list of spike times list over neurons
+        self.dt = dt
+        self.out_dims = out_dims
+        self.link_fn = link_fn
 
     def sample_helper(self, h, b, neuron, scale, samples):
         """
@@ -270,7 +221,7 @@ class RenewalLikelihood(module):
         ]  # rescale to get mean 1 in renewal distribution
         rates = self.f(h) * scale
         spikes = self.all_spikes[:, neuron, batch_edge[b] : batch_edge[b + 1]].to(
-            self.tbin.device
+            self.dt.device
         )
         # self.spikes[b][:, neuron, self.filter_len-1:]
         if (
@@ -289,7 +240,7 @@ class RenewalLikelihood(module):
                 -1
             )  # rates include scaling
 
-        spiketimes = [[s.to(self.tbin.device) for s in ss] for ss in self.spiketimes[b]]
+        spiketimes = [[s.to(self.dt.device) for s in ss] for ss in self.spiketimes[b]]
         rISI = self.rate_rescale(neuron, spiketimes, rates, self.duplicate[b])
         return rates, n_l_rates, rISI
 
@@ -324,7 +275,7 @@ class RenewalLikelihood(module):
         """
         neuron = self._validate_neuron(neuron)
         spiketimes = gen_IRP(
-            self.ISI_dist(neuron), rate[:, neuron, :], self.tbin.item()
+            self.ISI_dist(neuron), rate[:, neuron, :], self.dt.item()
         )
 
         # if binned:
@@ -338,11 +289,20 @@ class RenewalLikelihood(module):
 
         # else:
         #    return spiketimes
+    def log_renewal_density(self, ISI):
+        raise NotImplementedError
+        
+    def cum_renewal_density(self, ISI):
+        raise NotImplementedError
+    
+    def log_conditional_intensity(self, ISI):
+        raise NotImplementedError
+    
 
 
-class FilterLikelihood(module):
+class FilteredLikelihood(module):
     """
-    Wrapper for base._likelihood classes with filters.
+    Wrapper for classes with filtered spike train likelihoods
     """
 
     def __init__(self, likelihood, filter_obj):
@@ -351,7 +311,7 @@ class FilterLikelihood(module):
             raise ValueError("Filter and likelihood tensor types do not match")
 
         super().__init__(
-            likelihood.tbin.item(),
+            likelihood.dt.item(),
             likelihood.F_dims,
             likelihood.neurons,
             likelihood.inv_link,
@@ -403,7 +363,7 @@ class FilterLikelihood(module):
         batch_edge, _, _ = self.batch_info
         spk = self.all_spikes[
             :, neuron, batch_edge[b] : batch_edge[b + 1] + self.history_len
-        ].to(self.likelihood.tbin.device)
+        ].to(self.likelihood.dt.device)
         spk_filt, spk_var = self.filter(spk, XZ)  # trials, neurons, timesteps
         mean = F_mu + spk_filt
         variance = F_var + spk_var
@@ -418,7 +378,7 @@ class FilterLikelihood(module):
         batch_edge, _, _ = self.batch_info
         spk = self.all_spikes[
             :, neuron, batch_edge[b] : batch_edge[b + 1] + self.history_len
-        ].to(self.likelihood.tbin.device)
+        ].to(self.likelihood.dt.device)
 
         with torch.no_grad():
             hist, hist_var = self.spike_filter(spk, XZ)
@@ -448,7 +408,7 @@ class FilterLikelihood(module):
             raise ValueError("Initial spike train shape must match input F tensor.")
         spikes = []
         spiketrain = torch.empty(
-            (*ini_train.shape[:2], self.history_len), device=self.likelihood.tbin.device
+            (*ini_train.shape[:2], self.history_len), device=self.likelihood.dt.device
         )
 
         iterator = tqdm(range(steps), leave=False)  # AR sampling
@@ -456,12 +416,12 @@ class FilterLikelihood(module):
         for t in iterator:
             if t == 0:
                 spiketrain[..., :-1] = torch.tensor(
-                    ini_train, device=self.likelihood.tbin.device
+                    ini_train, device=self.likelihood.dt.device
                 )
             else:
                 spiketrain[..., :-2] = spiketrain[..., 1:-1].clone()  # shift in time
                 spiketrain[..., -2] = torch.tensor(
-                    spikes[-1], device=self.likelihood.tbin.device
+                    spikes[-1], device=self.likelihood.dt.device
                 )
 
             with torch.no_grad():  # spiketrain last time element is dummy, [:-1] used
@@ -482,13 +442,13 @@ class FilterLikelihood(module):
                 spikes.append(
                     self.likelihood.sample(rate_[..., None], n_, XZ=XZ)[..., 0]
                 )
-                # spikes.append(point_process.gen_IBP(1. - np.exp(-rate_*self.likelihood.tbin.item())))
+                # spikes.append(point_process.gen_IBP(1. - np.exp(-rate_*self.likelihood.dt.item())))
             else:  # condition on observed spike train partially
                 spikes.append(obs_spktrn[..., t])
                 spikes[-1][:, neuron] = self.likelihood.sample(
                     rate_[..., None], neuron, XZ=XZ
                 )[..., 0]
-                # spikes[-1][:, neuron] = point_process.gen_IBP(1. - np.exp(-rate_[:, neuron]*self.likelihood.tbin.item()))
+                # spikes[-1][:, neuron] = point_process.gen_IBP(1. - np.exp(-rate_[:, neuron]*self.likelihood.dt.item()))
             rate.append(rate_)
 
         rate = np.stack(rate, axis=-1)  # trials, neurons, timesteps
@@ -497,36 +457,15 @@ class FilterLikelihood(module):
         )  # trials, neurons, timesteps
 
         return spktrain, rate
-
-
-# GLM filters
-class _filter(nn.Module):
+    
+    
+    
+class CountLikelihood(FactorizedLikelihood):
     """
-    GLM coupling filter base class.
+    For handling count data
     """
-
-    def __init__(self, filter_len, conv_groups, tensor_type):
-        """
-        Filter length includes instantaneous part
-        """
-        super().__init__()
-        self.conv_groups = conv_groups
-        self.tensor_type = tensor_type
-        if filter_len <= 0:
-            raise ValueError("Filter length must be bigger than zero")
-        self.filter_len = filter_len
-
-    def forward(self):
-        """
-        Return filter values.
-        """
-        raise NotImplementedError
-
-    def KL_prior(self, importance_weighted):
-        """
-        Prior of the filter model.
-        """
-        return 0
-
-    def constrain(self):
-        return
+    tbin: float
+    
+    def __init__(self, out_dims, f_dims, tbin):
+        super().__init__(out_dims, f_dims)
+        self.tbin = tbin
