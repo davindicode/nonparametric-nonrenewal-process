@@ -1,4 +1,4 @@
-from typing import List
+from typing import Any, List
 
 import jax.numpy as jnp
 
@@ -7,6 +7,14 @@ import equinox as eqx
 
 
 class module(eqx.Module):
+    array_type: Any
+        
+    def __init__(self, array_type):
+        self.array_type = array_type
+    
+    def _to_jax(self, _array_like):
+        return jnp.array(_array_like, dtype=self.array_type)
+    
     def apply_constraints(self):
         return self
     

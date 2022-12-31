@@ -60,7 +60,8 @@ class Kernel(module):
     in_dims: int
     out_dims: int
 
-    def __init__(self, in_dims, out_dims):
+    def __init__(self, in_dims, out_dims, array_type):
+        super().__init__(array_type)
         self.in_dims = in_dims
         self.out_dims = out_dims
 
@@ -106,12 +107,12 @@ class MarkovianKernel(StationaryKernel):
 
     state_dims: int
 
-    def __init__(self, in_dims, out_dims, state_dims):
+    def __init__(self, in_dims, out_dims, state_dims, array_type):
         """
         dimensions after readout with H
         input dimensions (1 for temporal)
         """
-        super().__init__(in_dims, out_dims)
+        super().__init__(in_dims, out_dims, array_type)
         self.state_dims = state_dims  # state dynamics dimensions
         
     ### state space ###
@@ -249,12 +250,12 @@ class IID(MarkovianKernel):
 
     Qc: jnp.ndarray
 
-    def __init__(self, Qc):
+    def __init__(self, Qc, array_type=jnp.float32):
         in_dims = 1
         out_dims = Qc.shape[0]
         state_dims = out_dims
-        super().__init__(in_dims, out_dims, state_dims)
-        self.Qc = Qc
+        super().__init__(in_dims, out_dims, state_dims, array_type)
+        self.Qc = self._to_jax(Qc)
 
     @eqx.filter_vmap()
     def _state_dynamics(self):
@@ -299,12 +300,12 @@ class Cosine(MarkovianKernel):
 
     pre_omega: jnp.ndarray
 
-    def __init__(self, frequency):
+    def __init__(self, frequency, array_type=jnp.float32):
         in_dims = 1
         out_dims = 1
         state_dims = 2
-        super().__init__(in_dims, out_dims, state_dims)
-        self.pre_omega = pre_omega
+        super().__init__(in_dims, out_dims, state_dims, array_type)
+        self.pre_omega = self._to_jax(pre_omega)
 
     @property
     def omega(self):
@@ -313,14 +314,14 @@ class Cosine(MarkovianKernel):
     @eqx.filter_vmap()
     def _state_dynamics(self):
         omega = softplus(self.pre_omega)
-        F = jnp.array([[0.0, -omega], [omega, 0.0]])
+        F = self._to_jax([[0.0, -omega], [omega, 0.0]])
         L = []
         Qc = []
         return F, L, Qc
 
     @eqx.filter_vmap()
     def _state_output(self):
-        H = jnp.array([1.0, 0.0])
+        H = self._to_jax([1.0, 0.0])
         minf = jnp.zeros((1,))  # stationary state mean
         Pinf = jnp.eye(H.shape[1])
         return H, minf, Pinf
@@ -352,15 +353,15 @@ class LEG(MarkovianKernel):
     H: jnp.ndarray
     Lam: jnp.ndarray
 
-    def __init__(self, N, R, B, Lam):
+    def __init__(self, N, R, B, Lam, array_type=jnp.float32):
         out_dims = B.shape[-1]
         state_dims = N.shape[0]
         in_dims = 1
-        super().__init__(in_dims, out_dims, state_dims)
-        self.N = N
-        self.R = R
-        self.B = B
-        self.Lam = Lam
+        super().__init__(in_dims, out_dims, state_dims, array_type)
+        self.N = self._to_jax(N)
+        self.R = self._to_jax(R)
+        self.B = self._to_jax(B)
+        self.Lam = self._to_jax(Lam)
         
     @staticmethod
     def initialize_hyperparams(key, state_dims, out_dims):
@@ -437,11 +438,11 @@ class Lengthscale(MarkovianKernel):
                      
     distance_metric: Callable
 
-    def __init__(self, out_dims, state_dims, variance, lengthscale, distance_metric):
+    def __init__(self, out_dims, state_dims, variance, lengthscale, distance_metric, array_type):
         in_dims = lengthscale.shape[-1]
-        super().__init__(in_dims, out_dims, state_dims)
-        self.pre_len = softplus_inv(lengthscale)
-        self.pre_var = softplus_inv(variance)
+        super().__init__(in_dims, out_dims, state_dims, array_type)
+        self.pre_len = softplus_inv(self._to_jax(lengthscale))
+        self.pre_var = softplus_inv(np.array(variance))
                      
         self.distance_metric = distance_metric
 
@@ -491,8 +492,8 @@ class SquaredExponential(Lengthscale):
     σ² is the variance parameter
     """
 
-    def __init__(self, out_dims, variance, lengthscale):
-        super().__init__(out_dims, None, variance, lengthscale, _scaled_dist_squared_Rn)
+    def __init__(self, out_dims, variance, lengthscale, array_type=jnp.float32):
+        super().__init__(out_dims, None, variance, lengthscale, _scaled_dist_squared_Rn, array_type)
 
     def _K_r(self, r2):
         variance = softplus(self.pre_var)[:, None, None]
@@ -532,9 +533,9 @@ class RationalQuadratic(Lengthscale):
         kernel. Should have size 1.
     """
 
-    def __init__(self, out_dims, variance, lengthscale, scale_mixture):
-        super().__init__(out_dims, None, variance, lengthscale, _scaled_dist_squared_Rn)
-        self.pre_scale_mixture = softplus_inv(scale_mixture)
+    def __init__(self, out_dims, variance, lengthscale, scale_mixture, array_type=jnp.float32):
+        super().__init__(out_dims, None, variance, lengthscale, _scaled_dist_squared_Rn, array_type)
+        self.pre_scale_mixture = softplus_inv(self._to_jax(scale_mixture))
 
     @property
     def scale_mixture(self):
@@ -565,9 +566,9 @@ class Matern12(Lengthscale):
     Pinf   = σ²
     """
 
-    def __init__(self, out_dims, variance, lengthscale):
+    def __init__(self, out_dims, variance, lengthscale, array_type=jnp.float32):
         state_dims = out_dims
-        super().__init__(out_dims, state_dims, variance, lengthscale, _scaled_dist_Rn)
+        super().__init__(out_dims, state_dims, variance, lengthscale, _scaled_dist_Rn, array_type)
 
     def _K_r(self, r):
         """
@@ -634,9 +635,9 @@ class Matern32(Lengthscale):
               0   λ²σ²)
     """
 
-    def __init__(self, out_dims, variance, lengthscale):
+    def __init__(self, out_dims, variance, lengthscale, array_type=jnp.float32):
         state_dims = 2 * out_dims
-        super().__init__(out_dims, state_dims, variance, lengthscale, _scaled_dist_Rn)
+        super().__init__(out_dims, state_dims, variance, lengthscale, _scaled_dist_Rn, array_type)
 
     def _K_r(self, r):
         """
@@ -657,9 +658,9 @@ class Matern32(Lengthscale):
         ell = softplus(self.pre_len[0])  # first dimension
 
         lam = 3.0**0.5 / ell
-        F = jnp.array([[0.0, 1.0], [-(lam**2), -2 * lam]])
-        L = jnp.array([[0], [1]])
-        Qc = jnp.array([[12.0 * 3.0**0.5 / ell**3.0 * var]])
+        F = self._to_jax([[0.0, 1.0], [-(lam**2), -2 * lam]])
+        L = self._to_jax([[0], [1]])
+        Qc = self._to_jax([[12.0 * 3.0**0.5 / ell**3.0 * var]])
         return F, L, Qc
 
     @eqx.filter_vmap(kwargs=dict(dt=0))
@@ -673,7 +674,7 @@ class Matern32(Lengthscale):
 
         lam = jnp.sqrt(3.0) / ell
         A = jnp.exp(-dt * lam) * (
-            dt * jnp.array([[lam, 1.0], [-(lam**2.0), -lam]]) + jnp.eye(2)
+            dt * self._to_jax([[lam, 1.0], [-(lam**2.0), -lam]]) + jnp.eye(2)
         )
         return A
 
@@ -682,9 +683,9 @@ class Matern32(Lengthscale):
         var = softplus(self.pre_var)
         ell = softplus(self.pre_len[0])  # first dimension
         
-        H = jnp.array([[1.0, 0.0]])  # observation projection
+        H = self._to_jax([[1.0, 0.0]])  # observation projection
         minf = jnp.zeros((2,))  # stationary state mean
-        Pinf = jnp.array([[var, 0.0], [0.0, 3.0 * var / ell**2.0]])
+        Pinf = self._to_jax([[var, 0.0], [0.0, 3.0 * var / ell**2.0]])
         return H, minf, Pinf
 
 
@@ -710,9 +711,9 @@ class Matern52(Lengthscale):
               -κ   0   λ⁴σ²)
     """
 
-    def __init__(self, out_dims, variance, lengthscale):
+    def __init__(self, out_dims, variance, lengthscale, array_type=jnp.float32):
         state_dims = 3 * out_dims
-        super().__init__(out_dims, state_dims, variance, lengthscale, _scaled_dist_Rn)
+        super().__init__(out_dims, state_dims, variance, lengthscale, _scaled_dist_Rn, array_type)
 
     def _K_r(self, r):
         """
@@ -733,15 +734,15 @@ class Matern52(Lengthscale):
         ell = softplus(self.pre_len[0])  # first dimension
 
         lam = 5.0**0.5 / ell
-        F = jnp.array(
+        F = self._to_jax(
             [
                 [0.0, 1.0, 0.0],
                 [0.0, 0.0, 1.0],
                 [-(lam**3.0), -3.0 * lam**2.0, -3.0 * lam],
             ]
         )
-        L = jnp.array([[0.0], [0.0], [1.0]])
-        Qc = jnp.array([[var * 400.0 * 5.0**0.5 / 3.0 / ell**5.0]])
+        L = self._to_jax([[0.0], [0.0], [1.0]])
+        Qc = self._to_jax([[var * 400.0 * 5.0**0.5 / 3.0 / ell**5.0]])
         return F, L, Qc
 
     @eqx.filter_vmap(kwargs=dict(dt=0))
@@ -757,7 +758,7 @@ class Matern52(Lengthscale):
         dtlam = dt * lam
         A = jnp.exp(-dtlam) * (
             dt
-            * jnp.array(
+            * self._to_jax(
                 [
                     [lam * (0.5 * dtlam + 1.0), dtlam + 1.0, 0.5 * dt],
                     [-0.5 * dtlam * lam**2, lam * (1.0 - dtlam), 1.0 - 0.5 * dtlam],
@@ -777,10 +778,10 @@ class Matern52(Lengthscale):
         var = softplus(self.pre_var)
         ell = softplus(self.pre_len[0])  # first dimension
 
-        H = jnp.array([[1.0, 0.0, 0.0]])  # observation projection
+        H = self._to_jax([[1.0, 0.0, 0.0]])  # observation projection
         minf = jnp.zeros((3,))  # stationary state mean
         kappa = 5.0 / 3.0 * var / ell**2.0
-        Pinf = jnp.array(
+        Pinf = self._to_jax(
             [
                 [var, 0.0, -kappa],
                 [0.0, kappa, 0.0],
@@ -815,9 +816,9 @@ class Matern72(Lengthscale):
                0  -κ₂  0   343σ²/l⁶)
     """
 
-    def __init__(self, out_dims, variance, lengthscale):
+    def __init__(self, out_dims, variance, lengthscale, array_type=jnp.float32):
         state_dims = 4 * out_dims
-        super().__init__(out_dims, state_dims, variance, lengthscale, _scaled_dist_Rn)
+        super().__init__(out_dims, state_dims, variance, lengthscale, _scaled_dist_Rn, array_type)
 
     # kernel
     def _K_r(self, r):
@@ -841,7 +842,7 @@ class Matern72(Lengthscale):
         ell = softplus(self.pre_len[0])  # first dimension
 
         lam = 7.0**0.5 / ell
-        F = jnp.array(
+        F = self._to_jax(
             [
                 [0.0, 1.0, 0.0, 0.0],
                 [0.0, 0.0, 1.0, 0.0],
@@ -849,8 +850,8 @@ class Matern72(Lengthscale):
                 [-(lam**4.0), -4.0 * lam**3.0, -6.0 * lam**2.0, -4.0 * lam],
             ]
         )
-        L = jnp.array([[0.0], [0.0], [0.0], [1.0]])
-        Qc = jnp.array([[var * 10976.0 * 7.0**0.5 / 5.0 / ell**7.0]])
+        L = self._to_jax([[0.0], [0.0], [0.0], [1.0]])
+        Qc = self._to_jax([[var * 10976.0 * 7.0**0.5 / 5.0 / ell**7.0]])
 
         return F, L, Qc
 
@@ -865,7 +866,7 @@ class Matern72(Lengthscale):
         dtlam2 = dtlam**2
         A = jnp.exp(-dtlam) * (
             dt
-            * jnp.array(
+            * self._to_jax(
                 [
                     [
                         lam * (1.0 + 0.5 * dtlam + dtlam2 / 6.0),
@@ -909,12 +910,12 @@ class Matern72(Lengthscale):
         ell = softplus(self.pre_len[0])  # first dimension
 
         # F, L, Qc = self.state_dynamics(hyp)
-        H = jnp.array([[1.0, 0.0, 0.0, 0.0]])  # observation projection
+        H = self._to_jax([[1.0, 0.0, 0.0, 0.0]])  # observation projection
         minf = jnp.zeros((4,))  # stationary state mean
         kappa = 7.0 / 5.0 * var / ell**2.0
         kappa2 = 9.8 * var / ell**4.0
 
-        Pinf = jnp.array(
+        Pinf = self._to_jax(
             [
                 [var, 0.0, -kappa, 0.0],
                 [0.0, kappa, 0.0, -kappa2],
@@ -940,14 +941,15 @@ class MarkovSparseKronecker(MarkovianKernel):
         """
         :param jnp.ndarray induc_locs: inducing locations of shape (out_dims, spatial_locs, x_dims)
         """
+        assert markov_factor.array_type == sparse_factor.array_type
         in_dims = 1 + sparse_factor.in_dims
         assert markov_factor.out_dims == sparse_factor.out_dims
         num_induc = induc_locs.shape[0]
         state_dims = markov_factor.state_dims * num_induc
-        super().__init__(in_dims, markov_factor.out_dims, state_dims)
+        super().__init__(in_dims, markov_factor.out_dims, state_dims, markov_factor.array_type)
         self.markov_factor = markov_factor
         self.sparse_factor = sparse_factor
-        self.induc_locs = induc_locs  # (out_dims, num_induc, x_dims)
+        self.induc_locs = self._to_jax(induc_locs)  # (out_dims, num_induc, x_dims)
         
     def sparse_conditional(self, x_eval, jitter):
         """

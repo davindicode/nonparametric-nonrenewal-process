@@ -213,6 +213,83 @@ def train_model():
     
 
 ### training ###
+def train_grads(
+    model,
+    constraints,
+    select_learnable_params,
+    dataset,
+    optim,
+    dt,
+    epochs,
+    in_size,
+    hidden_size,
+    out_size,
+    weight_L2,
+    activity_L2,
+    prng_state,
+    priv_std,
+    input_std,
+):
+    # freeze parameters
+    filter_spec = jax.tree_map(lambda _: False, model)
+    filter_spec = eqx.tree_at(
+        select_learnable_params,
+        filter_spec,
+        replace=(True,) * len(select_learnable_params(model)),
+    )
+
+    @partial(eqx.filter_value_and_grad, arg=filter_spec)
+    def compute_loss(model, ic, inputs, targets):
+        outputs = model(inputs, ic, dt, activity_L2 > 0.0)  # (time, tr, out_d)
+
+        L2_weights = weight_L2 * ((model.W_rec) ** 2).sum() if weight_L2 > 0.0 else 0.0
+        L2_activities = (
+            activity_L2 * (outputs[1] ** 2).mean(1).sum() if activity_L2 > 0.0 else 0.0
+        )
+        return ((outputs[0] - targets) ** 2).mean(1).sum() + L2_weights + L2_activities
+
+    @partial(eqx.filter_jit, device=jax.devices()[0])
+    def make_step(model, ic, inputs, targets, opt_state):
+        loss, grads = compute_loss(model, ic, inputs, targets)
+        updates, opt_state = optim.update(grads, opt_state)
+        model = eqx.apply_updates(model, updates)
+        model = constraints(model)
+        return loss, model, opt_state
+
+    opt_state = optim.init(model)
+    loss_tracker = []
+
+    iterator = tqdm(range(epochs))  # graph iterations/epochs
+    for ep in iterator:
+
+        dataloader = iter(dataset)
+        for (x, y) in dataloader:
+            ic = jnp.zeros((x.shape[0], hidden_size))
+            x = jnp.array(x.transpose(2, 0, 1))  # (time, tr, dims)
+            y = jnp.array(y.transpose(2, 0, 1))
+
+            if input_std > 0.0:
+                x += input_std * jr.normal(prng_state, shape=x.shape)
+                prng_state, _ = jr.split(prng_state)
+
+            if priv_std > 0.0:
+                eps = priv_std * jr.normal(
+                    prng_state, shape=(*x.shape[:2], hidden_size)
+                )
+                prng_state, _ = jr.split(prng_state)
+            else:
+                eps = jnp.zeros((*x.shape[:2], hidden_size))
+
+            loss, model, opt_state = make_step(model, ic, (x, eps), y, opt_state)
+            loss = loss.item()
+            loss_tracker.append(loss)
+
+            loss_dict = {"loss": loss}
+            iterator.set_postfix(**loss_dict)
+
+    return model, loss_tracker
+
+
 def train_analog(
     model,
     constraints,
@@ -378,202 +455,3 @@ def train_spiking(
 if __name__ == "__main__":
     main()
 
-
-import sys
-
-sys.path.append("..")
-import jax, lib
-
-import jax.numpy as jnp
-
-
-def get_model(
-    kernel,
-    mapping,
-    likelihood,
-    x_dims,
-    y_dims,
-    tbin,
-    obs_mc=20,
-    lik_gh=20,
-    seed=123,
-    dtype=jnp.float32,
-):
-    # likelihood
-    if likelihood == "Normal":
-        var_y = 1.0 * jnp.ones(y_dims)
-        lik = lib.likelihoods.Gaussian(y_dims, variance=var_y)
-        f_dims = y_dims
-    elif likelihood == "hNormal":
-        lik = lib.likelihoods.HeteroscedasticGaussian(y_dims)  # , autodiff=False)
-        f_dims = y_dims * 2
-    elif likelihood == "Poisson":
-        lik = lib.likelihoods.Poisson(y_dims, tbin)  # , autodiff=True)
-        f_dims = y_dims
-    lik.set_approx_integration(approx_int_method="GH", num_approx_pts=lik_gh)
-
-    # mapping
-    if mapping == "Id":
-        x_dims = f_dims
-        obs = lib.observations.Identity(f_dims, lik)
-    elif mapping == "Lin":
-        C = 0.1 * jax.random.normal(
-            jax.random.PRNGKey(seed), shape=(f_dims, x_dims)
-        )  # jnp.ones((f_dims, x_dims))
-        # C = C/np.linalg.norm(C)
-        b = 0.0 * jnp.ones((f_dims,))
-        obs = lib.observations.Linear(lik, C, b)
-    elif mapping == "bLin":
-        mean_f = jnp.zeros(f_dims)
-        scale_C = 1.0 * jnp.ones((1, x_dims))  # shared across f_dims
-        blin_site_params = {
-            "K_eta_mu": jnp.ones((f_dims, x_dims, 1)),
-            # jax.random.normal(jax.random.PRNGKey(seed), shape=(f_dims, x_dims, 1)),
-            "chol_K_prec_K": 1.0 * jnp.eye(x_dims)[None, ...].repeat(f_dims, axis=0),
-        }
-        obs = lib.observations.BayesianLinear(
-            mean_f, scale_C, blin_site_params, lik, jitter=1e-5
-        )
-    elif mapping == "SVGP":
-        len_fx = 1.0 * jnp.ones((f_dims, x_dims))  # GP lengthscale
-        var_f = 1.0 * jnp.ones(f_dims)  # kernel variance
-        kern = lib.kernels.SquaredExponential(
-            f_dims, variance=var_f, lengthscale=len_fx
-        )
-        mean_f = jnp.zeros(f_dims)
-        num_induc = 10
-        induc_locs = jax.random.normal(
-            jax.random.PRNGKey(seed), shape=(f_dims, num_induc, x_dims)
-        )
-        svgp_site_params = {
-            "K_eta_mu": 1.0
-            * jax.random.normal(jax.random.PRNGKey(seed), shape=(f_dims, num_induc, 1)),
-            "chol_K_prec_K": 1.0 * jnp.eye(num_induc)[None, ...].repeat(f_dims, axis=0),
-        }
-        obs = lib.observations.SVGP(
-            kern, mean_f, induc_locs, svgp_site_params, lik, jitter=1e-5
-        )
-
-    obs.set_approx_integration(approx_int_method="MC", num_approx_pts=obs_mc)
-
-    # state space LDS
-    if kernel == "Mat32":
-        var_x = 1.0 * jnp.ones(x_dims)  # GP variance
-        len_x = 10.0 * jnp.ones((x_dims, 1))  # GP lengthscale
-        kernx = lib.kernels.Matern32(x_dims, variance=var_x, lengthscale=len_x)
-
-    elif kernel == "LEG":
-        N, R, B, Lam = lib.kernels.LEG.initialize_hyperparams(
-            jax.random.PRNGKey(seed), 3, x_dims
-        )
-        kernx = lib.kernels.LEG(N, R, B, Lam)
-
-    state_space = lib.latents.LinearDynamicalSystem(kernx, diagonal_site=True)
-
-    model = lib.inference.CVI_SSGP(state_space, obs, dtype=dtype)
-    name = (
-        "{}x_{}y_{}ms_".format(x_dims, y_dims, int(tbin * 1000))
-        + kernel
-        + "_"
-        + mapping
-        + "_"
-        + likelihood
-    )
-    return model, name
-
-
-def split_params_func_GD(all_params, split_param_func=None):
-    params, site_params = all_params["hyp"], all_params["sites"]
-
-    # params
-    if split_param_func is not None:
-        learned, fixed = split_param_func(params)
-    else:
-        learned = lib.utils.copy_pytree(params)
-        fixed = jax.tree_map(lambda x: jnp.empty(0), params)
-
-    # site params
-    learned_sp = lib.utils.copy_pytree(site_params)
-    fixed_sp = jax.tree_map(lambda x: jnp.empty(0), site_params)
-
-    return {"hyp": learned, "sites": learned_sp}, {"hyp": fixed, "sites": fixed_sp}
-
-
-def split_params_func_NGDx(all_params, split_param_func=None):
-    params, site_params = all_params["hyp"], all_params["sites"]
-
-    # params
-    if split_param_func is not None:
-        learned, fixed = split_param_func(params)
-    else:
-        learned = lib.utils.copy_pytree(params)
-        fixed = jax.tree_map(lambda x: jnp.empty(0), params)
-
-    # site params
-    learned_sp = lib.utils.copy_pytree(site_params)
-    fixed_sp = jax.tree_map(lambda x: jnp.empty(0), site_params)
-    for k in site_params["state_space"].keys():
-        learned_sp["state_space"][k] = jnp.empty(0)
-        fixed_sp["state_space"][k] = site_params["state_space"][k]
-
-    return {"hyp": learned, "sites": learned_sp}, {"hyp": fixed, "sites": fixed_sp}
-
-
-def split_params_func_NGDu(all_params, split_param_func=None):
-    params, site_params = all_params["hyp"], all_params["sites"]
-
-    # params
-    if split_param_func is not None:
-        learned, fixed = split_param_func(params)
-    else:
-        learned = lib.utils.copy_pytree(params)
-        fixed = jax.tree_map(lambda x: jnp.empty(0), params)
-
-    # site params
-    learned_sp = lib.utils.copy_pytree(site_params)
-    fixed_sp = jax.tree_map(lambda x: jnp.empty(0), site_params)
-    for k in site_params["observation"].keys():
-        learned_sp["observation"][k] = jnp.empty(0)
-        fixed_sp["observation"][k] = site_params["observation"][k]
-
-    return {"hyp": learned, "sites": learned_sp}, {"hyp": fixed, "sites": fixed_sp}
-
-
-def split_params_func_NGD(all_params, split_param_func=None):
-    params, site_params = all_params["hyp"], all_params["sites"]
-
-    # params
-    if split_param_func is not None:
-        learned, fixed = split_param_func(params)
-    else:
-        learned = lib.utils.copy_pytree(params)
-        fixed = jax.tree_map(lambda x: jnp.empty(0), params)
-
-    # site params
-    learned_sp = jax.tree_map(lambda x: jnp.empty(0), site_params)
-    fixed_sp = lib.utils.copy_pytree(site_params)
-
-    return {"hyp": learned, "sites": learned_sp}, {"hyp": fixed, "sites": fixed_sp}
-
-
-def overwrite_GD(all_params, site_params):
-    return all_params
-
-
-def overwrite_NGDx(all_params, site_params):
-    all_params["sites"]["state_space"] = site_params[
-        "state_space"
-    ]  # overwrite with NGDs
-    return all_params
-
-
-def overwrite_NGDu(all_params, site_params):
-    all_params["sites"]["observation"] = site_params[
-        "observation"
-    ]  # overwrite with NGDs
-    return all_params
-
-
-def overwrite_NGD(all_params, site_params):
-    all_params["sites"] = site_params  # overwrite with NGDs
-    return all_params

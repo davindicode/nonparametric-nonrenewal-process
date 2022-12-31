@@ -2,31 +2,26 @@ import math
 from functools import partial
 
 
-
 import jax.numpy as np
-from jax import grad, jacrev, jit, random, tree_map, value_and_grad, vmap
-from jax.nn import softmax
-from jax.numpy.linalg import cholesky
-from jax.scipy.linalg import block_diag, solve_triangular
 
 from jax.scipy.special import erf, gammaln
 
 from ..utils.jax import expsum, mc_sample, sigmoid, softplus, softplus_inv
 from ..utils.linalg import gauss_hermite, get_blocks, inv
 
-from .base import FactorizedLikelihood
+from .factorized import Gaussian, ZeroInflatedPoisson, NegativeBinomial, ConwayMaxwellPoisson
 
 _log_twopi = math.log(2 * math.pi)
 
 
 
-class HeteroscedasticGaussian(FactorizedLikelihood):
+class HeteroscedasticGaussian(Gaussian):
     """
     Heteroscedastic Gaussian likelihood
         p(y|f1,f2) = N(y|f1,link(f2)^2)
     """
 
-    def __init__(self, out_dims, link="softplus"):
+    def __init__(self, out_dims, link="softplus", array_type=jnp.float32):
         """
         :param link: link function, either 'exp' or 'softplus' (note that the link is modified with an offset)
         """
@@ -55,7 +50,7 @@ class HeteroscedasticGaussian(FactorizedLikelihood):
     
     
 
-class hZI_Poisson(ZI_Poisson):
+class HeteroscedasticZeroInflatedPoisson(ZeroInflatedPoisson):
     """
     Heteroscedastic ZIP
     """
@@ -66,7 +61,7 @@ class hZI_Poisson(ZI_Poisson):
         neurons,
         inv_link,
         dispersion_mapping,
-        tensor_type=torch.float,
+        array_type=jnp.float32, 
         strict_likelihood=True,
     ):
         super().__init__(tbin, neurons, inv_link, None, tensor_type, strict_likelihood)
@@ -78,7 +73,7 @@ class hZI_Poisson(ZI_Poisson):
     
 
 
-class hNegative_binomial(Negative_binomial):
+class HeteroscedasticNegativeBinomial(NegativeBinomial):
     """
     Heteroscedastic NB
     """
@@ -89,7 +84,7 @@ class hNegative_binomial(Negative_binomial):
         neurons,
         inv_link,
         dispersion_mapping,
-        tensor_type=torch.float,
+        array_type=jnp.float32, 
         strict_likelihood=True,
     ):
         super().__init__(tbin, neurons, inv_link, None, tensor_type, strict_likelihood)
@@ -100,7 +95,7 @@ class hNegative_binomial(Negative_binomial):
         return
 
 
-class hCOM_Poisson(COM_Poisson):
+class HeteroscedasticConwayMaxwellPoisson(ConwayMaxwellPoisson):
     """
     Heteroscedastic CMP
     """
@@ -111,7 +106,7 @@ class hCOM_Poisson(COM_Poisson):
         neurons,
         inv_link,
         dispersion_mapping,
-        tensor_type=torch.float,
+        array_type=jnp.float32, 
         J=100,
         strict_likelihood=True,
     ):

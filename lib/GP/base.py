@@ -24,8 +24,8 @@ class GP(module):
     
     mean: jnp.ndarray
         
-    def __init__(self, kernel, mean, RFF_num_feats):
-        super().__init__()
+    def __init__(self, kernel, mean, RFF_num_feats, array_type):
+        super().__init__(array_type)
         self.kernel = kernel
         self.mean = mean  # (out_dims,)
         self.RFF_num_feats = RFF_num_feats  # use random Fourier features
@@ -131,14 +131,14 @@ class SSM(module):
     site_obs: jnp.ndarray
     site_Lcov: jnp.ndarray
 
-    def __init__(self, site_locs, site_obs, site_Lcov):
+    def __init__(self, site_locs, site_obs, site_Lcov, array_type):
         """
         :param module markov_kernel: (hyper)parameters of the state space model
         :param jnp.ndarray site_locs: means of shape (time, 1)
         :param jnp.ndarray site_obs: means of shape (time, x_dims, 1)
         :param jnp.ndarray site_Lcov: covariances of shape (time, x_dims, x_dims)
         """
-        super().__init__()
+        super().__init__(array_type)
         self.site_locs = site_locs
         self.site_obs = site_obs
         self.site_Lcov = site_Lcov

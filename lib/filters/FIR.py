@@ -7,46 +7,12 @@ import jax.numpy as jnp
 
 from tqdm.autonotebook import tqdm
 
-from .base import FilteredLikelihood
-
-
-
-### filters ###
-class _filter(nn.Module):
-    """
-    GLM coupling filter base class.
-    """
-
-    def __init__(self, filter_len, conv_groups, tensor_type):
-        """
-        Filter length includes instantaneous part
-        """
-        super().__init__()
-        self.conv_groups = conv_groups
-        self.tensor_type = tensor_type
-        if filter_len <= 0:
-            raise ValueError("Filter length must be bigger than zero")
-        self.filter_len = filter_len
-
-    def forward(self):
-        """
-        Return filter values.
-        """
-        raise NotImplementedError
-
-    def KL_prior(self, importance_weighted):
-        """
-        Prior of the filter model.
-        """
-        return 0
-
-    def constrain(self):
-        return
+from .base import Filter
 
     
     
     
-class sigmoid_refractory(FilteredLikelihood):
+class SigmoidRefractory(Filter):
     """
     Step refractory filter
     """
@@ -102,7 +68,7 @@ class sigmoid_refractory(FilteredLikelihood):
 
     
 
-class RaisedCosineBumps(FilteredLikelihood):
+class RaisedCosineBumps(Filter):
     """
     Raised cosine basis [1], takes the form of
 
@@ -201,7 +167,7 @@ class RaisedCosineBumps(FilteredLikelihood):
         return F.conv1d(input, h_, groups=self.conv_groups), 0
 
 
-class HeteroRaisedCosineBumps(FilteredLikelihood):
+class HeteroRaisedCosineBumps(Filter):
     """
     Raised cosine basis with weights input dependent
     """
@@ -328,7 +294,7 @@ class HeteroRaisedCosineBumps(FilteredLikelihood):
 
     
 
-class GPGLM(FilterLikelihood):
+class GaussianProcess(Filter):
     """
     Nonparametric GLM coupling filters. Is equivalent to multi-output GP time series. [1]
 

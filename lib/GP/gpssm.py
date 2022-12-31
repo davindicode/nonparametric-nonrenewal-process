@@ -24,9 +24,9 @@ class DTGPSSM(module):
         
     state_posterior: LGSSM
     
-    def __init__(self, dynamics_function, chol_process_noise, p0_mean, p0_Lcov, state_posterior):
+    def __init__(self, dynamics_function, chol_process_noise, p0_mean, p0_Lcov, state_posterior, array_type=jnp.float32):
         assert dynamics_function.kernel.out_dims == dynamics_function.kernel.in_dims
-        super().__init__()
+        super().__init__(array_type)
         self.dynamics_function = dynamics_function
         self.chol_process_noise = chol_process_noise
         

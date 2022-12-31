@@ -19,7 +19,7 @@ _log_twopi = math.log( 2 * math.pi )
 
 
 ### sampling ###
-def gen_IRP(interval_dist, rate, dt, samples=100):
+def gen_IRP(interval_sampler, rate, dt, samples=100):
     """
     Sample event times from an Inhomogenous Renewal Process with a given rate function
     samples is an algorithm parameter, should be around the expect number of spikes
@@ -44,7 +44,7 @@ def gen_IRP(interval_dist, rate, dt, samples=100):
     while True:
 
         sT = psT + np.cumsum(
-            interval_dist.sample(
+            interval_sampler(
                 (
                     samples,
                     trials,
@@ -97,15 +97,15 @@ class Gamma(RenewalLikelihood):
         self,
         neurons,
         dt,
-        link_fn,
         shape,
-        array_type=jnp.float32,
+        link_type = 'logit', 
+        array_type = jnp.float32,
     ):
         """
         Renewal parameters shape can be shared for all neurons or independent.
         """
-        super().__init__(neurons, dt, inv_link, array_type)
-        self.shape = jnp.array(shape, dtype=self.array_type)
+        super().__init__(neurons, dt, link_type, array_type)
+        self.shape = self._to_jax(shape)
 
     def apply_constraints(self):
         """
@@ -132,7 +132,7 @@ class Gamma(RenewalLikelihood):
         # l_start[n_enu] = jnp.log(sps.gammaincc(self.shape.item(), d_Lambda_i))
         # l_end[n_enu] = jnp.log(sps.gammaincc(self.shape.item(), d_Lambda_f))
         """
-        shape_ = self.shape.expand(1, self.F_dims)[:, neuron]
+        #shape_ = self.shape.expand(1, self.F_dims)[:, neuron]
         
         #shape = self.shape[n].data.cpu().numpy()
         intervals = jnp.zeros((samples_, len(neuron)))
@@ -160,67 +160,17 @@ class Gamma(RenewalLikelihood):
         
         return ll
     
+    def log_survival(self, ISI):
+        return
+    
     def cum_renewal_density(self, ISI):
         return
     
     def log_conditional_intensity(self, ISI):
+        
         return
 
-    def nll(self, rescaled_ISI, neuron):
-        """
-        Gamma case, approximates the spiketrain NLL (takes dt into account for NLL).
-        
-        Ignore the end points of the spike train
-        
-
-        :param np.ndarray neuron: fit over given neurons, must be an array
-        :param jnp.ndarray F_mu: F_mu product with shape (samples, neurons, timesteps)
-        :param jnp.ndarray F_var: variance of the F_mu values, same shape
-        :param int b: batch number
-        :param np.ndarray neuron: neuron indices that are used
-        :param int samples: number of MC samples for likelihood evaluation
-        :returns: NLL array over sample dimensions
-        :rtype: jnp.ndarray
-        """
-        samples_ = n_l_rates.shape[
-            0
-        ]  # ll_samplesxcov_samples, in case of trials trial_num=cov_samples
-        for tr, isis in enumerate(rISI):  # over trials
-            for n_enu, isi in enumerate(isis):  # over neurons
-                ll = self.log_renewal_density()
-                
-        nll = - n_l_rates - ll
-        return nll.sum(1, keepdims=True)  # sum over neurons, keep as dummy time index
-
-    def objective(self, spiketimes, pre_rates, covariates, neuron, num_ISIs):
-        """
-        :param jnp.ndarray pre_rates: pre-link rates (mc, out_dims, ts)
-        :param List spiketimes: list of spike time indices arrays per neuron
-        :param jnp.ndarray covariates: covariates time series (mc, out_dims, ts, in_dims)
-        """
-        mc, ts = covariates.shape[0], covariates.shape[2]
-        
-        # map posterior samples
-        rates = self.link_fn(pre_rates)
-        taus = self.dt * jnp.cumsum(rates, axis=2)
-        
-        # rate rescaling
-        rISI = jnp.empty((mc, self.out_dims, num_ISIs))
-        
-        for en, spkinds in enumerate(spiketimes):
-            isi_count = jnp.maximum(spkinds.shape[0] - 1, 0)
-            
-            def body(i, val):
-                val[:, en, i] = taus[:, i]
-                return val
-            
-            rISI[:, en, :] = lax.fori_loop(0, isi_count, body, rISI[:, en, :])
-            
-        # NLL
-        ll = jnp.nansum(self.log_renewal_density(rISI), axis=2)  # (mc, out_dims)
-        
-        nll = - n_l_rates - ll
-        return nll
+    
     
     
 
@@ -241,7 +191,7 @@ class LogNormal(RenewalLikelihood):
         :param np.ndarray sigma: :math:`$sigma$` parameter which is > 0
         """
         super().__init__(neurons, inv_link, array_type)
-        self.sigma = jnp.array(sigma, dtype=self.array_type)
+        self.sigma = self._to_jax(sigma)
 
     def apply_constraints(self):
         """
@@ -359,7 +309,7 @@ class InverseGaussian(RenewalLikelihood):
         :param np.ndarray mu: :math:`$mu$` parameter which is > 0
         """
         super().__init__(neurons, inv_link, array_type)
-        self.mu = jnp.array(mu, dtype=self.array_type)
+        self.mu = self._to_jax(mu)
     
     def apply_constraints(self):
         """

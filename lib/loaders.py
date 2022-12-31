@@ -87,9 +87,32 @@ def ISILoader(DataLoader):
             )  # batch list of trial list of spike times list over neurons
         
         
+        
 def FIRLoader(DataLoader):
     """
     Taking into account windows for FIR filters
     """
     def __init__(self, obs_inputs):
         super().__init__()
+        
+    def set_Y(self, spikes, batch_info):
+        if len(spikes.shape) == 2:  # add in trial dimension
+            spikes = spikes[None, ...]
+
+        in_spikes = spikes[..., self.history_len :]
+        self.likelihood.set_Y(
+            in_spikes, batch_info
+        )  # excludes history part of spike train
+        self.likelihood.all_spikes = spikes.type(
+            self.likelihood.tensor_type
+        )  # overwrite
+
+        _, batch_link, batch_initial = self.likelihood.batch_info
+        if any(batch_initial[1:]) or all(batch_link[1:]) is False:
+            raise ValueError("Filtered likelihood must take in continuous data")
+
+        self.all_spikes = self.likelihood.all_spikes
+        self.batch_info = self.likelihood.batch_info
+        self.batches = self.likelihood.batches
+        self.trials = self.likelihood.trials
+        self.tsteps = self.likelihood.tsteps

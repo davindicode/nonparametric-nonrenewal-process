@@ -7,6 +7,31 @@ from jax import lax
 
 
 # spike trains
+def get_ISIs(timeline, spike_ind, prng_state, minimum=1e-8):
+    """
+    Converts a binary spike train to ISI w.r.t. timeline
+    
+    :param jnp.ndarray timeline: shape (out_dims, time)
+    :param jnp.ndarray spike_ind: shape (out_dims, time)
+    :return:
+        list of ISI arrays
+    """
+    out_dims, ts = spike_ind.shape
+    container = []
+    for n in range(out_dims):
+        inds = spike_ind[n]
+        times = timeline[n, inds]
+        
+        if prng_state is not None:
+            deqn = jr.uniform(prng_state, shape=(ts,)) * tbin
+            times += deqn
+            prng_state, _ = jr.split(prng_state)
+            
+        container.append(jnp.minimum(jnp.diff(times), minimum))
+        
+    return container
+
+
 def get_lagged_ISIs(spiketrain, lags):
     """
     :param np.ndarray spiketrain: input spike trains of shape (time, neurons)
@@ -38,11 +63,11 @@ def train_to_ind(train, allow_duplicate):
     if allow_duplicate:
         duplicate = False
         spike_ind = train.nonzero().flatten()
-        bigger = torch.where(train > 1)[0]
+        bigger = jnp.where(train > 1)[0]
         add_on = (spike_ind,)
         for b in bigger:
             add_on += (
-                b * torch.ones(int(train[b]) - 1, device=train.device, dtype=int),
+                b * jnp.ones(int(train[b]) - 1, dtype=int),
             )
 
         if len(add_on) > 1:
@@ -55,7 +80,7 @@ def train_to_ind(train, allow_duplicate):
     
     
 def ind_to_train(self, ind, timesteps):
-    train = torch.zeros((timesteps))
+    train = jnp.zeros((timesteps))
     train[ind] += 1
     return train
 
@@ -147,3 +172,85 @@ def binned_to_indices(spiketrain):
         add_on += (b * np.ones(int(spiketrain[b]) - 1, dtype=int),)
     spike_ind = np.concatenate(add_on)
     return np.sort(spike_ind)
+
+
+
+def spike_correlogram(spiketrain, lag_step, lag_points, segment_len, start_step=0, ref_point=0, cross=True, correlation=False, dev='cpu'):
+    """
+    Get the temporal correlogram of spikes in a given population. Computes 
+    
+    .. math::
+            C_{ij}(\tau) = \langle S_i(t) S_j(t + \tau) \rangle
+            
+    or if correlation flag is True, it computes 
+    
+    .. math::
+            C_{ij}(\tau) = \text{Corr}[ S_i(t), S_j(t + \tau) ]
+    
+    :param np.array spiketrain: array of population activity of shape (neurons, time)
+    :param int lag_range: 
+    :param int N_period: 
+    :param 
+    :param list start_points: list of integers of time stamps where to start computing the correlograms
+    :param bool cross: compute the full cross-correlogram over the population, otherwise compute only auto-correlograms
+    """
+    units = spiketrain.shape[0]
+    spikes = jnp.array(spiketrain, device=dev).float()
+    spikes_unfold = spikes[:, start_step:start_step+(lag_points-1)*lag_step+segment_len].unfold(-1, segment_len, lag_step) # n, t, f
+    
+    if cross:
+        cg = []
+        for u in range(units):
+            a = spikes_unfold[u:, ref_point:ref_point+1, :]
+            b = spikes_unfold[u:u+1, ...]
+            if correlation:
+                a_m = a.mean(-1, keepdims=True)
+                b_m = b.mean(-1, keepdims=True)
+                a_std = a.std(-1)
+                b_std = b.std(-1)
+                cg.append(((a-a_m)*(b-b_m)).mean(-1)/(a_std*b_std))
+            else:
+                cg.append((a*b).mean(-1)) # neurons-u, lags
+                
+        cg = torch.cat(cg, dim=0)
+    else:
+        a = spikes_unfold[:, ref_point:ref_point+1, :]
+        b = spikes_unfold
+        if correlation:
+            a_m = a.mean(-1, keepdims=True)
+            b_m = b.mean(-1, keepdims=True)
+            a_std = a.std(-1)
+            b_std = b.std(-1)
+            cg = ((a-a_m)*(b-b_m)).mean(-1)/(a_std*b_std)
+        else:
+            cg = (a*b).mean(-1) # neurons, lags
+
+    return cg.cpu().numpy()
+
+
+
+def compute_ISI_LV(sample_bin, spiketimes):
+    r"""
+    Compute the local variation measure and the interspike intervals.
+    
+    .. math::
+            LV = 3 \langle \left( \frac{\Delta_{k-1} - \Delta_{k}}{\Delta_{k-1} + \Delta_{k}} \right)^2 \rangle
+    
+    References:
+    
+    [1] `A measure of local variation of inter-spike intervals',
+    Shigeru Shinomoto, Keiji Miura Shinsuke Koyama (2005)
+    """
+    ISI = []
+    LV = []
+    units = len(spiketimes)
+    for u in range(units):
+        if len(spiketimes[u]) < 3:
+            ISI.append([])
+            LV.append([])
+            continue
+        ISI_ = (spiketimes[u][1:] - spiketimes[u][:-1])*sample_bin
+        LV.append( 3 * (((ISI_[:-1] - ISI_[1:]) / (ISI_[:-1] + ISI_[1:]))**2).mean() )
+        ISI.append(ISI_)
+        
+    return ISI, LV
