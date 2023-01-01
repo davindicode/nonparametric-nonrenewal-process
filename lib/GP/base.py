@@ -1,3 +1,5 @@
+from typing import Union
+
 import math
 from functools import partial
 
@@ -24,10 +26,10 @@ class GP(module):
     
     mean: jnp.ndarray
         
-    def __init__(self, kernel, mean, RFF_num_feats, array_type):
-        super().__init__(array_type)
+    def __init__(self, kernel, mean, RFF_num_feats):
+        super().__init__(kernel.array_type)
         self.kernel = kernel
-        self.mean = mean  # (out_dims,)
+        self.mean = self._to_jax(mean)  # (out_dims,)
         self.RFF_num_feats = RFF_num_feats  # use random Fourier features
         
     def apply_constraints(self):
@@ -127,7 +129,7 @@ class SSM(module):
     Multi-output GPs generally mix latent processes via dynamics as well.
     """
     
-    site_locs: jnp.ndarray  
+    site_locs: Union[jnp.ndarray, None]
     site_obs: jnp.ndarray
     site_Lcov: jnp.ndarray
 
@@ -139,6 +141,6 @@ class SSM(module):
         :param jnp.ndarray site_Lcov: covariances of shape (time, x_dims, x_dims)
         """
         super().__init__(array_type)
-        self.site_locs = site_locs
-        self.site_obs = site_obs
-        self.site_Lcov = site_Lcov
+        self.site_locs = self._to_jax(site_locs) if site_locs is not None else None
+        self.site_obs = self._to_jax(site_obs)
+        self.site_Lcov = self._to_jax(site_Lcov)

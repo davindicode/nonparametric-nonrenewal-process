@@ -1,8 +1,5 @@
 from typing import Callable, List
 import math
-#from functools import partial
-
-import scipy
 
 from ..base import module
 
@@ -442,7 +439,7 @@ class Lengthscale(MarkovianKernel):
         in_dims = lengthscale.shape[-1]
         super().__init__(in_dims, out_dims, state_dims, array_type)
         self.pre_len = softplus_inv(self._to_jax(lengthscale))
-        self.pre_var = softplus_inv(np.array(variance))
+        self.pre_var = softplus_inv(self._to_jax(variance))
                      
         self.distance_metric = distance_metric
 

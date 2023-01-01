@@ -4,15 +4,6 @@ from jax import random, tree_map, vmap
 
 
 
-
-### pytree ###
-def copy_pytree(_pytree):
-    """
-    None values are not regarded as leaves, so are skipped
-    """
-    return tree_map(lambda x: jnp.array(x), _pytree)
-
-
 ### functions ###
 def expsum(a, axis=0):
     """
@@ -28,25 +19,14 @@ def softplus(x):
     )  # numerically stabilized
 
 
-def sigmoid(x):
-    return jnp.exp(x) / (jnp.exp(x) + 1.0)
-
-
 def softplus_inv(x):
     """
     Inverse of the softplus positiviy mapping, used for transforming parameters.
     """
-    if x is None:
-        return x
-    else:
-        return jnp.log(1 - jnp.exp(-jnp.abs(x))) + jnp.maximum(
-            x, 0
-        )  # numerically stabilized
-    
-    
-def _safe_sqrt(x):
-    # Clipping around the (single) float precision which is ~1e-45.
-    return jnp.sqrt(jnp.maximum(x, 1e-36))
+    return jnp.log(1 - jnp.exp(-jnp.abs(x))) + jnp.maximum(
+        x, 0
+    )  # numerically stabilized
+
 
 
 def constrain_diagonal(K, lower_lim=1e-6):

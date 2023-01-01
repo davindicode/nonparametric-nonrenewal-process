@@ -70,7 +70,7 @@ class SparseGP(GP):
                 "Dimensions of inducing locations do not match kernel output dimensions"
             )
         super().__init__(kernel, mean, RFF_num_feats)
-        self.induc_locs = induc_locs  # (num_induc, out_dims, in_dims)
+        self.induc_locs = self._to_jax(induc_locs)  # (num_induc, out_dims, in_dims)
         
     def sample_posterior(self, prng_state, x, jitter, compute_KL):
         """
@@ -147,8 +147,8 @@ class qSVGP(SparseGP):
         :param variance: The observation noise variance, σ²
         """
         super().__init__(kernel, mean, RFF_num_feats, induc_locs)
-        self.u_mu = u_mu
-        self.u_Lcov = u_Lcov
+        self.u_mu = self._to_jax(u_mu)
+        self.u_Lcov = self._to_jax(u_Lcov)
         self.whitened = whitened
         
     def apply_constraints(self):
@@ -215,8 +215,8 @@ class tSVGP(SparseGP):
         :param variance: The observation noise variance, σ²
         """
         super().__init__(kernel, mean, RFF_num_feats, induc_locs)
-        self.lambda_1 = lambda_1
-        self.chol_Lambda_2 = chol_Lambda_2
+        self.lambda_1 = self._to_jax(lambda_1)
+        self.chol_Lambda_2 = self._to_jax(chol_Lambda_2)
 
     def apply_constraints(self):
         """

@@ -1,3 +1,5 @@
+import numpy as np
+
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -78,13 +80,6 @@ def train_to_ind(train, allow_duplicate):
         return torch.nonzero(train).flatten(), False
 
     
-    
-def ind_to_train(self, ind, timesteps):
-    train = jnp.zeros((timesteps))
-    train[ind] += 1
-    return train
-
-
 
 def covariates_at_spikes(spiketimes, behaviour_data):
     """
@@ -254,3 +249,144 @@ def compute_ISI_LV(sample_bin, spiketimes):
         ISI.append(ISI_)
         
     return ISI, LV
+
+
+
+### sampling ###
+def gen_IRP(interval_sampler, rate, dt, samples=100):
+    """
+    Sample event times from an Inhomogenous Renewal Process with a given rate function
+    samples is an algorithm parameter, should be around the expect number of spikes
+    Assumes piecewise constant rate function
+
+    Samples intervals from :math:`q(\Delta)`, parallelizes sampling
+
+    :param np.ndarray rate: (trials, neurons, timestep)
+    :param ISI_dist interval_dist: renewal interval distribution :math:`q(\tau)`
+    :returns: event times as integer indices of the rate array time dimension
+    :rtype: list of spike time indices as indexed by rate time dimension
+    """
+    sim_samples = rate.shape[2]
+    N = rate.shape[1]  # neurons
+    trials = rate.shape[0]
+    T = (
+        np.transpose(np.cumsum(rate, axis=-1), (2, 0, 1)) * dt
+    )  # actual time to rescaled, (time, trials, neuron)
+
+    psT = 0
+    sT_cont = []
+    while True:
+
+        sT = psT + np.cumsum(
+            interval_sampler(
+                (
+                    samples,
+                    trials,
+                )
+            ),
+            axis=0,
+        )
+        sT_cont.append(sT)
+
+        if not (T[-1, ...] >= sT[-1, ...]).any():  # all False
+            break
+
+        psT = np.tile(sT[-1:, ...], (samples, 1, 1))
+
+    sT_cont = np.stack(sT_cont, axis=0).reshape(-1, trials, N)
+    samples_tot = sT_cont.shape[0]
+    st = []
+
+    iterator = tqdm(range(samples_tot), leave=False)
+    for ss in iterator:  # AR assignment
+        comp = np.tile(sT_cont[ss : ss + 1, ...], (sim_samples, 1, 1))
+        st.append(np.argmax((comp < T), axis=0))  # convert to rescaled time indices
+
+    st = np.array(st)  # (samples_tot, trials, neurons)
+    st_new = []
+    for st_ in st.reshape(samples_tot, -1).T:
+        if not st_.any():  # all zero
+            st_new.append(np.array([]).astype(int))
+        else:  # first zeros in this case counts as a spike indices
+            for k in range(samples_tot):
+                if st_[-1 - k] != 0:
+                    break
+            if k == 0:
+                st_new.append(st_)
+            else:
+                st_new.append(st_[:-k])
+
+    return st_new  # list of len trials x neurons
+
+
+
+def gen_CMP(mu, nu, max_rejections=1000):
+    """
+    Use rejection sampling to sample from the COM-Poisson count distribution. [1]
+
+    References:
+
+    [1] `Bayesian Inference, Model Selection and Likelihood Estimation using Fast Rejection
+         Sampling: The Conway-Maxwell-Poisson Distribution`, Alan Benson, Nial Friel (2021)
+
+    :param numpy.array rate: input rate of shape (..., time)
+    :param float tbin: time bin size
+    :param float eps: order of magnitude of P(N>1)/P(N<2) per dilated Bernoulli bin
+    :param int max_count: maximum number of spike counts per bin possible
+    :returns: inhomogeneous Poisson process sample
+    :rtype: numpy.array
+    """
+    trials = mu.shape[0]
+    neurons = mu.shape[1]
+    Y = np.empty(mu.shape)
+
+    for tr in range(trials):
+        for n in range(neurons):
+            mu_, nu_ = mu[tr, n, :], nu[tr, n, :]
+
+            # Poisson
+            k = 0
+            left_bins = np.where(nu_ >= 1)[0]
+            while len(left_bins) > 0:
+                mu__, nu__ = mu_[left_bins], nu_[left_bins]
+                y_dash = jnp.poisson(jnp.tensor(mu__)).numpy()
+                _mu_ = np.floor(mu__)
+                alpha = (
+                    mu__ ** (y_dash - _mu_)
+                    / scsps.factorial(y_dash)
+                    * scsps.factorial(_mu_)
+                ) ** (nu__ - 1)
+
+                u = np.random.rand(*mu__.shape)
+                selected = u <= alpha
+                Y[tr, n, left_bins[selected]] = y_dash[selected]
+                left_bins = left_bins[~selected]
+                if k >= max_rejections:
+                    raise ValueError("Maximum rejection steps exceeded")
+                else:
+                    k += 1
+
+            # geometric
+            k = 0
+            left_bins = np.where(nu_ < 1)[0]
+            while len(left_bins) > 0:
+                mu__, nu__ = mu_[left_bins], nu_[left_bins]
+                p = 2 * nu__ / (2 * mu__ * nu__ + 1 + nu__)
+                u_0 = np.random.rand(*p.shape)
+
+                y_dash = np.floor(np.log(u_0) / np.log(1 - p))
+                a = np.floor(mu__ / (1 - p) ** (1 / nu__))
+                alpha = (1 - p) ** (a - y_dash) * (
+                    mu__ ** (y_dash - a) / scsps.factorial(y_dash) * scsps.factorial(a)
+                ) ** nu__
+
+                u = np.random.rand(*mu__.shape)
+                selected = u <= alpha
+                Y[tr, n, left_bins[selected]] = y_dash[selected]
+                left_bins = left_bins[~selected]
+                if k >= max_rejections:
+                    raise ValueError("Maximum rejection steps exceeded")
+                else:
+                    k += 1
+
+    return Y

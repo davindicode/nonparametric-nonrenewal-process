@@ -120,7 +120,7 @@ class LGSSM(SSM):
     minf: jnp.ndarray
     P0: jnp.ndarray
     
-    def __init__(self, As, Qs, H, minf, P0, site_obs, site_Lcov):
+    def __init__(self, As, Qs, H, minf, P0, site_obs, site_Lcov, array_type=jnp.float32):
         """
         :param module markov_kernel: (hyper)parameters of the state space model
         :param jnp.ndarray As: transitions of shape (time, out, sd, sd)
@@ -129,12 +129,12 @@ class LGSSM(SSM):
         :param jnp.ndarray site_obs: means of shape (time, out, 1)
         :param jnp.ndarray site_Lcov: covariances of shape (time, out, out)
         """
-        super().__init__(jnp.empty(0), site_obs, site_Lcov)
-        self.As = As
-        self.Qs = Qs
-        self.H = H
-        self.minf = minf
-        self.P0 = P0
+        super().__init__(None, site_obs, site_Lcov, array_type)
+        self.As = self._to_jax(As)
+        self.Qs = self._to_jax(Qs)
+        self.H = self._to_jax(H)
+        self.minf = self._to_jax(minf)
+        self.P0 = self._to_jax(P0)
     
     def get_LDS(self):
         Id = jnp.eye(self.As.shape[-1])
@@ -290,7 +290,7 @@ class GaussianLTI(SSM):
         :param jnp.ndarray site_obs: site observations with shape (timesteps, x_dims, 1)
         :param jnp.ndarray site_Lcov: site covariance cholesky with shape (timesteps, x_dims, x_dims)
         """
-        super().__init__(site_locs, site_obs, site_Lcov)
+        super().__init__(site_locs, site_obs, site_Lcov, markov_kernel.array_type)
         self.markov_kernel = markov_kernel
         
         self.fixed_grid_locs = fixed_grid_locs
@@ -513,7 +513,7 @@ class MultiOutputLTI(GaussianLTI):
         if spatial_MF:
             assert site_Lcov.shape[-1] == 1
         assert site_obs.shape[-2] == site_Lcov.shape[-2]  # spatial_locs
-        super().__init__(site_locs, site_obs, site_Lcov)
+        super().__init__(site_locs, site_obs, site_Lcov, markov_kernel.array_type)
         self.markov_kernel = markov_kernel
         self.fixed_grid_locs = fixed_grid_locs
         

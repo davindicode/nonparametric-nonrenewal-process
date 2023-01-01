@@ -45,7 +45,7 @@ class KroneckerLTI(SSM):
         if spatial_MF:
             assert site_Lcov.shape[-1] == 1
         assert site_obs.shape[-2] == site_Lcov.shape[-2]  # spatial_locs
-        super().__init__(site_locs, site_obs, site_Lcov)
+        super().__init__(site_locs, site_obs, site_Lcov, spatiotemporal_kernel.array_type)
         self.markov_sparse_kernel = spatiotemporal_kernel
         self.spatial_MF = spatial_MF
         self.fixed_grid_locs = fixed_grid_locs

@@ -1,8 +1,9 @@
-from typing import Any, List
+from typing import Any, List, Union
 
 import jax.numpy as jnp
 
 import equinox as eqx
+
 
 
 
