@@ -1,32 +1,31 @@
 from typing import Union
 
-import numpy as np
-
 import equinox as eqx
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 
+import numpy as np
+
 from ..base import module
 from ..filters.base import Filter
 from ..GP.markovian import GaussianLTI
-        
-    
-    
-    
+
+
 class FilterModule(module):
     """
     Spiketrain filter + GP with optional SSGP latent states
     """
-    
+
     spikefilter: Union[Filter, None]
-        
-    def __init__(self, spikefilter):  
-        super().__init__(spikefilter.array_type)
+
+    def __init__(self, spikefilter, array_type):
+        if spikefilter is not None:  # checks
+            assert spikefilter.array_type == array_type
+        super().__init__(array_type)
         self.spikefilter = spikefilter
-        
-        
+
     def apply_constraints(self):
         """
         Constrain parameters in optimization
@@ -39,15 +38,13 @@ class FilterModule(module):
         )
 
         return model
-    
-    
+
     def _spiketrain_filter(self, spktrain):
         """
         Apply the spike train filter
         """
         return filtered, KL
-    
-    
+
     def ELBO(self, prng_state, x, t, num_samps):
         raise NotImplementedError
 
@@ -152,25 +149,22 @@ class FilterModule(module):
         )  # trials, neurons, timesteps
 
         return spktrain, rate
-    
-    
-    
+
+
 class FilterGPLVM(FilterModule):
     """
     Spiketrain filter + GP with optional SSGP latent states
     """
-    
+
     ssgp: Union[GaussianLTI, None]
-        
-    def __init__(self, ssgp, spikefilter):
-        # checks
-        if ssgp is not None:
-            assert ssgp.array_type == spikefilter.array_type
-            
-        super().__init__(spikefilter)
+
+    def __init__(self, ssgp, spikefilter, array_type):
+        if ssgp is not None:  # checks
+            assert ssgp.array_type == array_type
+
+        super().__init__(spikefilter, array_type)
         self.ssgp = ssgp
-        
-        
+
     def apply_constraints(self):
         """
         Constrain parameters in optimization
@@ -183,8 +177,7 @@ class FilterGPLVM(FilterModule):
         )
 
         return model
-        
-        
+
     def _sample_input_trajectories(self, x, t, num_samps):
         """
         Combines observed inputs with latent trajectories
@@ -200,10 +193,9 @@ class FilterGPLVM(FilterModule):
                 jitter,
                 compute_KL=True,
             )  # (time, tr, x_dims, 1)
-        
+
         return inputs, KL
-    
-    
+
     def _sample_input_marginals(self, x, t, num_samps):
         """
         Combines observed inputs with latent marginal samples
@@ -219,29 +211,29 @@ class FilterGPLVM(FilterModule):
                 jitter,
                 compute_KL=True,
             )  # (time, tr, x_dims, 1)
-        
+
         return inputs, KL
-    
-    
-    
-    
-    
+
+
 class FilterSwitchingSSGP(FilterModule):
     """
     Factorization across time points allows one to rely on latent marginals
     """
-        
-    def __init__(self, switchgp, spikefilter):
-        super().__init__(spikefilter.array_type)
+
+    def __init__(self, switchgp, spikefilter, array_type):
+        if switchgp is not None:  # checks
+            assert switchgp.array_type == array_type
+        super().__init__(array_type)
         self.switchgp = switchgp
-        
-        
-        
+
+
 class FilterDTGPSSM(FilterModule):
     """
     Factorization across time points allows one to rely on latent marginals
     """
-        
+
     def __init__(self, gpssm, spikefilter):
+        if gpssm is not None:  # checks
+            assert gpssm.array_type == array_type
         super().__init__(spikefilter.array_type)
         self.gpssm = gpssm

@@ -1,11 +1,11 @@
 import math
-#from functools import partial
-
-from ..base import module
 
 import jax.numpy as jnp
 import jax.random as jr
 
+# from functools import partial
+
+from ..base import module
 
 
 class Mapping(module):
@@ -15,7 +15,7 @@ class Mapping(module):
     The default functions here use cubature/MC approximation methods, exact integration is specific
     to certain observation classes.
     """
-    
+
     in_dims: int
     out_dims: int
 
@@ -44,6 +44,7 @@ class Constant(module):
     """
     Constant value
     """
+
     value: jnp.ndarray  # (out_dims,)
 
     def __init__(self, in_dims, out_dims):
@@ -52,7 +53,7 @@ class Constant(module):
         """
         super().__init__(in_dims, out_dims)
 
-    #@partial(jit, static_argnums=(0, 4, 5))
+    # @partial(jit, static_argnums=(0, 4, 5))
     def evaluate_posterior(self, x, mean_only, compute_KL, jitter):
         """
         :param jnp.array x: input of shape (time, num_samps, in_dims, 1)
@@ -65,7 +66,7 @@ class Constant(module):
         post_covs = None if mean_only else jnp.zeros((ts, ts, num_samps, self.out_dims))
         return post_means, post_covs, 0.0
 
-    #@partial(jit, static_argnums=(0,))
+    # @partial(jit, static_argnums=(0,))
     def sample_prior(self, prng_state, x, jitter):
         """
         Prior distribution p(f(x)) = N(0, K_xx)
@@ -77,7 +78,7 @@ class Constant(module):
         """
         return self.evaluate_posterior(x, None, True, False, jitter)[0]
 
-    #@partial(jit, static_argnums=(0, 6))
+    # @partial(jit, static_argnums=(0, 6))
     def sample_posterior(self, prng_state, x, jitter, compute_KL):
         """
         Sample from posterior q(f|x)
@@ -86,9 +87,7 @@ class Constant(module):
         :return:
             sample of shape (time, num_samps, out_dims)
         """
-        samples, _, KL = self.evaluate_posterior(
-            x, True, compute_KL, jitter
-        )
+        samples, _, KL = self.evaluate_posterior(x, True, compute_KL, jitter)
         return samples, KL
 
 
@@ -103,7 +102,7 @@ class Identity(module):
         """
         super().__init__(in_dims, in_dims)
 
-    #@partial(jit, static_argnums=(0, 4, 5))
+    # @partial(jit, static_argnums=(0, 4, 5))
     def evaluate_posterior(self, x, mean_only, compute_KL, jitter):
         """
         :param jnp.array x: input of shape (time, num_samps, in_dims, 1)
@@ -117,7 +116,7 @@ class Identity(module):
         post_covs = None if mean_only else jnp.zeros((ts, ts, num_samps, self.out_dims))
         return post_means, post_covs, 0.0
 
-    #@partial(jit, static_argnums=(0,))
+    # @partial(jit, static_argnums=(0,))
     def sample_prior(self, prng_state, x, jitter):
         """
         Prior distribution p(f(x)) = N(0, K_xx)
@@ -129,7 +128,7 @@ class Identity(module):
         """
         return self.evaluate_posterior(x, params, None, True, False, jitter)[0]
 
-    #@partial(jit, static_argnums=(0, 6))
+    # @partial(jit, static_argnums=(0, 6))
     def sample_posterior(self, prng_state, x, jitter, compute_KL):
         """
         Sample from posterior q(f|x)
@@ -138,9 +137,7 @@ class Identity(module):
         :return:
             sample of shape (time, num_samps, out_dims)
         """
-        samples, _, KL = self.evaluate_posterior(
-            x, True, compute_KL, jitter
-        )
+        samples, _, KL = self.evaluate_posterior(x, True, compute_KL, jitter)
         return samples, KL
 
 
@@ -148,7 +145,7 @@ class Linear(module):
     """
     Factor analysis
     """
-    
+
     C: jnp.ndarray
     b: jnp.ndarray
 
@@ -161,7 +158,7 @@ class Linear(module):
         self.C = C
         self.b = b
 
-    #@partial(jit, static_argnums=(0, 4, 5))
+    # @partial(jit, static_argnums=(0, 4, 5))
     def evaluate_posterior(self, x, mean_only, compute_KL, jitter):
         """
         :param jnp.array x: input of shape (time, num_samps, in_dims, 1)
@@ -178,7 +175,7 @@ class Linear(module):
         post_covs = None if mean_only else jnp.zeros((ts, ts, num_samps, self.out_dims))
         return post_means, post_covs, 0.0
 
-    #@partial(jit, static_argnums=(0,))
+    # @partial(jit, static_argnums=(0,))
     def sample_prior(self, prng_state, x, jitter):
         """
         Prior distribution p(f(x)) = N(0, K_xx)
@@ -190,7 +187,7 @@ class Linear(module):
         """
         return self.evaluate_posterior(x, None, True, False, jitter)[0]
 
-    #@partial(jit, static_argnums=(0, 6))
+    # @partial(jit, static_argnums=(0, 6))
     def sample_posterior(self, prng_state, x, jitter, compute_KL):
         """
         Sample from posterior q(f|x)
@@ -199,7 +196,5 @@ class Linear(module):
         :return:
             sample of shape (time, num_samps, out_dims)
         """
-        samples, _, KL = self.evaluate_posterior(
-            x, True, compute_KL, jitter
-        )
+        samples, _, KL = self.evaluate_posterior(x, True, compute_KL, jitter)
         return samples, KL

@@ -1,4 +1,4 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from . import inference, filters, GP, LN, likelihoods, utils
+from . import filters, GP, inference, likelihoods, LN, utils

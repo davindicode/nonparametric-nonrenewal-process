@@ -149,9 +149,7 @@ def main():
 
     ### training ###
     template.train_model()
-    
 
-    
 
 def train_model():
     select_learnable_params = lambda tree: [
@@ -209,8 +207,7 @@ def train_model():
         "config": args,
     }
     pickle.dump(savedata, open(savefile, "wb"), pickle.HIGHEST_PROTOCOL)
-    
-    
+
 
 ### training ###
 def train_grads(
@@ -451,7 +448,5 @@ def train_spiking(
     return model, loss_tracker
 
 
-
 if __name__ == "__main__":
     main()
-

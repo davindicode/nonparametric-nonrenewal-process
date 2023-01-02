@@ -7,23 +7,22 @@ from ..base import module
 from ..utils.linalg import get_blocks
 
 
-
-
 ### classes ###
 class Likelihood(module):
     """
     base class for likelihoods
     """
+
     f_dims: int
     obs_dims: int
     link_type: str
     inverse_link: Union[Callable, None]
-        
+
     def __init__(self, obs_dims, f_dims, link_type, array_type):
         """
         The logit link function:
         P = E[yₙ=1|fₙ] = 1 / 1 + exp(-fₙ)
-        
+
         The Probit link function, i.e. the Error Function Likelihood:
         i.e. the Gaussian (Normal) cumulative density function:
         P = E[yₙ=1|fₙ] = Φ(fₙ)
@@ -35,28 +34,28 @@ class Likelihood(module):
         super().__init__(array_type)
         self.f_dims = f_dims
         self.obs_dims = obs_dims
-        
+
         self.link_type = link_type
         if link_type == "log":
             self.inverse_link = lambda x: jnp.exp(x)
         elif link_type == "softplus":
             self.inverse_link = lambda x: softplus(x)
         elif link_type == "rectified":
-            self.inverse_link = lambda x: jnp.maximum(x, 0.)
+            self.inverse_link = lambda x: jnp.maximum(x, 0.0)
         elif link_type == "logit":
             self.inverse_link = lambda x: 1 / (1 + np.exp(-x))
         elif link_type == "probit":
             jitter = 1e-8
             self.inverse_link = (
-                lambda x: 0.5 * (1.0 + jsc.special.erf(x / jnp.sqrt(2.0))) * (1 - 2 * jitter)
+                lambda x: 0.5
+                * (1.0 + jsc.special.erf(x / jnp.sqrt(2.0)))
+                * (1 - 2 * jitter)
                 + jitter
             )
         elif link_type == "none":
             self.inverse_link = None
         else:
             raise NotImplementedError("link function not implemented")
-
-
 
 
 class FactorizedLikelihood(Likelihood):
@@ -70,41 +69,51 @@ class FactorizedLikelihood(Likelihood):
     The default functions here use cubature/MC approximation methods, exact integration is specific
     to certain likelihood classes.
     """
+
     num_f_per_obs: int
-    
+
     def __init__(self, obs_dims, f_dims, link_type, array_type):
         super().__init__(obs_dims, f_dims, link_type, array_type)
-        self.num_f_per_obs = self.f_dims // self.obs_dims  # use smaller subgrid for cubature
+        self.num_f_per_obs = (
+            self.f_dims // self.obs_dims
+        )  # use smaller subgrid for cubature
 
     def log_likelihood(self, f, y):
         """
-        :param jnp.ndarray f: 
+        :param jnp.ndarray f:
         """
         raise NotImplementedError(
             "direct evaluation of this log-likelihood is not implemented"
         )
 
     def variational_expectation(
-        self, prng_state, y, f_mean, f_cov, jitter, approx_int_method, num_approx_pts, 
+        self,
+        prng_state,
+        y,
+        f_mean,
+        f_cov,
+        jitter,
+        approx_int_method,
+        num_approx_pts,
     ):
         """
         E[log p(yₙ|fₙ)] = ∫ log p(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ and its derivatives
         The log marginal likelihood is log E[p(yₙ|fₙ)] = log ∫ p(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ
         onlt the block-diagonal part of f_std matters
-        
+
         :param np.array f_mean: mean of q(f) of shape (f_dims,)
         :param np.array f_cov: covariance of q(f) of shape (f_dims, f_dims)
         :return:
             log likelihood: expected log likelihood
         """
         cubature_dim = self.num_f_per_obs
-        
-        if approx_int_method == 'GH': # Gauss-Hermite
+
+        if approx_int_method == "GH":  # Gauss-Hermite
             f, w = gauss_hermite(cubature_dim, num_approx_pts)
-        elif approx_int_method == 'MC': # sample unit Gaussian
+        elif approx_int_method == "MC":  # sample unit Gaussian
             f, w = mc_sample(cubature_dim, prng_state, num_approx_pts)
         else:
-            raise NotImplementedError('Approximate integration method not recognised')
+            raise NotImplementedError("Approximate integration method not recognised")
 
         ### compute transformed f locations ###
         # turn f_cov into lower triangular block diagonal matrix f_
@@ -129,17 +138,19 @@ class FactorizedLikelihood(Likelihood):
 
             f_mean = f_mean.reshape(self.obs_dims, cubature_dim, 1)
             df_points = chol_f_cov @ f  # (obs_dims, cubature_dim, approx_points)
-            
+
         f_locs = f_mean + df_points  # integration points
-        ll = vmap(self.log_likelihood, (-1, None), -1)(f_locs, y, False)  # vmap over approx_pts
+        ll = vmap(self.log_likelihood, (-1, None), -1)(
+            f_locs, y, False
+        )  # vmap over approx_pts
 
         # expected log likelihood
         weighted_log_lik = jnp.nansum(w * ll, axis=0)  # (approx_pts,)
         E_log_lik = jnp.nansum(weighted_log_lik)  # E_q(f)[log p(y|f)]
-        
+
         return E_log_lik
-        
-        
+
+
 #         """
 #         E[log p(yₙ|fₙ)] = ∫ log p(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ and its derivatives
 #         The log marginal likelihood is log E[p(yₙ|fₙ)] = log ∫ p(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ
@@ -232,7 +243,7 @@ class FactorizedLikelihood(Likelihood):
 #         E_log_lik = weighted_log_lik.sum()  # E_q(f)[log p(y|f)]
 
 #         return E_log_lik, dlambda_1, dlambda_2
-    
+
 #     def grads_log_likelihood_n(self, f_mean, df_points, y, lik_params, derivatives):
 #         """
 #         Factorization over data points n, vmap over obs_dims
@@ -272,74 +283,78 @@ class FactorizedLikelihood(Likelihood):
 
 #         return ll, dll_dm, d2ll_dm2
 
-        
-        
+
 class CountLikelihood(FactorizedLikelihood):
     """
     For handling count data
     """
+
     tbin: float
-    
+
     def __init__(self, obs_dims, f_dims, tbin, link_type, array_type):
         super().__init__(obs_dims, f_dims, link_type, array_type)
         self.tbin = tbin
 
-        
-        
-        
+
 class RenewalLikelihood(Likelihood):
     """
     Renewal model base class
     """
+
     dt: float
 
     def __init__(
-        self, obs_dims, dt, link_type, array_type, 
+        self,
+        obs_dims,
+        dt,
+        link_type,
+        array_type,
     ):
         super().__init__(obs_dims, obs_dims, link_type, array_type)
         self.dt = dt
-        
-    def variational_expectation(self, spiketimes, pre_rates, covariates, neuron, num_ISIs):
+
+    def variational_expectation(
+        self, spiketimes, pre_rates, covariates, neuron, num_ISIs
+    ):
         """
         Ignore the end points of the spike train
-        
+
         :param jnp.ndarray pre_rates: pre-link rates (mc, obs_dims, ts)
         :param List spiketimes: list of spike time indices arrays per neuron
         :param jnp.ndarray covariates: covariates time series (mc, obs_dims, ts, in_dims)
         """
         mc, ts = covariates.shape[0], covariates.shape[2]
-        
+
         # map posterior samples
         rates = self.inverse_link(pre_rates)
-        log_rates = pre_rates if self.link_type == 'log' else jnp.log(rates)
-        
+        log_rates = pre_rates if self.link_type == "log" else jnp.log(rates)
+
         taus = self.dt * jnp.cumsum(rates, axis=2) / self.shape_scale()
-        
+
         # rate rescaling
         rISI = jnp.empty((mc, self.obs_dims, num_ISIs))
-        
+
         for en, spkinds in enumerate(spiketimes):
             isi_count = jnp.maximum(spkinds.shape[0] - 1, 0)
-            
+
             def body(i, val):
                 val[:, en, i] = taus[:, i]
                 return val
-            
+
             rISI[:, en, :] = lax.fori_loop(0, isi_count, body, rISI[:, en, :])
-            
+
         log_renewals = vmap(self.log_renewal_density)(rISI)  # (mc, obs_dims)
         ll = log_rates + log_renewals
         return ll
-    
+
     def log_renewal_density(self, ISI):
         raise NotImplementedError
-        
+
     def cum_renewal_density(self, ISI):
         raise NotImplementedError
-    
+
     def log_survival(self, ISI):
-        return jnp.log(1. - self.cum_renewal_density(ISI))
-        
+        return jnp.log(1.0 - self.cum_renewal_density(ISI))
+
     def shape_scale(self):
         raise NotImplementedError
-        

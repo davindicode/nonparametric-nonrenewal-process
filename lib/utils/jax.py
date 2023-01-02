@@ -2,8 +2,6 @@ import jax.numpy as jnp
 from jax import random, tree_map, vmap
 
 
-
-
 ### functions ###
 def expsum(a, axis=0):
     """
@@ -11,6 +9,14 @@ def expsum(a, axis=0):
     """
     a_max = a.max(axis=axis, keepdims=True)
     return jnp.exp(a_max.sum(axis=axis)) * jnp.exp((a - a_max).sum(axis=axis))
+
+
+def safe_log(x, eps=1e-10):
+    return jnp.log(x + eps)  # avoid divergence at 0
+
+
+def safe_sqrt(x, eps=1e-10):
+    return jnp.sqrt(x + eps)  # avoid gradient divergence at 0
 
 
 def softplus(x):
@@ -28,7 +34,6 @@ def softplus_inv(x):
     )  # numerically stabilized
 
 
-
 def constrain_diagonal(K, lower_lim=1e-6):
     """
     Enforce matrix K has diagonal elements with lower limit
@@ -36,7 +41,6 @@ def constrain_diagonal(K, lower_lim=1e-6):
     K_diag = jnp.diag(jnp.diag(K))
     K = jnp.where(jnp.any(jnp.diag(K) < 0), jnp.where(K_diag < 0, lower_lim, K_diag), K)
     return K
-
 
 
 ### Monte Carlo ###

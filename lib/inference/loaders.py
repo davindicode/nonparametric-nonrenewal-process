@@ -1,7 +1,5 @@
-import numpy as np
-
 import jax.numpy as jnp
-
+import numpy as np
 
 
 class Dataset:
@@ -21,24 +19,24 @@ class Dataset:
 
     def __iter__(self):
         return iter(zip(self.inputs, self.targets))
-    
-    
+
+
 def DataLoader():
     obs_inputs: np.ndarray
-        
+
     def __init__(self, obs_inputs):
         self.obs_inputs = obs_inputs
-    
+
     def load(self):
         data = jnp.array(obs_inputs, dtype=dtype)
         return timestamps, data
-    
-    
-    
+
+
 def SpikeTrainLoader(DataLoader):
     """
     Loading spike trains (binary arrays)
     """
+
     def set_Y(self, spikes, batch_info):
         """
         Get all the activity into batches useable format for quick log-likelihood evaluation
@@ -49,36 +47,36 @@ def SpikeTrainLoader(DataLoader):
         if self.allow_duplicate is False and spikes.max() > 1:  # only binary trains
             raise ValueError("Only binary spike trains are accepted in set_Y() here")
         super().set_Y(spikes, batch_info)
-        
+
     def set_Y(self, spikes, batch_info):
         """
         Get all the activity into batches useable format for quick log-likelihood evaluation
         Tensor shapes: self.spikes (neuron_dim, batch_dim)
-        
+
         tfact is the log of time_bin times the spike count
         lfact is the log (spike count)!
         """
         super().set_Y(spikes, batch_info)
         batch_edge, _, _ = self.batch_info
-        
+
         self.lfact = []
         self.tfact = []
         self.totspik = []
         for b in range(self.batches):
-            spikes = self.all_spikes[..., batch_edge[b]:batch_edge[b+1]]
+            spikes = self.all_spikes[..., batch_edge[b] : batch_edge[b + 1]]
             self.totspik.append(spikes.sum(-1))
-            self.tfact.append(spikes*torch.log(self.tbin.cpu()))
-            self.lfact.append(torch.lgamma(spikes+1.))
-        
-        
-        
+            self.tfact.append(spikes * torch.log(self.tbin.cpu()))
+            self.lfact.append(torch.lgamma(spikes + 1.0))
+
+
 def ISILoader(DataLoader):
     """
     Loading inter-spike intervals of some point process time series
     """
+
     def __init__(self, obs_inputs, tensor_type, allow_duplicate, dequantize):
         super().__init__()
-        
+
     def set_Y(self, spikes, batch_info):
         """
         Get all the activity into batches useable format for quick log-likelihood evaluation
@@ -105,7 +103,7 @@ def ISILoader(DataLoader):
             self.spiketimes.append(
                 spiketimes
             )  # batch list of trial list of spike times list over neurons
-            
+
     def sample_helper(self, h, b, neuron, scale, samples):
         """
         MC estimator for NLL function.
@@ -143,16 +141,16 @@ def ISILoader(DataLoader):
         spiketimes = [[s.to(self.dt.device) for s in ss] for ss in self.spiketimes[b]]
         rISI = self.rate_rescale(neuron, spiketimes, rates, self.duplicate[b])
         return rates, n_l_rates, rISI
-        
-        
-        
+
+
 def FIRLoader(DataLoader):
     """
     Taking into account windows for FIR filters
     """
+
     def __init__(self, obs_inputs):
         super().__init__()
-        
+
     def set_Y(self, spikes, batch_info):
         if len(spikes.shape) == 2:  # add in trial dimension
             spikes = spikes[None, ...]

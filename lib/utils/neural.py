@@ -1,18 +1,16 @@
-import numpy as np
-
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 
 from jax import lax
-
 
 
 # spike trains
 def get_ISIs(timeline, spike_ind, prng_state, minimum=1e-8):
     """
     Converts a binary spike train to ISI w.r.t. timeline
-    
+
     :param jnp.ndarray timeline: shape (out_dims, time)
     :param jnp.ndarray spike_ind: shape (out_dims, time)
     :return:
@@ -23,14 +21,14 @@ def get_ISIs(timeline, spike_ind, prng_state, minimum=1e-8):
     for n in range(out_dims):
         inds = spike_ind[n]
         times = timeline[n, inds]
-        
+
         if prng_state is not None:
             deqn = jr.uniform(prng_state, shape=(ts,)) * tbin
             times += deqn
             prng_state, _ = jr.split(prng_state)
-            
+
         container.append(jnp.minimum(jnp.diff(times), minimum))
-        
+
     return container
 
 
@@ -68,9 +66,7 @@ def train_to_ind(train, allow_duplicate):
         bigger = jnp.where(train > 1)[0]
         add_on = (spike_ind,)
         for b in bigger:
-            add_on += (
-                b * jnp.ones(int(train[b]) - 1, dtype=int),
-            )
+            add_on += (b * jnp.ones(int(train[b]) - 1, dtype=int),)
 
         if len(add_on) > 1:
             duplicate = True
@@ -79,7 +75,6 @@ def train_to_ind(train, allow_duplicate):
     else:
         return torch.nonzero(train).flatten(), False
 
-    
 
 def covariates_at_spikes(spiketimes, behaviour_data):
     """
@@ -92,7 +87,6 @@ def covariates_at_spikes(spiketimes, behaviour_data):
             cov_s[k].append(cov_t[spiketimes[u]])
 
     return cov_s
-
 
 
 def bin_data(
@@ -169,70 +163,82 @@ def binned_to_indices(spiketrain):
     return np.sort(spike_ind)
 
 
-
-def spike_correlogram(spiketrain, lag_step, lag_points, segment_len, start_step=0, ref_point=0, cross=True, correlation=False, dev='cpu'):
+def spike_correlogram(
+    spiketrain,
+    lag_step,
+    lag_points,
+    segment_len,
+    start_step=0,
+    ref_point=0,
+    cross=True,
+    correlation=False,
+    dev="cpu",
+):
     """
-    Get the temporal correlogram of spikes in a given population. Computes 
-    
+    Get the temporal correlogram of spikes in a given population. Computes
+
     .. math::
             C_{ij}(\tau) = \langle S_i(t) S_j(t + \tau) \rangle
-            
-    or if correlation flag is True, it computes 
-    
+
+    or if correlation flag is True, it computes
+
     .. math::
             C_{ij}(\tau) = \text{Corr}[ S_i(t), S_j(t + \tau) ]
-    
+
     :param np.array spiketrain: array of population activity of shape (neurons, time)
-    :param int lag_range: 
-    :param int N_period: 
-    :param 
+    :param int lag_range:
+    :param int N_period:
+    :param
     :param list start_points: list of integers of time stamps where to start computing the correlograms
     :param bool cross: compute the full cross-correlogram over the population, otherwise compute only auto-correlograms
     """
     units = spiketrain.shape[0]
     spikes = jnp.array(spiketrain, device=dev).float()
-    spikes_unfold = spikes[:, start_step:start_step+(lag_points-1)*lag_step+segment_len].unfold(-1, segment_len, lag_step) # n, t, f
-    
+    spikes_unfold = spikes[
+        :, start_step : start_step + (lag_points - 1) * lag_step + segment_len
+    ].unfold(
+        -1, segment_len, lag_step
+    )  # n, t, f
+
     if cross:
         cg = []
         for u in range(units):
-            a = spikes_unfold[u:, ref_point:ref_point+1, :]
-            b = spikes_unfold[u:u+1, ...]
+            a = spikes_unfold[u:, ref_point : ref_point + 1, :]
+            b = spikes_unfold[u : u + 1, ...]
             if correlation:
                 a_m = a.mean(-1, keepdims=True)
                 b_m = b.mean(-1, keepdims=True)
                 a_std = a.std(-1)
                 b_std = b.std(-1)
-                cg.append(((a-a_m)*(b-b_m)).mean(-1)/(a_std*b_std))
+                cg.append(((a - a_m) * (b - b_m)).mean(-1) / (a_std * b_std))
             else:
-                cg.append((a*b).mean(-1)) # neurons-u, lags
-                
+                cg.append((a * b).mean(-1))  # neurons-u, lags
+
         cg = torch.cat(cg, dim=0)
     else:
-        a = spikes_unfold[:, ref_point:ref_point+1, :]
+        a = spikes_unfold[:, ref_point : ref_point + 1, :]
         b = spikes_unfold
         if correlation:
             a_m = a.mean(-1, keepdims=True)
             b_m = b.mean(-1, keepdims=True)
             a_std = a.std(-1)
             b_std = b.std(-1)
-            cg = ((a-a_m)*(b-b_m)).mean(-1)/(a_std*b_std)
+            cg = ((a - a_m) * (b - b_m)).mean(-1) / (a_std * b_std)
         else:
-            cg = (a*b).mean(-1) # neurons, lags
+            cg = (a * b).mean(-1)  # neurons, lags
 
     return cg.cpu().numpy()
-
 
 
 def compute_ISI_LV(sample_bin, spiketimes):
     r"""
     Compute the local variation measure and the interspike intervals.
-    
+
     .. math::
             LV = 3 \langle \left( \frac{\Delta_{k-1} - \Delta_{k}}{\Delta_{k-1} + \Delta_{k}} \right)^2 \rangle
-    
+
     References:
-    
+
     [1] `A measure of local variation of inter-spike intervals',
     Shigeru Shinomoto, Keiji Miura Shinsuke Koyama (2005)
     """
@@ -244,12 +250,11 @@ def compute_ISI_LV(sample_bin, spiketimes):
             ISI.append([])
             LV.append([])
             continue
-        ISI_ = (spiketimes[u][1:] - spiketimes[u][:-1])*sample_bin
-        LV.append( 3 * (((ISI_[:-1] - ISI_[1:]) / (ISI_[:-1] + ISI_[1:]))**2).mean() )
+        ISI_ = (spiketimes[u][1:] - spiketimes[u][:-1]) * sample_bin
+        LV.append(3 * (((ISI_[:-1] - ISI_[1:]) / (ISI_[:-1] + ISI_[1:])) ** 2).mean())
         ISI.append(ISI_)
-        
-    return ISI, LV
 
+    return ISI, LV
 
 
 ### sampling ###
@@ -317,7 +322,6 @@ def gen_IRP(interval_sampler, rate, dt, samples=100):
                 st_new.append(st_[:-k])
 
     return st_new  # list of len trials x neurons
-
 
 
 def gen_CMP(mu, nu, max_rejections=1000):
