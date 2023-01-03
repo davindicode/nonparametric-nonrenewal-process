@@ -324,7 +324,22 @@ def gen_IRP(interval_sampler, rate, dt, samples=100):
     return st_new  # list of len trials x neurons
 
 
-def gen_CMP(mu, nu, max_rejections=1000):
+def gen_ZIP(prng_state, mean, alpha):
+    zero_mask = jr.bernoulli(prng_state, alpha)
+    prng_state, _ = jr.split(prng_state)
+    cnts = jr.poisson(prng_state, mean)
+    return (1.0 - zero_mask) * cnts
+    
+    
+def gen_NB(prng_state, mean, r):
+    s = jr.gamma(
+        prng_state, r, mean / r
+    )  # becomes delta around rate*tbin when r to infinity, cap at 1e12
+    prng_state, _ = jr.split(prng_state)
+    return jr.poisson(prng_state, s)
+
+
+def gen_CMP(prng_state, mu, nu, max_rejections=1000):
     """
     Use rejection sampling to sample from the COM-Poisson count distribution. [1]
 
@@ -337,8 +352,8 @@ def gen_CMP(mu, nu, max_rejections=1000):
     :param float tbin: time bin size
     :param float eps: order of magnitude of P(N>1)/P(N<2) per dilated Bernoulli bin
     :param int max_count: maximum number of spike counts per bin possible
-    :returns: inhomogeneous Poisson process sample
-    :rtype: numpy.array
+    :returns:
+        inhomogeneous Poisson process sample (numpy.array)
     """
     trials = mu.shape[0]
     neurons = mu.shape[1]

@@ -30,7 +30,7 @@ class FactorizedGPLVM(FilterGPLVM):
     gp: SparseGP
     likelihood: FactorizedLikelihood
 
-    def __init__(self, gp, ssgp=None, spikefilter=None):
+    def __init__(self, gp, likelihood, ssgp=None, spikefilter=None):
         # checks
         assert likelihood.array_type == gp.array_type
         assert likelihood.f_dims == gp.kernel.out_dims
@@ -66,8 +66,8 @@ class FactorizedGPLVM(FilterGPLVM):
         """
         Compute ELBO
         """
-        # xx = np.linspace(-5., 5., 100)[None, None, :, None]
-        x_mean, x_cov, KL_x = self._sample_input_marginals(x, t, num_samps)
+        x_mean, x_cov, KL_x = self._posterior_input_marginals(
+            x, t, num_samps)  # (num_samps, obs_dims, ts, 1)
 
         f_mean, f_cov, KL_f, _ = self.gp.evaluate_posterior(
             prng_state, x_samples, jitter, compute_KL=True
@@ -102,27 +102,36 @@ class FactorizedGPLVM(FilterGPLVM):
         return rho_t  # (num_samps, out_dims, ts)
     
     def evaluate_metric(self):
+        """
+        predictive posterior log likelihood
+        log posterior predictive likelihood
+        """
         return
 
     ### sample ###
-    def sample_prior(self, prng_state, num_samps, x_obs=None, timedata=None):
+    def sample_prior(self, prng_state, num_samps, x_eval):
         """
         Sample from the generative model
         """
+        x_sample = self._prior_input_samples()
+        
         f_samples = self._gp_sample(self, prng_state, x_eval, prior, jitter)  # (evals, samp, f_dim)
         
         self.likelihood.sample_Y()
-        return y
+        return y_samples, f_samples, x_samples
 
-    def sample_posterior(self, prng_state, num_samps):
+    def sample_posterior(self, prng_state, num_samps, x_eval):
         """
         Sample from posterior predictive
         """
+        x_sample = self._posterior_input_samples()
+        
         qf_x, KL = self.gp.sample_posterior(
             prng_state, xx.repeat(num_samps, axis=0), jitter, compute_KL=True
         )  # (evals, samp, f_dim)
 
-        return y, q_vh, I, eps_samples
+        self.likelihood.sample_Y()
+        return y_samples, f_samples, x_samples
 
 
 class RenewalGPLVM(FilterGPLVM):

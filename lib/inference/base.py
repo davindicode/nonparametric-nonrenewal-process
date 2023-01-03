@@ -146,42 +146,32 @@ class FilterGPLVM(FilterModule):
         )
 
         return model
+    
+    def _prior_input_samples(self, prng_state, jitter):
+        prior_samples = self.ssgp.sample_prior(
+            prng_state, num_samps, t_eval, jitter)
+        return prior_samples
 
-    def _sample_input_trajectories(self, prng_state, x, t, num_samps, prior, compute_KL):
+    def _posterior_input_samples(self, prng_state, x, t, num_samps, compute_KL, jitter):
         """
         Combines observed inputs with latent trajectories
         """
         if self.ssgp is not None:
             x_samples, KL = self.ssgp.sample_posterior(
-                ss_params,
-                ss_var_params,
-                prng_keys[0],
-                num_samps,
-                timedata,
-                None,
-                jitter,
-                compute_KL=True,
-            )  # (time, tr, x_dims, 1)
+                prng_state, num_samps, t_eval, jitter, compute_KL)  # (tr, time, N, 1)
 
             return x_samples, KL
         
         return None, 0.
 
-    def _sample_input_marginals(self, prng_state, x, t, num_samps):
+    def _posterior_input_marginals(self, prng_state, x, t, num_samps, compute_KL, jitter):
         """
         Combines observed inputs with latent marginal samples
         """
         if self.ssgp is not None:  # filtering-smoothing
-            x_samples, KL = self.ssgp.evaluate_posterior(
-                ss_params,
-                ss_var_params,
-                prng_keys[0],
-                num_samps,
-                timedata,
-                None,
-                jitter,
-                compute_KL=True,
-            )  # (time, tr, x_dims, 1)
+            post_mean, post_cov, _ = self.ssgp.evaluate_posterior(
+                t_eval, False, compute_KL, jitter)
+            post_mean = post_mean[..., 0]  # (time, tr, x_dims, 1)
 
             return inputs, KL
         

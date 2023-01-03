@@ -2,13 +2,12 @@ import math
 from functools import partial
 
 import jax
-import jax.numpy as np
-from jax.scipy.special import erf, gammaln
+import jax.numpy as jnp
 
-from ..utils.jax import expsum, mc_sample, safe_log, sigmoid, softplus, softplus_inv
-from ..utils.linalg import gauss_hermite, get_blocks, inv
+from ..utils.jax import safe_log, softplus, softplus_inv
+from ..utils.neural import gen_ZIP, gen_NB, gen_CMP
 
-from .base import FactorizedLikelihood
+from .base import CountLikelihood
 from .factorized import (
     ConwayMaxwellPoisson,
     Gaussian,
@@ -64,6 +63,17 @@ class HeteroscedasticGaussian(Gaussian):
             approx_int_method,
             num_approx_pts,
         )
+    
+    def sample_Y(self, prng_state, f):
+        """
+        Sample from ZIP process.
+
+        :param numpy.array rate: input rate of shape (trials, neuron, timestep)
+        :returns: spike train of shape (trials, neuron, timesteps)
+        :rtype: jnp.array
+        """
+        f_in, obs_var = f[:, 0], softplus(f[:, 1])
+        return f_in + jnp.sqrt(obs_var) * jr.normal(prng_state, shape=f_in.shape)
 
 
 class HeteroscedasticZeroInflatedPoisson(ZeroInflatedPoisson):
@@ -91,6 +101,18 @@ class HeteroscedasticZeroInflatedPoisson(ZeroInflatedPoisson):
         """
         f_in, alpha = f[:, 0], jax.nn.sigmoid(f[:, 1])
         return super()._log_likelihood(f_in, y, alpha)
+    
+    def sample_Y(self, prng_state, f):
+        """
+        Sample from ZIP process.
+
+        :param numpy.array rate: input rate of shape (trials, neuron, timestep)
+        :returns: spike train of shape (trials, neuron, timesteps)
+        :rtype: jnp.array
+        """
+        f_in, alpha = f[:, 0], jax.nn.sigmoid(f[:, 1])
+        mean = self.inverse_link(f_in) * self.tbin
+        return gen_ZIP(prng_state, mean, alpha)
 
 
 class HeteroscedasticNegativeBinomial(NegativeBinomial):
@@ -118,6 +140,18 @@ class HeteroscedasticNegativeBinomial(NegativeBinomial):
         """
         f_in, r_inv = f[:, 0], softplus(f[:, 1])
         return super()._log_likelihood(f_in, y, r_inv)
+    
+    def sample_Y(self, prng_state, f):
+        """
+        Sample from ZIP process.
+
+        :param numpy.array rate: input rate of shape (trials, neuron, timestep)
+        :returns: spike train of shape (trials, neuron, timesteps)
+        :rtype: jnp.array
+        """
+        f_in, r_inv = f[:, 0], softplus(f[:, 1])
+        mean = self.inverse_link(f_in) * self.tbin
+        return gen_NB(prng_state, mean, r_inv)
 
 
 class HeteroscedasticConwayMaxwellPoisson(ConwayMaxwellPoisson):
@@ -146,6 +180,18 @@ class HeteroscedasticConwayMaxwellPoisson(ConwayMaxwellPoisson):
         """
         f_in, nu = f[:, 0], softplus(f[:, 1])
         return super()._log_likelihood(f_in, y, nu)
+    
+    def sample_Y(self, prng_state, f):
+        """
+        Sample from the CMP distribution.
+
+        :param numpy.array rate: input rate of shape (neuron, timestep)
+        :returns: spike train of shape (trials, neuron, timesteps)
+        :rtype: jnp.array
+        """
+        f_in, nu = f[:, 0], softplus(f[:, 1])
+        mu = self.inverse_link(f) * self.tbin
+        return gen_CMP(prng_state, mu, nu)
 
 
 class UniversalCount(CountLikelihood):
@@ -221,16 +267,3 @@ class UniversalCount(CountLikelihood):
         """
         logits = self.count_logits(f)
         return jr.categorical(prng_state, logits)
-
-
-#     def _neuron_to_F(self, neuron):
-#         """
-#         Access subset of neurons in expanded space.
-#         """
-#         neuron = self._validate_neuron(neuron)
-#         if len(neuron) == self.neurons:
-#             F_dims = list(range(self.F_dims))
-#         else: # access subset of neurons
-#             F_dims = list(np.concatenate([np.arange(n*self.C, (n+1)*self.C) for n in neuron]))
-
-#         return F_dims

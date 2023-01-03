@@ -11,7 +11,7 @@ from jax.scipy.special import erf, gammaln, logit
 
 from ..utils.jax import expsum, mc_sample, safe_log, softplus, softplus_inv
 from ..utils.linalg import gauss_hermite, get_blocks, inv_PSD
-from ..utils.neural import gen_CMP
+from ..utils.neural import gen_ZIP, gen_NB, gen_CMP
 
 from .base import CountLikelihood, FactorizedLikelihood
 
@@ -84,7 +84,7 @@ class Gaussian(FactorizedLikelihood):
         Ell = jnp.nansum(logEll_lik)  # sum over obs_dims
         return Ell
 
-    def sample_Y(self, prng_state, rate):
+    def sample_Y(self, prng_state, f):
         """
         Gaussian
 
@@ -92,7 +92,8 @@ class Gaussian(FactorizedLikelihood):
         :returns: spike train of shape (trials, neuron, timesteps)
         :rtype: jnp.array
         """
-        return rate * jr.normal(prng_state)
+        obs_var = softplus(self.pre_variance)
+        return f + jnp.sqrt(obs_var) * jr.normal(prng_state, shape=f_in.shape)
 
 
 #     """
@@ -191,7 +192,7 @@ class Bernoulli(FactorizedLikelihood):
             safe_log(1.0 - lf),
         )
 
-    def sample_Y(self, rate):
+    def sample_Y(self, prng_state, f):
         """
         Bernoulli process
 
@@ -199,7 +200,8 @@ class Bernoulli(FactorizedLikelihood):
         :returns: spike train of shape (trials, neuron, timesteps)
         :rtype: jnp.array
         """
-        return jr.bernoulli(prng_state, rate)
+        p_spike = self.inverse_link(f)
+        return jr.bernoulli(prng_state, p_spike)
 
 
 class Poisson(CountLikelihood):
@@ -274,7 +276,7 @@ class Poisson(CountLikelihood):
                 num_approx_pts,
             )
 
-    def sample_Y(self, prng_state, rate):
+    def sample_Y(self, prng_state, f):
         """
         Bernoulli process
 
@@ -282,6 +284,7 @@ class Poisson(CountLikelihood):
         :returns: spike train of shape (trials, neuron, timesteps)
         :rtype: jnp.array
         """
+        rate = self.inverse_link(f)
         mean = rate * self.tbin
         return jr.poisson(prng_state, mean)
 
@@ -369,7 +372,7 @@ class ZeroInflatedPoisson(CountLikelihood):
         else:
             return self
 
-    def sample_Y(self, rate, neuron=None, XZ=None):
+    def sample_Y(self, prng_state, f):
         """
         Sample from ZIP process.
 
@@ -377,28 +380,10 @@ class ZeroInflatedPoisson(CountLikelihood):
         :returns: spike train of shape (trials, neuron, timesteps)
         :rtype: jnp.array
         """
-        neuron = self._validate_neuron(neuron)
-        rate_ = rate[:, neuron, :]
-
-        if self.dispersion_mapping is None:
-            alpha_ = (
-                self.alpha[None, :, None]
-                .expand(rate.shape[0], self.neurons, rate_.shape[-1])
-                .data.cpu()
-                .numpy()[:, neuron, :]
-            )
-        else:
-            with jnp.no_grad():
-                alpha_ = (
-                    self.sample_dispersion(XZ, rate.shape[0] // XZ.shape[0], neuron)
-                    .cpu()
-                    .numpy()
-                )
-
-        zero_mask = point_process.gen_IBP(alpha_)
-        return (1.0 - zero_mask) * jnp.poisson(
-            jnp.array(rate_ * self.tbin.item())
-        ).numpy()
+        mean = self.inverse_link(f) * self.tbin
+        alpha = jnp.tanh(self.arctanh_alpha)
+        return gen_ZIP(prng_state, mean, alpha)
+    
 
 
 class NegativeBinomial(CountLikelihood):
@@ -485,7 +470,7 @@ class NegativeBinomial(CountLikelihood):
         r_inv = self.r_inv  # use 1/r parameterization
         return self._log_likelihood(f, y, r_inv)
 
-    def sample_Y(self, rate, r_inv=None):
+    def sample_Y(self, prng_state, f):
         """
         Sample from the Gamma-Poisson mixture.
 
@@ -494,27 +479,11 @@ class NegativeBinomial(CountLikelihood):
         :returns: spike train of shape (trials, neuron, timesteps)
         :rtype: jnp.array
         """
-        if r_inv is not None:
-            r_ = (
-                1.0
-                / (
-                    self.r_inv[None, :, None]
-                    .expand(rate.shape[0], self.neurons, rate_.shape[-1])
-                    .data.cpu()
-                    .numpy()
-                    + 1e-12
-                )[:, neuron, :]
-            )
-        else:
-            samples = rate.shape[0]
-            with jnp.no_grad():
-                disp = self.sample_dispersion(XZ, rate.shape[0] // XZ.shape[0], neuron)
-            r_ = 1.0 / (disp.cpu().numpy() + 1e-12)
+        mean = self.inverse_link(f) * self.tbin
+        r = 1.0 / (self.r_inv + 1e-12)
+        return gen_NB(prng_state, mean, r)
 
-        s = jr.gamma(
-            r_, rate_ * self.tbin.item() / r_
-        )  # becomes delta around rate*tbin when r to infinity, cap at 1e12
-        return jr.poisson(jnp.array(s)).numpy()
+    
 
 
 class ConwayMaxwellPoisson(CountLikelihood):
@@ -585,7 +554,7 @@ class ConwayMaxwellPoisson(CountLikelihood):
         nu = jnp.exp(self.log_nu)  # nn.functional.softplus
         return self._log_likelihood(f, y, nu)
 
-    def sample_Y(self, rate, neuron=None, XZ=None):
+    def sample_Y(self, prng_state, f):
         """
         Sample from the CMP distribution.
 
@@ -593,20 +562,6 @@ class ConwayMaxwellPoisson(CountLikelihood):
         :returns: spike train of shape (trials, neuron, timesteps)
         :rtype: jnp.array
         """
-        neuron = self._validate_neuron(neuron)
-        mu_ = rate[:, neuron, :] * self.tbin.item()
-
-        if self.dispersion_mapping is None:
-            nu_ = (
-                jnp.exp(self.log_nu)[None, :, None]
-                .expand(rate.shape[0], self.neurons, mu_.shape[-1])
-                .data.cpu()
-                .numpy()[:, neuron, :]
-            )
-        else:
-            samples = rate.shape[0]
-            with jnp.no_grad():
-                disp = self.sample_dispersion(XZ, rate.shape[0] // XZ.shape[0], neuron)
-            nu_ = jnp.exp(disp).cpu().numpy()
-
-        return gen_CMP(mu_, nu_)
+        mu = self.inverse_link(f) * self.tbin
+        nu = jnp.exp(self.log_nu)
+        return gen_CMP(prng_state, mu, nu)
