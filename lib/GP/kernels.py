@@ -19,6 +19,7 @@ from .linalg import bdiag, get_LTI_matrices, id_kronecker
 _sqrt_twopi = math.sqrt(2 * math.pi)
 
 
+
 ### functions ###
 def _scaled_dist_squared_Rn(X, Y, lengthscale, diagonal):
     r"""
@@ -459,8 +460,8 @@ class DecayingSquaredExponential(Kernel):
             -0.5
             * (
                 r2
-                + (((X - self.beta) / self.lengthscale_beta) ** 2).sum(-1)[..., None]
-                + (((Z - self.beta) / self.lengthscale_beta) ** 2).sum(-1)[..., None, :]
+                + (((X - self.beta) / self.lengthscale_beta)**2).sum(-1)[..., None]
+                + (((Z - self.beta) / self.lengthscale_beta)**2).sum(-1)[..., None, :]
             )
         )
 
@@ -521,6 +522,7 @@ class Lengthscale(MarkovianKernel):
         raise NotImplementedError("kernel spectrum not implemented")
 
 
+        
 class SquaredExponential(Lengthscale):
     r"""
     Implementation of Squared Exponential kernel:
@@ -565,6 +567,7 @@ class SquaredExponential(Lengthscale):
         amplitude = jnp.sqrt(variance)
         return ks, amplitude
 
+    
 
 class RationalQuadratic(Lengthscale):
     r"""
@@ -597,7 +600,8 @@ class RationalQuadratic(Lengthscale):
         variance = softplus(self.pre_var)[:, None, None]
         scale_mixture = softplus(self.pre_scale_mixture)[:, None, None]
         return variance * (1 + (0.5 / scale_mixture) * r2).pow(-scale_mixture)
-
+    
+    
 
 class Matern12(Lengthscale):
     """
@@ -662,6 +666,18 @@ class Matern12(Lengthscale):
         minf = jnp.zeros((1,))  # stationary state mean
         Pinf = var[None, None]
         return H, minf, Pinf
+    
+    def sample_spectrum(self, prng_state, num_samps, RFF_num_feats):
+        lengthscale = softplus(self.pre_len)  # (out, d_x)
+        variance = softplus(self.pre_var)  # (out_dims,)
+
+        k_std = 1.0 / lengthscale
+        ks = k_std[None, :, None, :] * jr.t(
+            prng_state, df=1., shape=(num_samps, self.out_dims, RFF_num_feats, self.in_dims)
+        )
+        amplitude = jnp.sqrt(variance)
+        return ks, amplitude
+    
 
 
 class Matern32(Lengthscale):
@@ -698,7 +714,7 @@ class Matern32(Lengthscale):
         r  is the Euclidean distance between the input points, scaled by the lengthscales parameter ℓ,
         σ² is the variance parameter.
         """
-        var = softplus(self.pre_var)[:, None, None]
+        variance = softplus(self.pre_var)[:, None, None]
         sqrt3 = jnp.sqrt(3.0)
         return variance * (1.0 + sqrt3 * r) * jnp.exp(-sqrt3 * r)
 
@@ -737,6 +753,18 @@ class Matern32(Lengthscale):
         minf = jnp.zeros((2,))  # stationary state mean
         Pinf = self._to_jax([[var, 0.0], [0.0, 3.0 * var / ell**2.0]])
         return H, minf, Pinf
+    
+    def sample_spectrum(self, prng_state, num_samps, RFF_num_feats):
+        lengthscale = softplus(self.pre_len)  # (out, d_x)
+        variance = softplus(self.pre_var)  # (out_dims,)
+
+        k_std = 1.0 / lengthscale
+        ks = k_std[None, :, None, :] * jr.t(
+            prng_state, df=2., shape=(num_samps, self.out_dims, RFF_num_feats, self.in_dims)
+        )
+        amplitude = jnp.sqrt(variance)
+        return ks, amplitude
+    
 
 
 class Matern52(Lengthscale):
@@ -776,9 +804,9 @@ class Matern52(Lengthscale):
         r  is the Euclidean distance between the input points, scaled by the lengthscales parameter ℓ,
         σ² is the variance parameter.
         """
-        var = softplus(self.pre_var)[:, None, None]
+        variance = softplus(self.pre_var)[:, None, None]
         sqrt5 = jnp.sqrt(5.0)
-        return var * (1.0 + sqrt5 * r + 5.0 / 3.0 * jnp.square(r)) * jnp.exp(-sqrt5 * r)
+        return variance * (1.0 + sqrt5 * r + 5.0 / 3.0 * r**2) * jnp.exp(-sqrt5 * r)
 
     @eqx.filter_vmap
     def _state_dynamics(self):
@@ -841,6 +869,19 @@ class Matern52(Lengthscale):
             ]
         )
         return H, minf, Pinf
+    
+    def sample_spectrum(self, prng_state, num_samps, RFF_num_feats):
+        lengthscale = softplus(self.pre_len)  # (out, d_x)
+        variance = softplus(self.pre_var)  # (out_dims,)
+
+        k_std = 1.0 / lengthscale
+        ks = k_std[None, :, None, :] * jr.t(
+            prng_state, df=3., shape=(num_samps, self.out_dims, RFF_num_feats, self.in_dims)
+        )
+        amplitude = jnp.sqrt(variance)
+        return ks, amplitude
+    
+    
 
 
 class Matern72(Lengthscale):
@@ -876,14 +917,14 @@ class Matern72(Lengthscale):
 
     # kernel
     def _K_r(self, r):
-        var = softplus(self.pre_var)[:, None, None]
+        variance = softplus(self.pre_var)[:, None, None]
         sqrt7 = jnp.sqrt(7.0)
         return (
             variance
             * (
                 1.0
                 + sqrt7 * r
-                + 14.0 / 5.0 * jnp.square(r)
+                + 14.0 / 5.0 * r**2
                 + 7.0 * sqrt7 / 15.0 * r**3
             )
             * jnp.exp(-sqrt7 * r)
@@ -978,6 +1019,19 @@ class Matern72(Lengthscale):
             ]
         )
         return H, minf, Pinf
+    
+    def sample_spectrum(self, prng_state, num_samps, RFF_num_feats):
+        lengthscale = softplus(self.pre_len)  # (out, d_x)
+        variance = softplus(self.pre_var)  # (out_dims,)
+
+        k_std = 1.0 / lengthscale
+        ks = k_std[None, :, None, :] * jr.t(
+            prng_state, df=4., shape=(num_samps, self.out_dims, RFF_num_feats, self.in_dims)
+        )
+        amplitude = jnp.sqrt(variance)
+        return ks, amplitude
+    
+    
 
 
 ### combinations ###

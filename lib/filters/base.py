@@ -1,4 +1,5 @@
 import jax
+from jax import lax, vmap
 import jax.numpy as jnp
 
 from ..base import module
@@ -28,14 +29,44 @@ class Filter(module):
         """
         raise NotImplementedError
 
-    def forward(self, prng_state, inputs):
+    def apply_filter(self, prng_state, inputs):
         """
         Introduces the spike coupling by convolution with the spike train, no padding and left removal
         for causal convolutions.
 
-        :param torch.Tensor input: input spiketrain or covariates with shape (trials, neurons, filter_length)
+        :param jnp.ndarray input: input spiketrain or covariates with shape (trials, neurons, filter_length)
                                    or (samples, neurons, filter_length)
         :returns: filtered input of shape (trials, neurons, filter_length)
         """
-        h, KL = self.compute_filter(prng_state)
-        return F.conv1d(input, h_, groups=self.conv_groups), KL
+        # num_samps = inputs.shape[0]
+        h, KL = self.compute_filter(prng_state)  # sample one trajectory
+        
+        if self.cross_coupling:
+            dn = lax.conv_dimension_numbers(
+                inputs.shape, h.shape, ('NCW', 'WIO', 'NCW'))
+
+            out = lax.conv_general_dilated(inputs,   # lhs = image tensor
+                                           h,      # rhs = conv kernel tensor
+                                           (1,),   # window strides
+                                           'VALID', # padding mode
+                                           (1,),   # lhs/image dilation
+                                           (1,),   # rhs/kernel dilation
+                                           dn)     # dimension_numbers = lhs, rhs, out dimension permutation
+            
+        else:
+            dn = lax.conv_dimension_numbers(
+                (inputs.shape[0], 1, 1), (h.shape[0], 1, 1), ('NCW', 'WIO', 'NCW'))
+            inputs = inputs[..., None, :]
+            h = h[..., None]
+            
+            out = vmap(lax.conv_general_dilated, (1, 1, None, None, None, None, None), 1)(
+                inputs,   # lhs = image tensor
+                h,      # rhs = conv kernel tensor
+                (1,),   # window strides
+                'VALID', # padding mode
+                (1,),   # lhs/image dilation
+                (1,),   # rhs/kernel dilation
+                dn,     # dimension_numbers = lhs, rhs, out dimension permutation
+            )[..., 0, :]
+            
+        return out, KL

@@ -59,15 +59,6 @@ def SpikeTrainLoader(DataLoader):
         super().set_Y(spikes, batch_info)
         batch_edge, _, _ = self.batch_info
 
-        self.lfact = []
-        self.tfact = []
-        self.totspik = []
-        for b in range(self.batches):
-            spikes = self.all_spikes[..., batch_edge[b] : batch_edge[b + 1]]
-            self.totspik.append(spikes.sum(-1))
-            self.tfact.append(spikes * torch.log(self.tbin.cpu()))
-            self.lfact.append(torch.lgamma(spikes + 1.0))
-
 
 def ISILoader(DataLoader):
     """
@@ -87,60 +78,6 @@ def ISILoader(DataLoader):
         super().set_Y(spikes, batch_info)
         batch_edge, _, _ = self.batch_info
 
-        self.spiketimes = []
-        self.intervals = torch.empty((self.batches, self.trials, self.neurons))
-        self.duplicate = np.empty((self.batches, self.trials, self.neurons), dtype=bool)
-        for b in range(self.batches):
-            spk = self.all_spikes[..., batch_edge[b] : batch_edge[b + 1]]
-            spiketimes = []
-            for tr in range(self.trials):
-                cont = []
-                for k in range(self.neurons):
-                    s, self.duplicate[b, tr, k] = self.train_to_ind(spk[tr, k])
-                    cont.append(s)
-                    self.intervals[b, tr, k] = len(s) - 1
-                spiketimes.append(cont)
-            self.spiketimes.append(
-                spiketimes
-            )  # batch list of trial list of spike times list over neurons
-
-    def sample_helper(self, h, b, neuron, scale, samples):
-        """
-        MC estimator for NLL function.
-
-        :param torch.Tensor scale: additional scaling of the rate rescaling to preserve the ISI mean
-
-        :returns: tuple of rates, spikes*log(rates*scale), rescaled ISIs
-        :rtype: tuple
-        """
-        batch_edge, _, _ = self.batch_info
-        scale = scale.expand(1, self.F_dims)[
-            :, neuron, None
-        ]  # rescale to get mean 1 in renewal distribution
-        rates = self.f(h) * scale
-        spikes = self.all_spikes[:, neuron, batch_edge[b] : batch_edge[b + 1]].to(
-            self.dt.device
-        )
-        # self.spikes[b][:, neuron, self.filter_len-1:]
-        if (
-            self.trials != 1 and samples > 1 and self.trials < h.shape[0]
-        ):  # cannot rely on broadcasting
-            spikes = spikes.repeat(
-                samples, 1, 1
-            )  # trial blocks are preserved, concatenated in first dim
-
-        if (
-            self.link_type == "log"
-        ):  # bit masking seems faster than integer indexing using spiketimes
-            n_l_rates = (spikes * (h + torch.log(scale))).sum(-1)
-        else:
-            n_l_rates = (spikes * torch.log(rates + 1e-12)).sum(
-                -1
-            )  # rates include scaling
-
-        spiketimes = [[s.to(self.dt.device) for s in ss] for ss in self.spiketimes[b]]
-        rISI = self.rate_rescale(neuron, spiketimes, rates, self.duplicate[b])
-        return rates, n_l_rates, rISI
 
 
 def FIRLoader(DataLoader):
@@ -162,13 +99,3 @@ def FIRLoader(DataLoader):
         self.likelihood.all_spikes = spikes.type(
             self.likelihood.tensor_type
         )  # overwrite
-
-        _, batch_link, batch_initial = self.likelihood.batch_info
-        if any(batch_initial[1:]) or all(batch_link[1:]) is False:
-            raise ValueError("Filtered likelihood must take in continuous data")
-
-        self.all_spikes = self.likelihood.all_spikes
-        self.batch_info = self.likelihood.batch_info
-        self.batches = self.likelihood.batches
-        self.trials = self.likelihood.trials
-        self.tsteps = self.likelihood.tsteps

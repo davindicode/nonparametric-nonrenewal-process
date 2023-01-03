@@ -58,16 +58,15 @@ class Gamma(RenewalLikelihood):
 
     def log_renewal_density(self, ISI):
         """
-        :param jnp.ndarray ISI: interspike interval array with NaN padding (obs_dims, num_isi)
+        :param jnp.ndarray ISI: interspike interval array with NaN padding (obs_dims,)
         :return:
             log density of shape (obs_dims,)
         """
-        num_isi = ISI.shape[-1]
-        alpha = self.alpha[:, None]
+        alpha = self.alpha
 
         log_ISI = safe_log(ISI)
         ll = (alpha - 1) * log_ISI - ISI - gammaln(alpha)
-        return jnp.nansum(ll, axis=-1)
+        return ll
 
     def cum_renewal_density(self, ISI):
         """
@@ -126,19 +125,18 @@ class LogNormal(RenewalLikelihood):
 
     def log_renewal_density(self, ISI):
         """
-        :param jnp.ndarray ISI: interspike interval array with NaN padding (obs_dims, num_isi)
+        :param jnp.ndarray ISI: interspike interval array with NaN padding (obs_dims,)
         :return:
             log density of shape (obs_dims,)
         """
-        num_isi = ISI.shape[-1]
-        sigma = self.sigma[:, None]
+        sigma = self.sigma
 
         log_ISI = safe_log(ISI)
-        quad_term = -0.5 * (log_ISI / sigma) ** 2
+        quad_term = -0.5 * (log_ISI / sigma)**2
         norm_term = -(jnp.log(sigma) + 0.5 * _log_twopi)
 
         ll = norm_term - log_ISI + quad_term
-        return jnp.nansum(ll, axis=-1)
+        return ll
 
     def cum_renewal_density(self, ISI):
         """
@@ -196,18 +194,16 @@ class InverseGaussian(RenewalLikelihood):
 
     def log_renewal_density(self, ISI):
         """
-        Note the scale parameter here is the inverse of the scale parameter in nll(), as the scale
-        parameter here is :math:`\tau/s` while in nll() is refers to :math:`d\tau = s*r(t) \, \mathrm{d}t`
+        :param jnp.ndarray ISI: (obs_dims,)
         """
-        num_isi = ISI.shape[-1]
-        mu = self.mu[:, None]
+        mu = self.mu
 
         log_ISI = safe_log(ISI)
         quad_term = -0.5 * ((ISI - mu) / mu) ** 2 / (ISI + 1e-10)
         norm_term = -0.5 * _log_twopi
 
         ll = norm_term - 1.5 * log_ISI + quad_term
-        return jnp.nansum(ll, axis=-1)
+        return ll
 
     def cum_renewal_density(self, ISI):
         Phi = lambda x: 0.5 * (1.0 + erf(x / jnp.sqrt(2.0)))

@@ -39,49 +39,18 @@ class FilterModule(module):
 
         return model
 
-    def _spiketrain_filter(self, spktrain):
+    def _spiketrain_filter(self, prng_state, spktrain):
         """
         Apply the spike train filter
         """
-        return filtered, KL
+        if self.spikefilter is not None:
+            filtered, KL = self.spikefilter.apply_filter(spktrain)
+            return filtered, KL
+        
+        return 0., 0.
 
     def ELBO(self, prng_state, x, t, num_samps):
         raise NotImplementedError
-
-    def objective(self, F_mu, F_var, XZ, b, neuron, samples=10, mode="MC"):
-        """
-        spike coupling filter
-        """
-        batch_edge, _, _ = self.batch_info
-        spk = self.all_spikes[
-            :, neuron, batch_edge[b] : batch_edge[b + 1] + self.history_len
-        ].to(self.likelihood.dt.device)
-        spk_filt, spk_var = self.filter(spk, XZ)  # trials, neurons, timesteps
-        mean = F_mu + spk_filt
-        variance = F_var + spk_var
-        return self.likelihood.objective(mean, variance, XZ, b, neuron, samples, mode)
-
-    def filtered_rate(self, F_mu, F_var, unobs_neuron, trials, MC_samples=1):
-        """
-        Evaluate the instantaneous rate after spike coupling, with unobserved neurons not contributing
-        to the filtered population rate.
-        """
-        unobs_neuron = self.likelihood._validate_neuron(unobs_neuron)
-        batch_edge, _, _ = self.batch_info
-        spk = self.all_spikes[
-            :, neuron, batch_edge[b] : batch_edge[b + 1] + self.history_len
-        ].to(self.likelihood.dt.device)
-
-        with torch.no_grad():
-            hist, hist_var = self.spike_filter(spk, XZ)
-            hist[:, unobs_neuron, :] = 0  # mask
-            hist_var[:, unobs_neuron, :] = 0  # mask
-            h = self.mc_gen(
-                F_mu + hist, F_var + hist_var, MC_samples, torch.arange(self.neurons)
-            )
-            intensity = self.likelihood.f(h.view(-1, trials, *h.shape[1:]))
-
-        return intensity
 
     def sample(self, F_mu, ini_train, neuron=None, XZ=None, obs_spktrn=None):
         """
@@ -178,12 +147,12 @@ class FilterGPLVM(FilterModule):
 
         return model
 
-    def _sample_input_trajectories(self, x, t, num_samps):
+    def _sample_input_trajectories(self, prng_state, x, t, num_samps, prior, compute_KL):
         """
         Combines observed inputs with latent trajectories
         """
         if self.ssgp is not None:
-            x_samples, KL_ss = self.ssgp.sample_posterior(
+            x_samples, KL = self.ssgp.sample_posterior(
                 ss_params,
                 ss_var_params,
                 prng_keys[0],
@@ -194,14 +163,16 @@ class FilterGPLVM(FilterModule):
                 compute_KL=True,
             )  # (time, tr, x_dims, 1)
 
-        return inputs, KL
+            return x_samples, KL
+        
+        return None, 0.
 
-    def _sample_input_marginals(self, x, t, num_samps):
+    def _sample_input_marginals(self, prng_state, x, t, num_samps):
         """
         Combines observed inputs with latent marginal samples
         """
         if self.ssgp is not None:  # filtering-smoothing
-            x_samples, KL_ss = self.ssgp.evaluate_posterior(
+            x_samples, KL = self.ssgp.evaluate_posterior(
                 ss_params,
                 ss_var_params,
                 prng_keys[0],
@@ -212,7 +183,9 @@ class FilterGPLVM(FilterModule):
                 compute_KL=True,
             )  # (time, tr, x_dims, 1)
 
-        return inputs, KL
+            return inputs, KL
+        
+        return None, 0.
 
 
 class FilterSwitchingSSGP(FilterModule):

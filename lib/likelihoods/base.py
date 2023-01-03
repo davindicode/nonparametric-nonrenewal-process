@@ -313,38 +313,49 @@ class RenewalLikelihood(Likelihood):
         super().__init__(obs_dims, obs_dims, link_type, array_type)
         self.dt = dt
 
+    def _rate_rescale(self, spikes, rates, compute_ll, return_tau):
+        """
+        rate rescaling, computes the log density on the way
+        """
+        rate_scale = self.dt / self.shape_scale()
+        
+        def step(carry, inputs):
+            tau, ll = val
+            rate, spike = inputs
+
+            tau += rate_scale * rates[:, i]
+            if compute_ll:
+                ll += self.log_density(tau)
+            
+            return (tau.at[spike].set(0.), ll), tau if return_tau else None
+
+        init = (jnp.zeros(self.obs_dims), jnp.zeros(self.obs_dims))
+        (_, log_renewals), taus = lax.scan(step, init=init, xs=(rates, spikes))
+        return log_renewals, taus
+        
     def variational_expectation(
-        self, spiketimes, pre_rates, covariates, neuron, num_ISIs
+        self, y, pre_rates, 
     ):
         """
         Ignore the end points of the spike train
+        
+        To benefit from JIT compilation, instead of passing lists of ISIs and 
+        performing rate-rescaling on them we scan temporally through the binary 
+        spike train and accumulate the log density values
 
-        :param jnp.ndarray pre_rates: pre-link rates (mc, obs_dims, ts)
+        :param jnp.ndarray y: binary spike train (obs_dims, ts)
+        :param jnp.ndarray pre_rates: pre-link rates (obs_dims, ts)
         :param List spiketimes: list of spike time indices arrays per neuron
         :param jnp.ndarray covariates: covariates time series (mc, obs_dims, ts, in_dims)
         """
-        mc, ts = covariates.shape[0], covariates.shape[2]
-
-        # map posterior samples
         rates = self.inverse_link(pre_rates)
-        log_rates = pre_rates if self.link_type == "log" else jnp.log(rates)
-
-        taus = self.dt * jnp.cumsum(rates, axis=2) / self.shape_scale()
-
-        # rate rescaling
-        rISI = jnp.empty((mc, self.obs_dims, num_ISIs))
-
-        for en, spkinds in enumerate(spiketimes):
-            isi_count = jnp.maximum(spkinds.shape[0] - 1, 0)
-
-            def body(i, val):
-                val[:, en, i] = taus[:, i]
-                return val
-
-            rISI[:, en, :] = lax.fori_loop(0, isi_count, body, rISI[:, en, :])
-
-        log_renewals = vmap(self.log_renewal_density)(rISI)  # (mc, obs_dims)
-        ll = log_rates + log_renewals
+        log_rates = pre_rates if self.link_type == "log" else safe_log(rates)
+        spikes = (y.T > 0)
+        
+        log_renewals, _ = self._rate_rescale(
+            spikes, rates.T, compute_ll=True, return_tau=False)
+        
+        ll = log_rates + log_renewals  # (obs_dims, ts)
         return ll
 
     def log_renewal_density(self, ISI):
