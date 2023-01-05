@@ -13,12 +13,11 @@ from .markovian import interpolation_times, order_times, vmap_outdims
 
 
 @eqx.filter_vmap(
-    args=(None, None, None, None, None, -3, -3, None, None, None, None, None, None),
+    args=(None, None, None, None, -3, -3, None, None, None, None, None, None),
     out=(0, 0, 0),
 )
 def vmap_spatial(
     H,
-    minf,
     Pinf,
     As,
     Qs,
@@ -33,7 +32,6 @@ def vmap_spatial(
 ):
     return vmap_outdims(
         H,
-        minf,
         Pinf,
         As,
         Qs,
@@ -157,7 +155,7 @@ class KroneckerLTI(SSM):
             )  # vmap over num_evals, (eval_inds, out_dims, sd, sd)
 
             # compute LDS matrices
-            H, minf, Pinf, As, Qs = self.markov_sparse_kernel._get_LDS(
+            H, Pinf, As, Qs = self.markov_sparse_kernel._get_LDS(
                 site_dlocs, site_locs.shape[1]
             )
             # (ts, out_dims, sd, sd)
@@ -165,7 +163,6 @@ class KroneckerLTI(SSM):
             # vmap over spatial points
             post_means, post_covs, KL = vmap_spatial(
                 H,
-                minf,
                 Pinf,
                 As,
                 Qs,
@@ -187,14 +184,13 @@ class KroneckerLTI(SSM):
             A_fwd, A_bwd = stack_A[:num_evals], stack_A[-num_evals:]
             # (eval_inds, out_dims, spatial_pts*sd, spatial_pts*sd)
 
-            H, minf, Pinf, As, Qs = self.markov_sparse_kernel.get_LDS(
+            H, Pinf, As, Qs = self.markov_sparse_kernel.get_LDS(
                 site_dlocs, site_locs.shape[1]
             )
             # (ts, out_dims, spatial_pts*sd, spatial_pts*sd)
 
             post_means_, post_covs_, KL = vmap_outdims(
                 H,
-                minf,
                 Pinf,
                 As,
                 Qs,
@@ -245,7 +241,7 @@ class KroneckerLTI(SSM):
         # mix temporal trajectories
 
         # transition and noise process matrices
-        H, minf, Pinf, As, Qs = self.markov_sparse_kernel.get_LDS(dt, tsteps)
+        H, Pinf, As, Qs = self.markov_sparse_kernel.get_LDS(dt, tsteps)
 
         prng_states = jr.split(prng_state, num_samps)  # (num_samps, 2)
 
@@ -260,9 +256,9 @@ class KroneckerLTI(SSM):
             return m, f
 
         def sample_i(prng_state):
-            m0 = cholesky(Pinf) @ jr.normal(prng_state, shape=(state_dims, 1))
+            f0 = cholesky(Pinf) @ jr.normal(prng_state, shape=(state_dims, 1))
             prng_keys = jr.split(prng_state, tsteps)
-            _, f_sample = lax.scan(step, init=m0, xs=(As[:-1], Qs[:-1], prng_keys))
+            _, f_sample = lax.scan(step, init=f0, xs=(As[:-1], Qs[:-1], prng_keys))
             return f_sample
 
         f_samples = vmap(sample_i, 0, 1)(prng_states)
@@ -297,7 +293,7 @@ class KroneckerLTI(SSM):
         )
 
         # compute linear dynamical system
-        H, minf, Pinf, As, Qs = self.markov_sparse_kernel.get_LDS(site_locs, site_dlocs)
+        H, Pinf, As, Qs = self.markov_sparse_kernel.get_LDS(site_locs, site_dlocs)
 
         # sample prior at obs and eval locs
         prng_keys = jr.split(prng_state, 2)
@@ -308,7 +304,6 @@ class KroneckerLTI(SSM):
         # posterior mean
         post_means, _, KL_ss = evaluate_LTI_posterior(
             H,
-            minf,
             Pinf,
             As,
             Qs,
@@ -335,7 +330,6 @@ class KroneckerLTI(SSM):
         def smooth_prior_sample(prior_samp_i):
             smoothed_sample, _, _ = evaluate_LTI_posterior(
                 H,
-                minf,
                 Pinf,
                 As,
                 Qs,

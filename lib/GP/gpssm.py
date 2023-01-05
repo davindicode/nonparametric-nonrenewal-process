@@ -79,7 +79,7 @@ class DTGPSSM(module):
 
         return model
 
-    def sample_prior(self, prng_state, num_samps, timesteps, jitter):
+    def sample_prior(self, prng_state, num_samps, timesteps, jitter, x_eval):
         """
         Sample from the model prior
 
@@ -119,6 +119,14 @@ class DTGPSSM(module):
             ]  # (num_samps, x_dims)
             prng_state, _ = jr.split(prng_state)
             _, x_samples = lax.scan(step, init=(x0, prng_state), xs=procnoise_keys)
+            
+            if x_eval is not None:
+                eval_locs = x_eval[None, None, ...].repeat(num_samps, axis=0)
+                f_samples = self.dynamics_function.sample_prior(
+                    prng_state, eval_locs, jitter
+                )  # (num_samps, x_dims, eval_locs)
+            else:
+                f_samples = None
 
         else:  # autoregressive sampling using conditionals
 
@@ -157,17 +165,23 @@ class DTGPSSM(module):
                 x_samples = x_samples.at[t, ...].set(x_sample)
             # _, x_samples = lax.scan(step, init=x0, xs=procnoise_keys)
 
-        return x_samples.transpose(1, 0, 2)  # (num_samps, time, state_dims)
+        return x_samples.transpose(1, 0, 2), f_samples.transpose(0, 2, 1)  # (num_samps, time, state_dims)
 
     def evaluate_posterior(
         self,
     ):
         """
-        The augmented KL divergence includes terms due to the state-space mapping
+        The augmented KL divergence includes terms due to the state-space mapping [1]
+        
+        [1] Variational Gaussian Process State Space Models
         """
+        # use method to obtain filter-smoother for q(x)
+        
+        # compute ELBO
+        
         return post_mean, post_cov, aug_KL
 
-    def sample_posterior(self, prng_state, num_samps, timesteps, jitter):
+    def sample_posterior(self, prng_state, num_samps, timesteps, jitter, x_eval):
         """ """
         x_dims = self.dynamics_function.kernel.in_dims
 
@@ -176,8 +190,8 @@ class DTGPSSM(module):
         prng_states = jr.split(prng_state, 1 + timesteps)  # (num_samps, 2)
         prng_state, procnoise_keys = prng_states[0], prng_states[1:]
 
-        if self.dynamics_function.RFF_num_feats > 0:  # RFF prior sampling
-
+        if self.dynamics_function.RFF_num_feats > 0:  # RFF pathwise sampling
+            ### TODO: more efficient implementation that avoids recomputing intermdiates
             def step(carry, inputs):
                 x, prng_prior = carry  # (num_samps, x_dims)
                 prng_state = inputs
@@ -200,11 +214,22 @@ class DTGPSSM(module):
             ]  # (num_samps, x_dims)
             prng_state, _ = jr.split(prng_state)
             _, x_samples = lax.scan(step, init=(x0, prng_state), xs=procnoise_keys)
+            x_samples = x_samples.transpose(1, 0, 2)  # (num_samps, time, state_dims)
+            
+            if x_eval is not None:
+                eval_locs = x_eval[None, None, ...].repeat(num_samps, axis=0)
+                f_samples, _ = self.dynamics_function.sample_posterior(
+                    prng_state, eval_locs, jitter, compute_KL=False
+                )  # (num_samps, x_dims, eval_locs)
+                f_samples = f_samples.transpose(0, 2, 1)  # (num_samps, eval_locs, state_dims)
+                
+            else:
+                f_samples = None
 
         else:  # autoregressive sampling using conditionals
             return
 
-        return x_samples.transpose(1, 0, 2)  # (num_samps, time, state_dims)
+        return x_samples, f_samples, KL_f
 
 
 #     def compute_jac(self, probe_state, probe_input):

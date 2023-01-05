@@ -17,7 +17,6 @@ from ..GP.sparse import SparseGP
 from ..GP.spatiotemporal import KroneckerLTI
 from ..likelihoods.base import FactorizedLikelihood, RenewalLikelihood
 from ..likelihoods.factorized import LogCoxProcess
-from ..utils.neural import gen_IRP
 
 
 
@@ -61,22 +60,25 @@ class FactorizedGPLVM(FilterGPLVM):
     def ELBO(
         self,
         prng_state,
-        num_samps,
+        num_samps, 
+        x_obs, 
+        y, 
     ):
         """
         Compute ELBO
         """
         x_mean, x_cov, KL_x = self._posterior_input_marginals(
-            x, t, num_samps)  # (num_samps, obs_dims, ts, 1)
-
+            prng_state, num_samps, t_eval, jitter, compute_KL)  # (num_samps, obs_dims, ts, 1)
+        
         f_mean, f_cov, KL_f, _ = self.gp.evaluate_posterior(
             prng_state, x_samples, jitter, compute_KL=True
         )  # (evals, samp, f_dim)
 
         y_filtered, KL_y = self._spiketrain_filter(prng_state, y)
-
+        f_mu = f_mean + y_filtered
+        
         Ell = self.likelihood.variational_expectation(
-            prng_state, jitter, y, f_mean, f_cov
+            prng_state, jitter, y, f_mu, f_cov
         )
 
         ELBO = Ell - KL_x - KL_f - KL_y
@@ -117,6 +119,7 @@ class FactorizedGPLVM(FilterGPLVM):
         
         f_samples = self._gp_sample(self, prng_state, x_eval, prior, jitter)  # (evals, samp, f_dim)
         
+        y_filtered, KL_y = self._spiketrain_filter(prng_state, y)
         self.likelihood.sample_Y()
         return y_samples, f_samples, x_samples
 
@@ -130,6 +133,7 @@ class FactorizedGPLVM(FilterGPLVM):
             prng_state, xx.repeat(num_samps, axis=0), jitter, compute_KL=True
         )  # (evals, samp, f_dim)
 
+        y_filtered, KL_y = self._spiketrain_filter(prng_state, y)
         self.likelihood.sample_Y()
         return y_samples, f_samples, x_samples
 
@@ -378,7 +382,7 @@ class NonparametricPPGPLVM(FilterGPLVM):
         return log_rho_tau
 
     ### inference ###
-    def ELBO(self, prng_state, x, t, num_samps):
+    def ELBO(self, prng_state, num_samps):
         self.gp.evaluate_posterior()
 
         self.likelihood.variational_expectation()

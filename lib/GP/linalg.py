@@ -28,7 +28,7 @@ def kalman_filter(
     D = obs_means.shape[1]
 
     def step(carry, inputs):
-        pseudo_mean, pseudo_Lcov, A, Q = inputs
+        obs_mean, obs_Lcov, A, Q = inputs
         f_m, f_P, lZ = carry
 
         m_ = A @ f_m
@@ -38,9 +38,9 @@ def kalman_filter(
         HP = H @ P_
         predict_cov = HP @ H.T
 
-        S = predict_cov + pseudo_Lcov @ pseudo_Lcov.T
+        S = predict_cov + obs_Lcov @ obs_Lcov.T
         K = solve_PSD(S, HP).T
-        eta = pseudo_mean - predict_mean
+        eta = obs_mean - predict_mean
 
         f_m = m_ + K @ eta
         f_P = P_ - K @ HP
@@ -103,7 +103,7 @@ def rauch_tung_striebel_smoother(
     return smoother_means, smoother_covs, Gs
 
 
-def process_noise_covariance(A, Pinf):
+def LTI_process_noise(A, Pinf):
     # Qₙ = Pinf - Aₙ Pinf Aₙ'
     Q = Pinf - A @ Pinf @ A.T
     return Q
@@ -120,11 +120,11 @@ def get_LTI_matrices(A, Pinf, timesteps):
     Id = jnp.eye(Pinf.shape[0])
     Zs = jnp.zeros_like(Pinf)
     if len(A.shape) == 2:  # single dt value, i.e. LTI
-        Q = process_noise_covariance(A, Pinf)
+        Q = LTI_process_noise(A, Pinf)
         As = jnp.stack([Id] + [A] * (timesteps - 1) + [Id], axis=0)
         Qs = jnp.stack([Zs] + [Q] * (timesteps - 1) + [Zs], axis=0)
     else:
-        Q = vmap(process_noise_covariance, (0, None), 0)(A, Pinf)
+        Q = vmap(LTI_process_noise, (0, None), 0)(A, Pinf)
         As = jnp.concatenate((Id[None, ...], A, Id[None, ...]), axis=0)
         Qs = jnp.concatenate((Zs[None, ...], Q, Zs[None, ...]), axis=0)
 
@@ -146,10 +146,11 @@ def predict_between_sites(
     ind,
     A_fwd,
     A_bwd,
+    Q_fwd, 
+    Q_bwd, 
     post_mean,
     post_cov,
     gain,
-    Pinf,
     mean_only,
     jitter,
 ):
@@ -167,8 +168,6 @@ def predict_between_sites(
             P: [N, D, 2*D]
             T: [N, D, D]
     """
-    Q_fwd = Pinf - A_fwd @ Pinf @ A_fwd.T
-    Q_bwd = Pinf - A_bwd @ Pinf @ A_bwd.T
     A_bwd_Q_fwd = A_bwd @ Q_fwd
     Q_mp = Q_bwd + A_bwd @ A_bwd_Q_fwd.T
 
@@ -185,7 +184,7 @@ def predict_between_sites(
     mean_joint = jnp.block([[post_mean[ind]], [post_mean[ind + 1]]])
 
     if mean_only:
-        return P @ mean_joint
+        return P @ mean_joint, None
 
     else:
         # conditional covariance T = Q₋ₜ - Q₋ₜ Aₜ₊ᵀ Q₋₊⁻¹ Aₜ₊ Q₋ₜ = Q₋ₜ - Q₋ₜᵀ Aₜ₊ᵀ L⁻ᵀ L⁻¹ Aₜ₊ Q₋ₜ
@@ -237,17 +236,25 @@ def fixed_interval_smoothing(
     return smoother_means, smoother_covs, gains, logZ
 
 
+
+predict_between_sites_vmap = vmap(
+    predict_between_sites,
+    (0, 0, 0, 0, 0, None, None, None, None, None),
+    (0, 0),
+)  # vmap over eval_nums
+
+
+
 def evaluate_LTI_posterior(
     H,
-    minf,
     Pinf,
     As,
     Qs,
     site_obs,
     site_Lcov,
     ind_eval,
-    A_fwd,
-    A_bwd,
+    A_fwd_bwd,
+    Q_fwd_bwd, 
     mean_only,
     compute_KL,
     jitter,
@@ -262,7 +269,7 @@ def evaluate_LTI_posterior(
         means of shape (time, out, 1)
         covariances of shape (time, out, out)
     """
-    minf = minf[:, None]
+    minf = jnp.zeros((As.shape[-1], 1))
     interpolate = ind_eval is not None
 
     smoother_means, smoother_covs, gains, logZ = fixed_interval_smoothing(
@@ -284,12 +291,10 @@ def evaluate_LTI_posterior(
         KL = 0.0
 
     if interpolate:  # predict the state distribution at the test time steps
-        predict_between_sites_vmap = vmap(
-            predict_between_sites,
-            (0, 0, 0, None, None, None, None, None, None),
-            0 if mean_only else (0, 0),
-        )  # vmap over eval_nums
-
+        num_evals = len(ind_eval)
+        A_fwd, A_bwd = A_fwd_bwd[:num_evals], A_fwd_bwd[-num_evals:]
+        Q_fwd, Q_bwd = Q_fwd_bwd[:num_evals], Q_fwd_bwd[-num_evals:]
+        
         # add dummy states at either edge
         mean_aug = jnp.concatenate(
             [minf[None, :], smoother_means, minf[None, :]], axis=0
@@ -299,25 +304,21 @@ def evaluate_LTI_posterior(
         )
         gain_aug = jnp.concatenate([jnp.zeros_like(gains[:1, ...]), gains], axis=0)
 
-        predicts = predict_between_sites_vmap(
+        eval_means, eval_covs = predict_between_sites_vmap(
             ind_eval,
             A_fwd,
             A_bwd,
+            Q_fwd, 
+            Q_bwd, 
             mean_aug,
             cov_aug,
             gain_aug,
-            Pinf,
             mean_only,
             jitter,
         )
 
-        if mean_only:
-            eval_mean = predicts
-            post_means, post_covs = H @ eval_mean, None
-
-        else:
-            eval_mean, eval_cov = predicts
-            post_means, post_covs = H @ eval_mean, H @ eval_cov @ H.T
+        post_means = H @ eval_means
+        post_covs = None if mean_only else H @ eval_covs @ H.T
 
     return post_means, post_covs, KL
 
