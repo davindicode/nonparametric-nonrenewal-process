@@ -332,8 +332,8 @@ def gen_ZIP(prng_state, mean, alpha):
     
     
 def gen_NB(prng_state, mean, r):
-    s = jr.gamma(
-        prng_state, r, mean / r
+    s = (mean / r) * jr.gamma(
+        prng_state, r
     )  # becomes delta around rate*tbin when r to infinity, cap at 1e12
     prng_state, _ = jr.split(prng_state)
     return jr.poisson(prng_state, s)

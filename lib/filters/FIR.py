@@ -46,7 +46,7 @@ class SigmoidRefractory(Filter):
         self.beta = self._to_jax(beta)
         self.tau = self._to_jax(tau)
 
-    def compute_filter(self, prng_state):
+    def compute_filter(self, prng_state, compute_KL):
         """
         :returns:
             filter of shape (filter_length, post, pre)
@@ -109,7 +109,7 @@ class RaisedCosineBumps(Filter):
         self.w = self._to_jax(w)
         self.phi = self._to_jax(phi)
 
-    def compute_filter(self, prng_state):
+    def compute_filter(self, prng_state, compute_KL):
         """
         :returns: filter of shape (filter_length, post, pre)
         :rtype: torch.tensor
@@ -147,7 +147,7 @@ class GaussianProcess(Filter):
         cross_coupling = kernel.in_dim > 1
         super().__init__(cross_coupling, filter_length, array_type)
 
-    def compute_filter(self, prng_state):
+    def compute_filter(self, prng_state, compute_KL):
         """
         :returns: filter mean of shape (n_in, n_out, filter_length), filter variance of same shape
         :rtype: tuple of torch.tensor

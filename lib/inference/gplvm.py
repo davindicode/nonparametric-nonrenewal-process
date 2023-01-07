@@ -6,7 +6,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from jax import vmap
+from jax import vmap, lax
 
 import numpy as np
 
@@ -57,52 +57,39 @@ class ModulatedFactorized(FilterGPLVM):
 
         return pre_rates
     
-    def _sample_spikes(self, prng_state, ini_spikes, pre_rates):
+    def _sample_Y(self, prng_state, ini_Y, f_samples):
         """
         Sample the spike train autoregressively
         
+        For heteroscedastic, couple filters to the rate parameter in each 
+        num_f_per_obs group, f_dims = obs_dims x num_f_per_obs
+        
         :param jnp.dnarray ini_spikes: initial spike train (num_samps, obs_dims, filter_length)
         """
-        num_samps, obs_dims, ts = pre_rates.shape
-        prng_states = jr.split(prng_state, ts)
+        num_samps, obs_dims, ts = f_samples.shape
+        if self.spikefilter is not None:
+            prng_states = jr.split(prng_state, ts*(num_samps+1)).reshape(ts, num_samps+1, -1)
+
+            def step(carry, inputs):
+                prng_keys, f = inputs
+                past_Y = carry  # (mc, obs_dims, ts)
+
+                h, _ = self.spikefilter.apply_filter(prng_keys[-1], past_Y, compute_KL=False)
+                f = f.at[:, ::self.likelihood.num_f_per_obs].add(h)
+
+                y = vmap(self.likelihood.sample_Y)(prng_keys, f)  # vmap over MC
+                past_Y = jnp.concatenate((past_Y[..., 1:], y[..., None]), axis=-1)
+
+                return past_Y, (y, f)
+
+            init = ini_Y
+            xs = (prng_states, f_samples.transpose(2, 0, 1))
+            _, (Y, f_filtered) = lax.scan(step, init, xs)
+            return Y.transpose(1, 2, 0), f_filtered.transpose(1, 2, 0)  # (num_samps, obs_dims, ts)
         
-        def true_func(tau, rate):
-            return tau + rate * self.dt
-
-        def false_func(tau, rate):
-            return rate * self.dt
-
-        def step(carry, inputs):
-            prng_state, pre_rate = inputs
-            tau_since, past_spikes = carry
-            
-            if self.spikefilter is not None:
-                h, KL = self.spikefilter.apply_filter(past_spikes, compute_KL)
-            
-            f = pre_rate + h
-            rate = self.renewal.inverse_link(f)
-            
-            cond = (past_spikes[..., -1] > 0)
-            tau_since = lax.cond(cond, true_func, false_func, tau_since, rate)
-            
-            renewal_density = jnp.exp(self.renewal.log_density(tau_since_spike))
-            survival = 1.0 - self.renewal.cum_density(tau_since_spike)
-
-            rho_t = rate * renewal_density / survival
-            p_spike = jnp.maximum(rho_t * self.dt, 1.)  # approximate by discrete Bernoulli
-            spikes = jr.bernoulli(prng_state, p_spike)
-            
-            if self.spikefilter is not None:
-                past_spikes = jnp.concatenate((past_spikes[..., 1:], spikes[..., None]), axis=-1)
-            
-            return (tau_since, past_spikes), (spikes, rho_t, rate)
-
-        init = (tau_start, ini_spikes)
-        xs = (prng_states, pre_rates)
-        _, (spikes, rho_ts, rates) = lax.scan(step, init, xs)
-        return spikes, rho_ts, rates  # (num_samps, obs_dims, ts)
-    
-        return self.likelihood.sample_Y(prng_states[3], pre_rates)
+        else:
+            prng_states = jr.split(prng_state, ts*num_samps).reshape(num_samps, ts, -1)
+            return vmap(vmap(self.likelihood.sample_Y), (1, 2), 2)(prng_states, f_samples)
 
     ### variational inference ###
     def ELBO(
@@ -126,8 +113,10 @@ class ModulatedFactorized(FilterGPLVM):
             prng_state, x_samples, jitter, compute_KL=True
         )  # (evals, samp, f_dim)
 
-        y_filtered, KL_y = self._spiketrain_filter(prng_state, y)
-        f_mu = f_mean + y_filtered
+        if self.spikefilter is not None:
+            y_filtered, KL_y = self.spikefilter.apply_filter(prng_state, y, compute_KL=True)
+            prng_state, _ = jr.split(prng_state)
+            f_mu = f_mean + y_filtered
         
         Ell = self.likelihood.variational_expectation(
             prng_state, jitter, y, f_mu, f_cov
@@ -154,38 +143,32 @@ class ModulatedFactorized(FilterGPLVM):
         return
 
     ### sample ###
-    def sample_prior(self, prng_state, num_samps, x_eval, time_eval, jitter):
+    def sample_prior(self, prng_state, num_samps, x_eval, time_eval, ini_Y, jitter):
         """
         Sample from the generative model
         """
-        prng_states = jr.split(prng_state, 4)
+        prng_states = jr.split(prng_state, 3)
         
         x_samples = self._prior_input_samples(prng_states[0], num_samps, x_eval, time_eval, jitter)
         
         f_samples = self._gp_sample(prng_states[1], x_samples, True, jitter)  # (samp, evals, f_dim)
+        y_samples, filtered_f = self._sample_Y(prng_states[2], ini_Y, f_samples)
         
-        y_filtered, KL_y = self._spiketrain_filter(prng_states[2], y)
-        pre_rates = f_samples + y_filtered
-        
-        y_samples = self.likelihood.sample_Y(prng_states[3], pre_rates)
-        return y_samples, f_samples, x_samples
+        return y_samples, filtered_f, x_samples
 
-    def sample_posterior(self, prng_state, num_samps, x_eval, time_eval, jitter):
+    def sample_posterior(self, prng_state, num_samps, x_eval, time_eval, ini_Y, jitter):
         """
         Sample from posterior predictive
         """
-        prng_states = jr.split(prng_state, 4)
+        prng_states = jr.split(prng_state, 3)
         
         x_samples = self._posterior_input_samples(
             prng_states[0], num_samps, x_eval, time_eval, jitter, compute_KL=False)
         
         f_samples = self._gp_sample(prng_states[1], x_samples, False, jitter)  # (samp, evals, f_dim)
+        y_samples, filtered_f = self._sample_Y(prng_states[2], ini_Y, f_samples)
         
-        y_filtered, KL_y = self._spiketrain_filter(prng_states[2], y)
-        pre_rates = f_samples + y_filtered
-        
-        y_samples = self.likelihood.sample_Y(prng_states[3], pre_rates)
-        return y_samples, f_samples, x_samples
+        return y_samples, filtered_f, x_samples
 
 
 class ModulatedRenewal(FilterGPLVM):
@@ -243,7 +226,8 @@ class ModulatedRenewal(FilterGPLVM):
             tau_since, past_spikes = carry
             
             if self.spikefilter is not None:
-                h, KL = self.spikefilter.apply_filter(past_spikes, compute_KL)
+                h, KL = self.spikefilter.apply_filter(prng_state, past_spikes, compute_KL)
+                prng_state, _ = jr.split(prng_state)
             
             f = pre_rate + h
             rate = self.renewal.inverse_link(f)

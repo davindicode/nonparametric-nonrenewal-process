@@ -23,23 +23,22 @@ class Filter(module):
         self.cross_coupling = cross_coupling
         self.filter_time = jnp.arange(filter_length, dtype=array_type)
 
-    def compute_filter(self, prng_state):
+    def compute_filter(self, prng_state, compute_KL):
         """
         Potentially stochastic filters
         """
         raise NotImplementedError
 
-    def apply_filter(self, prng_state, inputs):
+    def apply_filter(self, prng_state, inputs, compute_KL):
         """
         Introduces the spike coupling by convolution with the spike train, no padding and left removal
         for causal convolutions.
 
         :param jnp.ndarray input: input spiketrain or covariates with shape (trials, neurons, filter_length)
-                                   or (samples, neurons, filter_length)
         :returns: filtered input of shape (trials, neurons, filter_length)
         """
         # num_samps = inputs.shape[0]
-        h, KL = self.compute_filter(prng_state)  # sample one trajectory
+        h, KL = self.compute_filter(prng_state, compute_KL)  # sample one trajectory
         
         if self.cross_coupling:
             dn = lax.conv_dimension_numbers(

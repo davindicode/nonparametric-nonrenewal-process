@@ -3,7 +3,8 @@ from typing import Callable, Union
 
 import jax
 import jax.numpy as jnp
-from jax import random, vmap
+import jax.random as jr
+from jax import vmap
 from jax.numpy.linalg import cholesky
 from jax.scipy.linalg import block_diag, solve_triangular
 
@@ -88,9 +89,9 @@ class Gaussian(FactorizedLikelihood):
         """
         Gaussian
 
-        :param numpy.array rate: input rate of shape (trials, neuron, timestep)
-        :returns: spike train of shape (trials, neuron, timesteps)
-        :rtype: jnp.array
+        :param jnp.ndarray f: input rate of shape (f_dims,)
+        :returns:
+            spike train of shape (obs_dims,)
         """
         obs_var = softplus(self.pre_variance)
         return f + jnp.sqrt(obs_var) * jr.normal(prng_state, shape=f_in.shape)
@@ -156,9 +157,9 @@ class LogCoxProcess(FactorizedLikelihood):
         """
         Bernoulli process approximation with small dt
 
-        :param numpy.array rate: input rate of shape (trials, neuron, timestep)
-        :returns: spike train of shape (trials, neuron, timesteps)
-        :rtype: jnp.array
+        :param jnp.ndarray f: input rate of shape (f_dims,)
+        :returns:
+            spike train of shape (obs_dims,)
         """
         return jr.bernoulli(prng_state, rate)
 
@@ -196,9 +197,9 @@ class Bernoulli(FactorizedLikelihood):
         """
         Bernoulli process
 
-        :param numpy.array rate: input rate of shape (trials, neuron, timestep)
-        :returns: spike train of shape (trials, neuron, timesteps)
-        :rtype: jnp.array
+        :param jnp.ndarray f: input rate of shape (f_dims,)
+        :returns:
+            spike train of shape (obs_dims,)
         """
         p_spike = self.inverse_link(f)
         return jr.bernoulli(prng_state, p_spike)
@@ -280,9 +281,9 @@ class Poisson(CountLikelihood):
         """
         Bernoulli process
 
-        :param numpy.array rate: input rate of shape (trials, neuron, timestep)
-        :returns: spike train of shape (trials, neuron, timesteps)
-        :rtype: jnp.array
+        :param jnp.ndarray f: input rate of shape (f_dims,)
+        :returns:
+            spike train of shape (obs_dims,)
         """
         rate = self.inverse_link(f)
         mean = rate * self.tbin
@@ -376,9 +377,9 @@ class ZeroInflatedPoisson(CountLikelihood):
         """
         Sample from ZIP process.
 
-        :param numpy.array rate: input rate of shape (trials, neuron, timestep)
-        :returns: spike train of shape (trials, neuron, timesteps)
-        :rtype: jnp.array
+        :param jnp.ndarray f: input rate of shape (f_dims,)
+        :returns:
+            spike train of shape (obs_dims,)
         """
         mean = self.inverse_link(f) * self.tbin
         alpha = jnp.tanh(self.arctanh_alpha)
@@ -474,10 +475,9 @@ class NegativeBinomial(CountLikelihood):
         """
         Sample from the Gamma-Poisson mixture.
 
-        :param numpy.array rate: input rate of shape (trials, neuron, timestep)
-        :param int max_count: maximum number of spike counts per time bin
-        :returns: spike train of shape (trials, neuron, timesteps)
-        :rtype: jnp.array
+        :param jnp.ndarray f: input rate of shape (f_dims,)
+        :returns:
+            spike train of shape (obs_dims,)
         """
         mean = self.inverse_link(f) * self.tbin
         r = 1.0 / (self.r_inv + 1e-12)
@@ -558,9 +558,9 @@ class ConwayMaxwellPoisson(CountLikelihood):
         """
         Sample from the CMP distribution.
 
-        :param numpy.array rate: input rate of shape (neuron, timestep)
-        :returns: spike train of shape (trials, neuron, timesteps)
-        :rtype: jnp.array
+        :param jnp.ndarray f: input rate of shape (f_dims,)
+        :returns:
+            spike train of shape (obs_dims,)
         """
         mu = self.inverse_link(f) * self.tbin
         nu = jnp.exp(self.log_nu)
