@@ -109,28 +109,6 @@ def LTI_process_noise(A, Pinf):
     return Q
 
 
-def get_LTI_matrices(A, Pinf, timesteps):
-    """
-    Computes the transition and process noise matrices
-    Handles both a time sequence and a single matrix input
-
-    :param jnp.ndarray A: transition matrix of shape (sd, sd) or (ts, sd, sd)
-    :param jnp.ndarray Pinf: stationary covariance of shape (sd, sd)
-    """
-    Id = jnp.eye(Pinf.shape[0])
-    Zs = jnp.zeros_like(Pinf)
-    if len(A.shape) == 2:  # single dt value, i.e. LTI
-        Q = LTI_process_noise(A, Pinf)
-        As = jnp.stack([Id] + [A] * (timesteps - 1) + [Id], axis=0)
-        Qs = jnp.stack([Zs] + [Q] * (timesteps - 1) + [Zs], axis=0)
-    else:
-        Q = vmap(LTI_process_noise, (0, None), 0)(A, Pinf)
-        As = jnp.concatenate((Id[None, ...], A, Id[None, ...]), axis=0)
-        Qs = jnp.concatenate((Zs[None, ...], Q, Zs[None, ...]), axis=0)
-
-    return As, Qs
-
-
 def id_kronecker(dims, A):
     return jnp.kron(jnp.eye(dims), A)
 
@@ -245,9 +223,10 @@ predict_between_sites_vmap = vmap(
 
 
 
-def evaluate_LTI_posterior(
+def evaluate_LGSSM_posterior(
     H,
-    Pinf,
+    P_init, 
+    P_end, 
     As,
     Qs,
     site_obs,
@@ -263,7 +242,8 @@ def evaluate_LTI_posterior(
     predict at test locations X, which may includes training points
     (which are essentially fixed inducing points)
 
-    :param jnp.ndarray Pinf: stationary covariance (sd, sd)
+    :param jnp.ndarray P_init: stationary covariance at start (sd, sd)
+    :param jnp.ndarray P_end: stationary covariance at end (sd, sd)
     :param jnp.ndarray As: transition matrices of shape (locs, sd, sd)
     :return:
         means of shape (time, out, 1)
@@ -273,7 +253,7 @@ def evaluate_LTI_posterior(
     interpolate = ind_eval is not None
 
     smoother_means, smoother_covs, gains, logZ = fixed_interval_smoothing(
-        H, minf, Pinf, As, Qs, site_obs, site_Lcov, compute_KL, interpolate
+        H, minf, P_init, As, Qs, site_obs, site_Lcov, compute_KL, interpolate
     )
 
     if compute_KL:  # compute using pseudo likelihood
@@ -300,7 +280,7 @@ def evaluate_LTI_posterior(
             [minf[None, :], smoother_means, minf[None, :]], axis=0
         )
         cov_aug = jnp.concatenate(
-            [Pinf[None, ...], smoother_covs, Pinf[None, ...]], axis=0
+            [P_init[None, ...], smoother_covs, P_end[None, ...]], axis=0
         )
         gain_aug = jnp.concatenate([jnp.zeros_like(gains[:1, ...]), gains], axis=0)
 

@@ -9,13 +9,66 @@ from ..base import module
 from ..utils.jax import safe_log
 
 from .base import SSM
-from .kernels import MarkovianKernel
-from .linalg import bdiag
-from .markovian import interpolation_times
+from .kernels import GroupMarkovian, MarkovianKernel
+from .linalg import bdiag, evaluate_LGSSM_posterior
+from .markovian import interpolation_times, order_times, sample_LGSSM
+
+
+def obs_switch_locs(obs_locs, switch_locs):
+    """
+    Temporally order observation and switch locations
+    Return relative order indices
+    """
+    unique_locs = jnp.concatenate((obs_locs, switch_locs), axis=0)
+    locs = jnp.concatenate((unique_locs, switch_locs), axis=0)  # double switch locs
+    
+    sort_ind = jnp.argsort(locs)
+    switch_inds = jnp.where(sort_ind >= len(obs_locs))[0]
+    obs_inds = jnp.where(sort_ind < len(obs_locs))[0]
+
+    locs = locs[sort_ind]
+    unique_locs = jnp.sort(unique_locs)
+
+    return locs, obs_inds, switch_inds, unique_locs
+
+
+def tile_between_inds(path, inds, ts):
+    """
+    """
+    assert len(path) == len(inds) + 1
+
+    def pos_func(i):
+        return i+1
+
+    def neg_func(i):
+        return i
+
+    def step(carry, inputs):
+        i, p, j = carry
+        ind = inputs
+
+        i = lax.cond(ind >= j[i], pos_func, neg_func, i)
+
+        return (i, p, j), p[i]
+
+    _, tiled_path = lax.scan(step, init=(0, path, inds), xs=jnp.arange(ts))
+    return tiled_path  # (ts,)
 
 
 ### HMM ###
-class DTMarkovProcess(module):
+def markov_stationary_distribution(T, K):
+    P = T - jnp.eye(K)
+    A = jnp.concatenate((P, jnp.ones(K)[None, :]), axis=0)
+    b = jnp.zeros(K + 1).at[-1].set(1.0)
+
+    # Q, R = jnp.linalg.qr(A)
+    # jax.scipy.linalg.solve_triangular(R, jnp.Q.T @ b)
+    pi = jnp.linalg.pinv(A) @ b  # via pinv
+    return pi
+    
+    
+    
+class DTMarkovChain(module):
     """
     Discrete-time finite discrete state with Markovian transition dynamics
     
@@ -41,14 +94,7 @@ class DTMarkovProcess(module):
         Solve overparameterized augmented linear equation via QR decomposition
         """
         log_T = jax.nn.log_softmax(self.pre_T, axis=0)
-
-        P = jnp.exp(log_T) - jnp.eye(self.K)
-        A = jnp.concatenate((P, jnp.ones(self.K)[None, :]), axis=0)
-        b = jnp.zeros(self.K + 1).at[-1].set(1.0)
-
-        # Q, R = jnp.linalg.qr(A)
-        # jax.scipy.linalg.solve_triangular(R, jnp.Q.T @ b)
-        pi = jnp.linalg.pinv(A) @ b  # via pinv
+        pi = markov_stationary_distribution(jnp.exp(log_T), self.K)
         return pi, log_T
     
     def filter_observations(self, log_p0, obs_ll, reverse, compute_marginal):
@@ -148,10 +194,10 @@ class DTMarkovProcess(module):
             _, states = lax.scan(step, init=log_pi, xs=prng_keys)
             return states
 
-        states = vmap(sample_i, 0, 1)(prng_states)
-        return states  # (time, tr, K)
+        states = vmap(sample_i, 0, 0)(prng_states)
+        return states  # (tr, time)
 
-    def sample_posterior(self, prng_state, num_samps, timesteps, compute_KL):
+    def sample_posterior(self, prng_state, num_samps, compute_KL):
         """
         Forward-backward sampling algorithm
 
@@ -160,6 +206,8 @@ class DTMarkovProcess(module):
             means of shape (out_dims, num_samps, time, 1)
             covariances of shape (out_dims, num_samps, time, time)
         """
+        timesteps = self.site_ll.shape[0]
+        
         log_posts, KL, aux = self.evaluate_posterior(self.site_ll, compute_KL)
         log_marg, log_betas, log_pi, log_T = aux
 
@@ -183,11 +231,11 @@ class DTMarkovProcess(module):
             )  # (ts, K)
             return states
 
-        states = vmap(sample_i, 0, 1)(prng_states)  # (time, tr, K)
+        states = vmap(sample_i, 0, 0)(prng_states)  # (tr, time)
         return states, KL
 
 
-class CTMarkovProcess(module):
+class CTMarkovChain(module):
     """
     Continuous-time finite discrete state with Markovian transition dynamics
     """
@@ -225,15 +273,145 @@ class CTMarkovProcess(module):
         """
         Q = jnp.concatenate((self.Q_f, -self.Q_f.sum(1, keepdims=True)), axis=1)
         T = expm(dt[:, None, None] * Q[None, ...])  # (ts, sd, sd)
+        pi = markov_stationary_distribution(T, self.K)  # limit delta t -> 0?
+        return pi, log_T
+    
+    def filter_observations(self, log_p0, obs_ll, reverse, compute_marginal):
+        """
+        Filtering observations with discrete variable, message passing to marginalize efficiently.
 
-        P = T - jnp.eye(self.K)
-        A = jnp.concatenate((P, jnp.ones(self.K)[None, :]), axis=0)
-        b = jnp.zeros(self.K + 1).at[-1].set(1.0)
+        :param jnp.ndarray log_p0: initial probability of shape (K,)
+        :param jnp.ndarray obs_ll: observation log likelihoods per latent state of shape (ts, K)
+        """
+        pi, log_T = self.compute_chain()
+        log_pi = safe_log(pi)
+        
+        def step(carry, inputs):
+            log_p_ahead, log_marg = carry  # log p(z_t | x_{<t})
+            ll = inputs
 
-        # Q, R = jnp.linalg.qr(A)
-        # jax.scipy.linalg.solve_triangular(R, jnp.Q.T @ b)
-        pi = jnp.linalg.pinv(A) @ b  # via pinv
-        return pi
+            log_normalizer = jax.nn.logsumexp(log_p_ahead + ll)  # log p(x_t | x_{<t})
+            if compute_marginal:
+                log_marg += log_normalizer
+
+            # log p(z_t | x_{<=t}) = log[ p(z_t | x_{<t}) * p(x_t|z_t) / p(x_t | x_{<t}) ]
+            log_p_at = (log_p_ahead + ll) - log_normalizer  # (K,)
+
+            # log[ \sum_{z_t} p(z_t|x_{<=t}) * p(z_{t+1}|z_t) ]
+            log_p_ahead = jax.nn.logsumexp(log_p_at[None, :] + log_T, axis=-1)  # (K,)
+
+            return (log_p_ahead, log_marg), log_p_at
+
+        (_, log_marg), log_p_ats = lax.scan(
+            step, init=(log_pi, 0.0), xs=obs_ll, reverse=reverse
+        )
+        return log_p_ats, log_marg
+
+    def evaluate_posterior(self, obs_ll, compute_KL):
+        """
+        Forward-backward algorithm
+
+        :param jnp.array obs_ll: observation log likelihoods of shape (ts, K)
+        :returns:
+            means of shape (out_dims, num_samps, time, 1)
+            covariances of shape (out_dims, num_samps, time, time)
+        """
+        pi, log_T = self.compute_chain()
+        log_pi = safe_log(pi)
+        
+        log_betas, log_marg = self.filter_observations(
+            log_pi, obs_ll, True, compute_KL
+        )  # backward
+
+        # combine forward with backward sweep for marginals
+        def step(carry, inputs):
+            log_alpha, var_expect = carry  # log p(z_t | x_{<t})
+            log_beta, ll = inputs
+
+            log_post = log_alpha + log_beta  # log[ p(z_t | x_{<t}) * p(z_t | x_{>=t})]
+            if compute_KL:
+                var_expect += (jnp.exp(log_post) * ll).sum()
+
+            # log p(z_t | x_{<=t}) = log[ p(z_t | x_{<t}) * p(x_t|z_t) / p(x_{<=t}) ]
+            log_p_at = jax.nn.log_softmax(log_alpha + ll)  # (K,)
+            # log[ \sum_{z_t} p(z_t|x_{<=t}) * p(z_{t+1}|z_t) ]
+            log_alpha = jax.nn.logsumexp(log_p_at[None, :] + log_T, axis=-1)  # (K,)
+
+            return (log_alpha, var_expect), log_post
+
+        (_, var_expect), log_posts = lax.scan(
+            step, init=(log_pi, 0.0), xs=(log_betas, obs_ll), reverse=False
+        )  # (ts, K)
+
+        KL = log_marg - var_expect
+        aux = (log_marg, log_betas, log_pi, log_T)
+        return log_posts, KL, aux
+
+    def sample_prior(self, prng_state, num_samps, timesteps):
+        """
+        Sample from the HMM latent variables.
+
+        :param jnp.ndarray p0: initial probabilities of shape (num_samps, state_dims)
+        :returns: state tensor of shape (trials, time)
+        :rtype: torch.tensor
+        """
+        pi, log_T = self.compute_chain()
+        log_pi = safe_log(pi)
+
+        prng_states = jr.split(prng_state, num_samps)  # (num_samps, 2)
+
+        def step(carry, inputs):
+            log_p_cond = carry  # log p(z_t | z_{<t})
+            prng_state = inputs
+
+            s = jr.categorical(prng_state, log_p_cond)  # (K,)
+            log_p_cond = log_T[:, s] + log_p_cond[s]  # next step probabilities
+            return log_p_cond, s
+
+        def sample_i(prng_state):
+            prng_keys = jr.split(prng_state, timesteps)
+            _, states = lax.scan(step, init=log_pi, xs=prng_keys)
+            return states
+
+        states = vmap(sample_i, 0, 0)(prng_states)  # (tr, time)
+        return states
+
+    def sample_posterior(self, prng_state, num_samps, compute_KL):
+        """
+        Forward-backward sampling algorithm
+
+        :param jnp.array x: input of shape (time, num_samps, in_dims, 1)
+        :returns:
+            means of shape (out_dims, num_samps, time, 1)
+            covariances of shape (out_dims, num_samps, time, time)
+        """
+        timesteps = self.site_ll.shape[0]
+        
+        log_posts, KL, aux = self.evaluate_posterior(self.site_ll, compute_KL)
+        log_marg, log_betas, log_pi, log_T = aux
+
+        prng_states = jr.split(prng_state, num_samps)  # (num_samps, 2)
+
+        # combine forward with backward sweep
+        def step(carry, inputs):
+            log_p_cond = carry  # log p(z_t | z_{<t}, x_{1:T})
+            log_beta, prng_state = inputs
+
+            log_p = log_beta + log_p_cond
+            s = jr.categorical(prng_state, log_p_cond)  # (K,)
+            log_p_cond = log_T[:, s] + log_p_cond  # next step probabilities
+
+            return log_p_cond, s
+
+        def sample_i(prng_state):
+            prng_keys = jr.split(prng_state, timesteps)
+            _, states = lax.scan(
+                step, init=jnp.zeros(self.K), xs=(log_betas, prng_keys), reverse=False
+            )  # (ts, K)
+            return states
+
+        states = vmap(sample_i, 0, 0)(prng_states)  # (tr, time)
+        return states, KL
 
 
 ### switch transitions ###
@@ -260,8 +438,8 @@ class Transition(module):
 
         :param jnp.ndarray dt: time intervals of shape broadcastable with (out_dims,)
         """
-        A, Q = self._state_transition()  # vmap over output dims
-        return vmap(bdiag, 1, 0)(A), vmap(bdiag, 1, 0)(Q)
+        A, Q = self._state_transition()  # vmap over output dims, (out_dims, orders, sd, sd)
+        return vmap(bdiag, 1, 0)(A), vmap(bdiag, 1, 0)(Q)  # (order, sd, sd)
 
 
 class WhiteNoiseSwitch(Transition):
@@ -300,44 +478,52 @@ class WhiteNoiseSwitch(Transition):
 
 
 ### switching LGSSM ###
-class SwitchingLTI(SSM):
+vLGSSM = vmap(
+    evaluate_LGSSM_posterior, 
+    (None, None, None, 0, 0, None, None, None, None, None, None, None, None), 
+    (0, 0, 0), 
+)  # vmap over MC
+
+vsample = vmap(sample_LGSSM, (None, None, None, 0, 0, 0, None, None), 0)  # vmap over MC
+
+
+class JumpLTI(SSM):
     """
     In the switching formulation, every observation point is doubled to account
     for infinitesimal switches inbetween
     """
 
     switch_locs: jnp.ndarray
-    state_HMM: DTMarkovProcess
-    switch_HMM: DTMarkovProcess
+    switch_HMM: DTMarkovChain
         
     switch_transitions: Transition
-    markov_kernel_group: MarkovianKernel
+    markov_kernel: MarkovianKernel
         
     fixed_grid_locs: bool
     
     def __init__(
         self,
         switch_locs, 
-        state_HMM,
         switch_HMM,
-        markov_kernel_group,
+        markov_kernel,
         switch_transitions,
         site_locs,
         site_obs,
         site_Lcov,
-        fixed_switch_locs=False,
-        fixed_grid_site_locs=False,
+        fixed_grid_locs=False,
     ):
         """
         :param jnp.ndarray switch_locs: locations of switches (K, K, switches)
         """
-        super().__init__(site_locs, site_obs, site_Lcov)
+        assert switch_HMM.site_ll.shape[0] == switch_locs.shape[0]
+        assert switch_HMM.array_type == markov_kernel.array_type
+        assert switch_HMM.array_type == switch_transitions.array_type
+        super().__init__(site_locs, site_obs, site_Lcov, switch_HMM.array_type)
         self.switch_locs = self._to_jax(switch_locs)
-        self.state_HMM = state_HMM
         self.switch_HMM = switch_HMM
         
         self.switch_transitions = switch_transitions
-        self.markov_kernel_group = markov_kernel_group
+        self.markov_kernel = markov_kernel
         
         self.fixed_grid_locs = fixed_grid_locs
 
@@ -355,27 +541,23 @@ class SwitchingLTI(SSM):
         )
 
         return model
+
     
     ### site and switch locations ###
     def get_site_locs(self):
         """
         Both site obervation locs and switch locs contribute the site locations
-        """
-        locs = jnp.concatenate((self.site_locs, self.switch_locs), axis=0)
-        sort_ind = jnp.argsort(locs)
-        switch_inds = sort_ind[self.site_locs.shape[0]:]
-        locs = locs[sort_ind]
-        
-        switch_inds += jnp.arange(len(switch_inds))  # increase as we insert
-        obs_inds = jnp.delete(jnp.arange(locs.shape[0]), switch_inds)
+        """    
+        locs, obs_inds, switch_inds, unique_locs = obs_switch_locs(
+            self.site_locs, self.switch_locs)
         
         if self.fixed_grid_locs:
             locs = lax.stop_gradient(locs)  # (ts,)
-            return locs, obs_inds, switch_inds, locs[1:2] - locs[0:1]
+            return locs, obs_inds, switch_inds, unique_locs[1:2] - unique_locs[0:1]
         else:
-            return locs, obs_inds, switch_inds, jnp.diff(locs)
+            return locs, obs_inds, switch_inds, jnp.diff(unique_locs)
         
-    def get_site_params(self, obs_inds):
+    def get_site_params(self, obs_inds, switch_inds):
         """
         Insert unobserved locations at switch edge locations
         """
@@ -389,63 +571,68 @@ class SwitchingLTI(SSM):
         site_Lcov = site_Lcov.at[obs_inds].set(self.site_Lcov)
         return site_obs, site_Lcov
 
-    def get_conditional_LDS(self, dt, tsteps, trans_inds, switch_inds, s_path, j_path):
+    def get_conditional_LDS(self, dt, obs_inds, switch_inds, j_path):
         """
         Insert switches inbetween observation sites
         Each observation site has a state
         Each switch applies from A_{s}(t/2) * A_{ss'} * A_{s'}(t/2) with empty 
         observation at the * locations
         
-        :param jnp.ndarray s_path: switch state trajectories (num_samps, s_dims)
+        :param jnp.ndarray s_path: GP state trajectories (switch_locs + 1,), [0, s_dims)
+        :param jnp.ndarray j_path: switch state trajectories (switch_locs,), [0, j_dims)
         """
-        switches, transitions, sd = len(switch_inds), len(trans_inds), As.shape[-1]
-        As = jnp.empty((transitions + switches, sd, sd))
-        Qs = jnp.empty((transitions + switches, sd, sd))
+        switches, observes, sd = len(switch_inds), len(obs_inds), self.markov_kernel.state_dims
+        trans_without_jumps = observes + switches // 2 - 1
+        trans_with_jumps = observes + switches + 1  # include boundary transitions
+        
+        As = jnp.empty((trans_with_jumps, sd, sd))
+        Qs = jnp.empty((trans_with_jumps, sd, sd))
         
         # use out_dims of kernel as states
-        H, minf, Pinf, As_, Qs_ = self.markov_kernel._get_LDS(dt, tsteps)  # (states, ts, sd, sd)
-        As_, Qs_ = As_[s_path], Qs_[s_path]
+        H, Pinf, As_, Qs_ = self.markov_kernel.get_LDS(dt, trans_without_jumps)  # (ts, sd, sd)
         
         # jump matrices
-        Ajs, Qjs = self.transitions._state_transition()
-        Ajs, Qjs = Ajs[j_path], Qjs[j_path]
+        Ajs, Qjs = self.switch_transitions.state_transition()  # (states, sd, sd)
+        Ajs, Qjs = Ajs[j_path], Qjs[j_path]  # (ts, sd, sd)
         
         # insert matrices
-        As = As.at[trans_inds].set(As_).at[switch_inds].set(Ajs)
-        Qs = Qs.at[trans_inds].set(Qs_).at[switch_inds].set(Qjs)
+        trans_inds = jnp.concatenate((jnp.array([0]), obs_inds+1, switch_inds[1::2]+1))
+        jump_inds = switch_inds[::2]+1
         
-        # append boundary transitions
-        Id = jnp.eye(As.shape[-1])
-        Zs = jnp.zeros_like(Id)
-        As = jnp.concatenate((Id[None, ...], As, Id[None, ...]), axis=0)
-        Qs = jnp.concatenate((Zs[None, ...], Qs, Zs[None, ...]), axis=0)
+        As = As.at[trans_inds].set(As_).at[jump_inds].set(Ajs)
+        Qs = Qs.at[trans_inds].set(Qs_).at[jump_inds].set(Qjs)
 
-        return H, minf, Pinf, As, Qs
+        return H, Pinf, As, Qs
 
     ### posterior ###
-    def evaluate_conditional_posterior(self, t_eval, s_path):
+    def evaluate_conditional_posterior(self, t_eval, j_path):
         """
         Compute posterior conditioned on HMM path
+        
+        :param jnp.ndarray j_path: (num_samps, path_locs)
         """
-        site_locs, obs_inds, switch_inds, site_dlocs = self.get_site_locs()
-        switches = len(switch_inds)
+        all_locs, obs_inds, switch_inds, unique_locs = self.get_site_locs()
         
-        # double the switch locs in site locs, left and right limit of switch point
-        site_locs_ = jnp.empty((site_locs.shape[0] + switches,))
-        site_locs_ = site_locs_.at[obs_inds]
+        dt = jnp.diff(unique_locs)  # (eval_locs-1,)
+        if jnp.all(jnp.isclose(dt, dt[0])):  # grid
+            dt = dt[:1]
         
-        ind_eval, dt_fwd, dt_bwd = interpolation_times(t_eval, site_locs)
+        vLDS = vmap(self.get_conditional_LDS, (None, None, None, 0), (None, None, 0, 0))  # vmap over MC
+        H, Pinf, As, Qs = vLDS(dt, obs_inds, switch_inds, j_path)
         
-        # sample from HMMs
-        s_path, KL_s = self.switch_HMM.sample_posterior()
-        j_path, KL_j = self.switch_HMM.sample_posterior()
+        all_obs, all_Lcovs = self.get_site_params(obs_inds)
         
-        site_obs, site_Lcovs = self.get_site_params(obs_inds)
-        H, Pinf, As, Qs = self.get_conditional_LDS(
-            dt, tsteps, trans_inds, switch_inds, s_path, j_path)
+        # interpolation
+        ind_eval, dt_fwd, dt_bwd = interpolation_times(t_eval, all_locs)
+        dt_fwd_bwd = jnp.concatenate([dt_fwd, dt_bwd])  # (2*num_evals,)
+        A_fwd_bwd = vmap(self.markov_kernel.state_transition)(
+            dt_fwd_bwd
+        )  # vmap over num_evals
+        Q_fwd_bwd = vmap(LTI_process_noise, (0, None), 0)(A_fwd_bwd, Pinf)
         
-        post_means, post_covs, KL = evaluate_LTI_posterior(
+        post_means, post_covs, KL = vLGSSM(
             H,
+            Pinf,
             Pinf,
             As,
             Qs,
@@ -458,9 +645,10 @@ class SwitchingLTI(SSM):
             compute_KL,
             jitter,
         )
-        return
+        
+        return post_means, post_covs, KL
     
-    def evaluate_posterior(self, t_eval, mean_only, compute_KL, jitter):
+    def evaluate_posterior(self, prng_state, num_samps, t_eval, mean_only, compute_KL, jitter):
         """
         predict at test locations X, which may includes training points
         (which are essentially fixed inducing points)
@@ -469,24 +657,15 @@ class SwitchingLTI(SSM):
         :return:
             means of shape (time, out_dims, 1)
             covariances of shape (time, out_dims, out_dims)
-        """
-        num_evals = t_eval.shape[0]
+        """    
+        # sample from HMMs
+        j_path, KL_j = self.switch_HMM.sample_posterior(
+            prng_state, num_samps, compute_KL)
 
-        site_locs, site_dlocs = self.get_site_locs()
-        ind_eval, dt_fwd, dt_bwd = interpolation_times(t_eval, site_locs)
-
-        stack_dt = jnp.concatenate([dt_fwd, dt_bwd])  # (2*num_evals,)
-        stack_A = vmap(self.markov_kernel.state_transition)(
-            stack_dt
-        )  # vmap over num_evals
-        A_fwd, A_bwd = stack_A[:num_evals], stack_A[-num_evals:]
-
-        # compute linear dynamical system
-        H, minf, Pinf, As, Qs = self.markov_kernel.get_LDS(
-            site_dlocs[None, :], site_locs.shape[0]
-        )
-
-        
+        post_means, post_covs, KL_x = self.evaluate_conditional_posterior(
+            t_eval, j_path)
+            
+        KL = KL_x + KL_s + KL_j
         return post_means, post_covs, KL
     
     ### sample ###
@@ -499,20 +678,26 @@ class SwitchingLTI(SSM):
         :return:
             f_sample: the prior samples (num_samps, time, out_dims, 1)
         """
-        prng_state, num_samps, timesteps = self.state_HMM.sample_prior()
-        self.switch_HMM.sample_prior()
+        all_locs, obs_inds, switch_inds, unique_locs = obs_switch_locs(
+            t_eval, self.switch_locs)
+            
+        # sample from HMMs
+        switches = self.switch_locs.shape[0]
+        j_path = self.switch_HMM.sample_prior(prng_state, num_samps, switches)
         
-        H, minf, Pinf, As, Qs = self.get_conditional_LDS()
+        unique_dlocs = jnp.diff(unique_locs)  # (eval_locs-1,)
+        if jnp.all(jnp.isclose(unique_dlocs, unique_dlocs[0])):  # grid
+            unique_dlocs = unique_dlocs[:1]
+            
+        vLDS = vmap(self.get_conditional_LDS, (None, None, None, 0), (None, None, 0, 0))  # vmap over MC
+        H, Pinf, As, Qs = vLDS(unique_dlocs, obs_inds, switch_inds, j_path)
+        minf = jnp.zeros((Pinf.shape[-1], 1))
         
+        prng_state = jr.split(prng_state, num_samps)
+        samples = vsample(H, minf, Pinf, As, Qs, prng_state, 1, jitter)
+        x_samples = samples[:, obs_inds, 0, ...]
         
-        tsteps = t_eval.shape[0]
-        dt = compute_dt(t_eval)  # (eval_locs,)
-
-        H, minf, Pinf, As, Qs = self.get_conditional_LDS(dt[None, :], tsteps)
-        samples = sample_LGSSM(H, minf, Pinf, As, Qs, prng_state, num_samps, jitter)
-        x_samples = samples.transpose(1, 0, 2, 3)
-        
-        return x_samples, s_samples
+        return x_samples, j_path
 
     def sample_posterior(
         self,
@@ -539,13 +724,17 @@ class SwitchingLTI(SSM):
         :return:
             the posterior samples (eval_locs, num_samps, N, 1)
         """
-        site_locs, site_dlocs = self.get_site_locs()
+        all_locs, obs_inds, switch_inds, unique_locs = obs_switch_locs(
+            t_eval, self.switch_locs)
+        
+        # sample from HMMs
+        j_path, KL_j = self.switch_HMM.sample_posterior(prng_state, num_samps, compute_KL)
 
         # evaluation locations
-        t_all, site_ind, eval_ind = order_times(t_eval, site_locs)
+        t_all, site_ind, eval_ind = order_times(t_eval, all_locs)
         if t_eval is not None:
             num_evals = t_eval.shape[0]
-            ind_eval, dt_fwd, dt_bwd = interpolation_times(t_eval, site_locs)
+            ind_eval, dt_fwd, dt_bwd = interpolation_times(t_eval, all_locs)
 
             stack_dt = jnp.concatenate([dt_fwd, dt_bwd])  # (2*num_evals,)
             stack_A = vmap(self.markov_kernel.state_transition)(
@@ -557,7 +746,355 @@ class SwitchingLTI(SSM):
             ind_eval, A_fwd, A_bwd = None, None, None
 
         # compute linear dynamical system
-        H, minf, Pinf, As, Qs = self.markov_kernel.get_LDS(
+        unique_dlocs = jnp.diff(unique_locs)  # (eval_locs-1,)
+        if jnp.all(jnp.isclose(unique_dlocs, unique_dlocs[0])):  # grid
+            unique_dlocs = unique_dlocs[:1]
+            
+        vLDS = vmap(self.get_conditional_LDS, (None, None, None, 0), (None, None, 0, 0))  # vmap over MC
+        H, Pinf, As, Qs = vLDS(unique_dlocs, obs_inds, switch_inds, j_path)
+        #minf = jnp.zeros((Pinf.shape[-1], 1))
+
+        # sample prior at obs and eval locs
+        prng_keys = jr.split(prng_state, 2)
+        prior_samps = self.sample_prior(
+            prng_keys[0], num_samps, t_all, jitter
+        )  # (time, num_samps, out_dims, 1)
+
+        # posterior mean
+        post_means, _, KL_x = vLGSSM(
+            H,
+            Pinf,
+            Pinf,
+            As,
+            Qs,
+            site_obs,
+            site_Lcov,
+            ind_eval,
+            A_fwd_bwd,
+            Q_fwd_bwd,
+            mean_only=True,
+            compute_KL=compute_KL,
+            jitter=jitter,
+        )  # (time, out_dims, 1)
+
+        # noisy prior samples at eval locs
+        prior_samps_t = prior_samps[:, site_ind]
+        prior_samps_eval = prior_samps[:, eval_ind]
+
+        prior_samps_noisy = prior_samps_t + all_Lcov[None, ...] @ jr.normal(
+            prng_keys[1], shape=prior_samps_t.shape
+        )  # (time, tr, out_dims, 1)
+
+        # smooth noisy samples
+        def smooth_prior_sample(prior_samp_i):
+            smoothed_sample, _, _ = evaluate_LGSSM_posterior(
+                H,
+                Pinf,
+                Pinf,
+                As,
+                Qs,
+                prior_samp_i,
+                site_Lcov,
+                ind_eval,
+                A_fwd_bwd,
+                Q_fwd_bwd,
+                mean_only=True,
+                compute_KL=False,
+                jitter=jitter,
+            )
+            return smoothed_sample
+
+        smoothed_samps = vmap(smooth_prior_sample, 0, 0)(prior_samps_noisy)
+
+        KL = KL_x + KL_j
+        
+        # Matheron's rule pathwise samplig
+        return prior_samps_eval - smoothed_samps + post_means[None, ...], j_path, KL
+
+    
+    
+class SwitchingLTI(SSM):
+    """
+    In the switching formulation, every observation point is doubled to account
+    for infinitesimal switches inbetween
+    
+    GP state can also switch in addition to jumps
+    """
+
+    switch_locs: jnp.ndarray
+    state_HMM: DTMarkovChain
+    switch_HMM: DTMarkovChain
+        
+    switch_transitions: Transition
+    markov_kernel_group: GroupMarkovian
+        
+    fixed_grid_locs: bool
+    
+    def __init__(
+        self,
+        switch_locs, 
+        state_HMM,
+        switch_HMM,
+        markov_kernel_group,
+        switch_transitions,
+        site_locs,
+        site_obs,
+        site_Lcov,
+        fixed_grid_locs=False,
+    ):
+        """
+        :param jnp.ndarray switch_locs: locations of switches (K, K, switches)
+        """
+        assert switch_HMM.site_ll.shape[0] == switch_locs.shape[0]
+        assert state_HMM.site_ll.shape[0] == switch_locs.shape[0] + 1
+        assert state_HMM.array_type == switch_HMM.array_type
+        assert state_HMM.array_type == markov_kernel_group.array_type
+        assert state_HMM.array_type == switch_transitions.array_type
+        super().__init__(site_locs, site_obs, site_Lcov, state_HMM.array_type)
+        self.switch_locs = self._to_jax(switch_locs)
+        self.state_HMM = state_HMM
+        self.switch_HMM = switch_HMM
+        
+        self.switch_transitions = switch_transitions
+        self.markov_kernel_group = markov_kernel_group
+        
+        self.fixed_grid_locs = fixed_grid_locs
+
+    def apply_constraints(self):
+        """
+        PSD constraint
+        """
+        kernel = self.kernel.apply_constraints(self.kernel)
+
+        model = jax.tree_map(lambda p: p, self)  # copy
+        model = eqx.tree_at(
+            lambda tree: tree.kernel,
+            model,
+            replace_fn=lambda _: kernel,
+        )
+
+        return model
+
+    
+    ### site and switch locations ###
+    def get_site_locs(self):
+        """
+        Both site obervation locs and switch locs contribute the site locations
+        """    
+        locs, obs_inds, switch_inds, unique_locs = obs_switch_locs(
+            self.site_locs, self.switch_locs)
+        
+        if fixed_grid_locs:
+            locs = lax.stop_gradient(locs)  # (ts,)
+            return locs, obs_inds, switch_inds, unique_locs[1:2] - unique_locs[0:1]
+        else:
+            return locs, obs_inds, switch_inds, jnp.diff(unique_locs)
+        
+    def get_site_params(self, obs_inds, switch_inds):
+        """
+        Insert unobserved locations at switch edge locations
+        """
+        sd = self.site_obs.shape[-2]
+        ts = len(obs_inds) + len(switch_inds)
+        
+        site_obs = jnp.zeros((ts, sd, 1))
+        site_Lcov = 1e6 * jnp.eye(sd)[None, ...].repeat(ts, axis=0)  # empty observations
+        
+        site_obs = site_obs.at[obs_inds].set(self.site_obs)
+        site_Lcov = site_Lcov.at[obs_inds].set(self.site_Lcov)
+        return site_obs, site_Lcov
+
+    def get_conditional_LDS(self, dt, tsteps, obs_inds, switch_inds, s_path, j_path):
+        """
+        Insert switches inbetween observation sites
+        Each observation site has a state
+        Each switch applies from A_{s}(t/2) * A_{ss'} * A_{s'}(t/2) with empty 
+        observation at the * locations
+        
+        :param jnp.ndarray s_path: GP state trajectories (num_samps, switch_locs + 1), [0, s_dims)
+        :param jnp.ndarray j_path: switch state trajectories (num_samps, switch_locs), [0, j_dims)
+        """
+        switches, observes, sd = len(switch_inds), len(obs_inds), self.markov_kernel_group.state_dims
+        trans_without_jumps = observes + switches // 2 - 1
+        trans_with_jumps = observes + switches + 1  # include boundary transitions
+        
+        Ps = jnp.empty((trans_without_jumps, sd, sd))
+        As = jnp.empty((trans_with_jumps, sd, sd))
+        Qs = jnp.empty((trans_with_jumps, sd, sd))
+        
+        # expand s_path
+        s_path = vmap(tile_between_inds (0, None, None), 0)(
+            s_path, switch_inds, trans_without_jumps)  # (num_samps, ts)
+        
+        # use out_dims of kernel as states
+        s_steps = jnp.arange(trans_without_jumps)
+        H, Ps_, As_, Qs_ = self.markov_kernel_group.get_LDS(dt, trans_without_jumps)  # (states, ts, sd, sd)
+        Ps_ = Ps_[s_path, s_steps]  # (ts, sd, sd)
+        As_, Qs_ = As_[s_path[1:-1], s_steps[:-2]], Qs_[s_path[1:-1], s_steps[:-2]]  # (ts, sd, sd)
+        
+        # jump matrices
+        Ajs, Qjs = self.transitions.state_transition()  # (states, sd, sd)
+        Ajs, Qjs = Ajs[j_path], Qjs[j_path]  # (ts, sd, sd)
+        
+        # insert matrices
+        trans_inds = jnp.concatenate((obs_inds, switch_inds[1::2]))
+        trans_inds = jnp.delete(trans_inds, jnp.argmax(trans_inds))  # remove last edge point
+        jump_inds = switch_inds[::2]
+        As = As.at[trans_inds+1].set(As_).at[jump_inds+1].set(Ajs)
+        Qs = Qs.at[trans_inds+1].set(Qs_).at[jump_inds+1].set(Qjs)
+        
+        # convenience boundary transitions for kalman filter and smoother
+        Id = jnp.eye(As.shape[-1])
+        Zs = jnp.zeros_like(Id)
+        As = As.at[jnp.array([0, -1])].set(Id)
+        Qs = Qs.at[jnp.array([0, -1])].set(Zs)
+
+        return H, Ps, As, Qs
+
+    ### posterior ###
+    def evaluate_conditional_posterior(self, t_eval, s_path, j_path):
+        """
+        Compute posterior conditioned on HMM path
+        """
+        site_locs, obs_inds, switch_inds, site_dlocs = self.get_site_locs()
+        
+        site_obs, site_Lcovs = self.get_site_params(obs_inds)
+        H, Ps, As, Qs = self.get_conditional_LDS(
+            site_dlocs, tsteps, obs_inds, switch_inds, s_path, j_path)
+        
+        # interpolation
+        ind_eval, dt_fwd, dt_bwd = interpolation_times(t_eval, site_locs)
+        dt_fwd_bwd = jnp.concatenate([dt_fwd, dt_bwd])  # (2*num_evals,)
+        P_fwd_bwd = jnp.tile(Ps[ind_eval], 2)
+        A_fwd_bwd = vmap(self.markov_kernel_group.state_transition)(
+            dt_fwd_bwd
+        )  # vmap over num_evals
+        A_fwd_bwd = A_fwd_bwd[jnp.tile(s_path, 2)]  # select states
+        Q_fwd_bwd = vmap(LTI_process_noise, (0, 0), 0)(A_fwd_bwd, P_fwd_bwd)
+        
+        post_means, post_covs, KL = evaluate_LGSSM_posterior(
+            H,
+            Ps[0],
+            Ps[-1],
+            As,
+            Qs,
+            site_obs,
+            site_Lcov,
+            ind_eval,
+            A_fwd_bwd,
+            Q_fwd_bwd,
+            mean_only,
+            compute_KL,
+            jitter,
+        )
+        
+        return post_means, post_covs, KL
+    
+    def evaluate_posterior(self, prng_state, t_eval, mean_only, compute_KL, jitter):
+        """
+        predict at test locations X, which may includes training points
+        (which are essentially fixed inducing points)
+
+        :param jnp.ndarray t_eval: evaluation times of shape (time,)
+        :return:
+            means of shape (time, out_dims, 1)
+            covariances of shape (time, out_dims, out_dims)
+        """
+        # sample from HMMs
+        s_path, KL_s = self.state_HMM.sample_posterior(
+            prng_state, num_samps, compute_KL)
+        prng_state, _ = jr.split(prng_state)
+        j_path, KL_j = self.switch_HMM.sample_posterior(
+            prng_state, num_samps, compute_KL)
+
+        post_means, post_covs, KL_x = self.evaluate_conditional_posterior(
+            t_eval, s_path, j_path)
+            
+        KL = KL_x + KL_s + KL_j
+        return post_means, post_covs, KL
+    
+    ### sample ###
+    def sample_prior(self, prng_state, num_samps, t_eval, jitter):
+        """
+        Sample from the model prior f~N(0,K) via simulation of the LGSSM
+
+        :param int num_samps: number of samples to draw
+        :param jnp.ndarray t_eval: the input locations at which to sample (out_dims, locs,)
+        :return:
+            f_sample: the prior samples (num_samps, time, out_dims, 1)
+        """    
+        locs, obs_inds, switch_inds, unique_locs = obs_switch_locs(
+            t_eval, self.switch_locs)
+        
+        ts = unique_locs.shape[0]
+        switches = self.switch_locs.shape[0]
+        dt = jnp.diff(unique_locs)  # (eval_locs-1,)
+        if jnp.all(jnp.isclose(dt, dt[0])):  # grid
+            dt = dt[:1]
+            
+        # sample from HMMs
+        prng_states = jr.split(prng_state, 3)
+        
+        s_path = self.state_HMM.sample_prior(prng_states[0], num_samps, ts+1)
+        j_path = self.switch_HMM.sample_prior(prng_states[1], num_samps, switches)
+        
+        H, Ps, As, Qs = self.get_conditional_LDS(
+            dt, ts, obs_inds, switch_inds, s_path, j_path)
+        
+        samples = sample_LGSSM(H, minf, Pinf, As, Qs, prng_states[2], num_samps, jitter)
+        x_samples = samples.transpose(1, 0, 2, 3)
+        
+        return x_samples, s_path, j_path
+
+    def sample_posterior(
+        self,
+        prng_state,
+        num_samps,
+        t_eval,
+        jitter,
+        compute_KL,
+    ):
+        """
+        Sample from the posterior at specified time locations.
+        Posterior sampling works by smoothing samples from the prior using the approximate Gaussian likelihood
+        model given by the pseudo-likelihood, 𝓝(f|μ*,σ²*), computed during training.
+         - draw samples (f*) from the prior
+         - add Gaussian noise to the prior samples using auxillary model p(y*|f*) = 𝓝(y*|f*,σ²*)
+         - smooth the samples by computing the posterior p(f*|y*)
+         - posterior samples = prior samples + smoothed samples + posterior mean
+                             = f* + E[p(f*|y*)] + E[p(f|y)]
+        See Arnaud Doucet's note "A Note on Efficient Conditional Simulation of Gaussian Distributions" for details.
+
+        :param jnp.ndarray seed: JAX prng state
+        :param int num_samps: the number of samples to draw
+        :param jnp.ndarray t_eval: the sampling input locations (eval_nums,), if None, sample at site locs
+        :return:
+            the posterior samples (eval_locs, num_samps, N, 1)
+        """
+        # sample from HMMs
+        s_path, KL_s = self.state_HMM.sample_posterior(prng_state)
+        prng_state, _ = jr.split(prng_state)
+        j_path, KL_j = self.switch_HMM.sample_posterior(prng_state)
+        
+        site_locs, site_dlocs = self.get_site_locs()
+
+        # evaluation locations
+        t_all, site_ind, eval_ind = order_times(t_eval, site_locs)
+        if t_eval is not None:
+            num_evals = t_eval.shape[0]
+            ind_eval, dt_fwd, dt_bwd = interpolation_times(t_eval, site_locs)
+
+            stack_dt = jnp.concatenate([dt_fwd, dt_bwd])  # (2*num_evals,)
+            stack_A = vmap(self.markov_kernel_group.state_transition)(
+                stack_dt
+            )  # vmap over num_evals
+            A_fwd, A_bwd = stack_A[:num_evals], stack_A[-num_evals:]
+            
+        else:
+            ind_eval, A_fwd, A_bwd = None, None, None
+
+        # compute linear dynamical system
+        H, Ps, As, Qs = self.markov_kernel_group.get_LDS(
             site_dlocs[None, :], site_locs.shape[0]
         )
 
@@ -568,17 +1105,17 @@ class SwitchingLTI(SSM):
         )  # (time, num_samps, out_dims, 1)
 
         # posterior mean
-        post_means, _, KL_ss = evaluate_LTI_posterior(
+        post_means, _, KL_x = evaluate_LGSSM_posterior(
             H,
-            minf,
-            Pinf,
+            Ps[0],
+            Ps[-1],
             As,
             Qs,
-            self.site_obs,
-            self.site_Lcov,
+            site_obs,
+            site_Lcov,
             ind_eval,
-            A_fwd,
-            A_bwd,
+            A_fwd_bwd,
+            Q_fwd_bwd,
             mean_only=True,
             compute_KL=compute_KL,
             jitter=jitter,
@@ -594,17 +1131,17 @@ class SwitchingLTI(SSM):
 
         # smooth noisy samples
         def smooth_prior_sample(prior_samp_i):
-            smoothed_sample, _, _ = evaluate_LTI_posterior(
+            smoothed_sample, _, _ = evaluate_LGSSM_posterior(
                 H,
-                minf,
-                Pinf,
+                Ps[0],
+                Ps[-1],
                 As,
                 Qs,
                 prior_samp_i,
-                self.site_Lcov,
+                site_Lcov,
                 ind_eval,
-                A_fwd,
-                A_bwd,
+                A_fwd_bwd,
+                Q_fwd_bwd,
                 mean_only=True,
                 compute_KL=False,
                 jitter=jitter,
@@ -613,5 +1150,7 @@ class SwitchingLTI(SSM):
 
         smoothed_samps = vmap(smooth_prior_sample, 0, 0)(prior_samps_noisy)
 
+        KL = KL_x + KL_s + KL_j
+        
         # Matheron's rule pathwise samplig
-        return prior_samps_eval - smoothed_samps + post_means[None, ...], KL_ss
+        return prior_samps_eval - smoothed_samps + post_means[None, ...], s_path, j_path, KL_ss

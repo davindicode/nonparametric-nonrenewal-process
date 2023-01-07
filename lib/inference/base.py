@@ -11,6 +11,8 @@ import numpy as np
 from ..base import module
 from ..filters.base import Filter
 from ..GP.markovian import GaussianLTI
+from ..GP.switching import SwitchingLTI
+from ..GP.gpssm import DTGPSSM
 
 
 class FilterModule(module):
@@ -60,13 +62,23 @@ class FilterGPLVM(FilterModule):
     """
 
     ssgp: Union[GaussianLTI, None]
+    switchgp: Union[SwitchingLTI, None]
+    gpssm: Union[DTGPSSM, None]
 
-    def __init__(self, ssgp, spikefilter, array_type):
+    def __init__(self, ssgp, switchgp, gpssm, spikefilter, array_type):
         if ssgp is not None:  # checks
             assert ssgp.array_type == array_type
+            
+        if switchgp is not None:  # checks
+            assert switchgp.array_type == array_type
+            
+        if gpssm is not None:  # checks
+            assert gpssm.array_type == array_type
 
         super().__init__(spikefilter, array_type)
         self.ssgp = ssgp
+        self.switchgp = switchgp
+        self.gpssm = gpssm
 
     def apply_constraints(self):
         """
@@ -82,8 +94,10 @@ class FilterGPLVM(FilterModule):
         return model
     
     def _prior_input_samples(self, prng_state, num_samps, t_eval, jitter):
-        prior_samples = self.ssgp.sample_prior(
-            prng_state, num_samps, t_eval, jitter)
+        if self.ssgp is not None:
+            prior_samples = self.ssgp.sample_prior(
+                prng_state, num_samps, t_eval, jitter)
+            
         return prior_samples
 
     def _posterior_input_samples(self, prng_state, num_samps, t_eval, jitter, compute_KL):
@@ -110,27 +124,3 @@ class FilterGPLVM(FilterModule):
             return post_mean, post_cov, KL
         
         return None, None, 0.
-
-
-class FilterSwitchingSSGP(FilterModule):
-    """
-    Factorization across time points allows one to rely on latent marginals
-    """
-
-    def __init__(self, switchgp, spikefilter, array_type):
-        if switchgp is not None:  # checks
-            assert switchgp.array_type == array_type
-        super().__init__(array_type)
-        self.switchgp = switchgp
-
-
-class FilterDTGPSSM(FilterModule):
-    """
-    Factorization across time points allows one to rely on latent marginals
-    """
-
-    def __init__(self, gpssm, spikefilter):
-        if gpssm is not None:  # checks
-            assert gpssm.array_type == array_type
-        super().__init__(spikefilter.array_type)
-        self.gpssm = gpssm

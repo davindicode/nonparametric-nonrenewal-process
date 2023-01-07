@@ -4,42 +4,45 @@ import jax.random as jr
 from jax import lax, vmap
 from jax.numpy.linalg import cholesky
 
-from ..utils.jax import constrain_diagonal
 from .base import SSM
 from .kernels import MarkovSparseKronecker
 
-from .linalg import evaluate_LTI_posterior
-from .markovian import interpolation_times, order_times, vmap_outdims
+from .linalg import evaluate_LGSSM_posterior
+from .markovian import interpolation_times, order_times, vmap_outdims_LGSSM_posterior
+
+from ..utils.jax import constrain_diagonal
 
 
 @eqx.filter_vmap(
-    args=(None, None, None, None, -3, -3, None, None, None, None, None, None),
+    args=(None, None, None, None, None, -3, -3, None, None, None, None, None, None),
     out=(0, 0, 0),
 )
-def vmap_spatial(
+def vmap_spatial_LGSSM_posterior(
     H,
-    Pinf,
+    P_init, 
+    P_end,
     As,
     Qs,
     site_obs,
     site_Lcov,
     ind_eval,
-    A_fwd,
-    A_bwd,
+    A_fwd_bwd,
+    Q_fwd_bwd,
     mean_only,
     compute_KL,
     jitter,
 ):
-    return vmap_outdims(
+    return vmap_outdims_LGSSM_posterior(
         H,
-        Pinf,
+        P_init, 
+        P_end,
         As,
         Qs,
         site_obs,
         site_Lcov,
         ind_eval,
-        A_fwd,
-        A_bwd,
+        A_fwd_bwd,
+        Q_fwd_bwd,
         mean_only,
         compute_KL,
         jitter,
@@ -54,7 +57,7 @@ class KroneckerLTI(SSM):
     equal to out_dims of process
     """
 
-    markov_sparse_kernel: MarkovSparseKronecker
+    kernel: MarkovSparseKronecker
 
     spatial_MF: bool
     fixed_grid_locs: bool
@@ -81,7 +84,7 @@ class KroneckerLTI(SSM):
         super().__init__(
             site_locs, site_obs, site_Lcov, spatiotemporal_kernel.array_type
         )
-        self.markov_sparse_kernel = spatiotemporal_kernel
+        self.kernel = spatiotemporal_kernel
         self.spatial_MF = spatial_MF
         self.fixed_grid_locs = fixed_grid_locs
 
@@ -103,9 +106,9 @@ class KroneckerLTI(SSM):
             replace_fn=update,
         )
 
-        kernel = self.markov_sparse_kernel.apply_constraints(self.markov_sparse_kernel)
+        kernel = self.kernel.apply_constraints(self.kernel)
         model = eqx.tree_at(
-            lambda tree: tree.markov_sparse_kernel,
+            lambda tree: tree.kernel,
             model,
             replace_fn=lambda _: kernel,
         )
@@ -150,18 +153,18 @@ class KroneckerLTI(SSM):
         stack_dt = jnp.concatenate([dt_fwd, dt_bwd], axis=0)  # (2*num_evals, out_dims)
 
         if self.spatial_MF:  # vmap over temporal kernel out_dims = spatial_locs
-            stack_A = vmap(self.markov_sparse_kernel.markov_factor._state_transition)(
+            stack_A = vmap(self.kernel.markov_factor._state_transition)(
                 stack_dt
             )  # vmap over num_evals, (eval_inds, out_dims, sd, sd)
 
             # compute LDS matrices
-            H, Pinf, As, Qs = self.markov_sparse_kernel._get_LDS(
+            H, Pinf, As, Qs = self.kernel._get_LDS(
                 site_dlocs, site_locs.shape[1]
             )
             # (ts, out_dims, sd, sd)
 
             # vmap over spatial points
-            post_means, post_covs, KL = vmap_spatial(
+            post_means, post_covs, KL = vmap_spatial_LGSSM_posterior(
                 H,
                 Pinf,
                 As,
@@ -178,13 +181,13 @@ class KroneckerLTI(SSM):
             post_covs = post_covs.transpose(1, 2, 0, 3)
 
         else:
-            stack_A = vmap(self.markov_sparse_kernel.state_transition)(
+            stack_A = vmap(self.kernel.state_transition)(
                 stack_dt
             )  # vmap over num_evals
             A_fwd, A_bwd = stack_A[:num_evals], stack_A[-num_evals:]
             # (eval_inds, out_dims, spatial_pts*sd, spatial_pts*sd)
 
-            H, Pinf, As, Qs = self.markov_sparse_kernel.get_LDS(
+            H, Pinf, As, Qs = self.kernel.get_LDS(
                 site_dlocs, site_locs.shape[1]
             )
             # (ts, out_dims, spatial_pts*sd, spatial_pts*sd)
@@ -204,8 +207,8 @@ class KroneckerLTI(SSM):
                 jitter,
             )  # (out_dims, timesteps, spatial_locs, 1 or spatial_locs)
 
-        C_krr, C_nystrom = self.markov_sparse_kernel.sparse_conditional(x_eval, jitter)
-        Kmarkov = self.markov_sparse_kernel.markov_factor.K(
+        C_krr, C_nystrom = self.kernel.sparse_conditional(x_eval, jitter)
+        Kmarkov = self.kernel.markov_factor.K(
             t_eval, None, True
         )  # (out_dims, ts, 1)
 
@@ -227,7 +230,7 @@ class KroneckerLTI(SSM):
         :return:
             f_sample: the prior samples (num_samps, out_dims, locs)
         """
-        state_dims = self.markov_sparse_kernel.state_dims
+        state_dims = self.kernel.state_dims
 
         # evaluation locations
         t_all, site_ind, eval_ind = vmap(order_times, (None, 0), (0, 0, 0))(
@@ -241,7 +244,7 @@ class KroneckerLTI(SSM):
         # mix temporal trajectories
 
         # transition and noise process matrices
-        H, Pinf, As, Qs = self.markov_sparse_kernel.get_LDS(dt, tsteps)
+        H, Pinf, As, Qs = self.kernel.get_LDS(dt, tsteps)
 
         prng_states = jr.split(prng_state, num_samps)  # (num_samps, 2)
 
@@ -278,7 +281,7 @@ class KroneckerLTI(SSM):
         :return:
             f_sample: the prior samples (num_samps, out_dims, locs)
         """
-        state_dims = self.markov_sparse_kernel.state_dims
+        state_dims = self.kernel.state_dims
         # sample independent temporal processes
 
         # RFF part
@@ -289,11 +292,11 @@ class KroneckerLTI(SSM):
         # evaluation locations
         t_all, site_ind, eval_ind = order_times(t_eval, site_locs)
         interp_sites = interpolation_transitions(
-            t_eval, site_locs, self.markov_sparse_kernel.state_transition
+            t_eval, site_locs, self.kernel.state_transition
         )
 
         # compute linear dynamical system
-        H, Pinf, As, Qs = self.markov_sparse_kernel.get_LDS(site_locs, site_dlocs)
+        H, Pinf, As, Qs = self.kernel.get_LDS(site_locs, site_dlocs)
 
         # sample prior at obs and eval locs
         prng_keys = jr.split(prng_state, 2)
@@ -302,8 +305,9 @@ class KroneckerLTI(SSM):
         )  # (time, num_samps, out_dims, 1)
 
         # posterior mean
-        post_means, _, KL_ss = evaluate_LTI_posterior(
+        post_means, _, KL_ss = evaluate_LGSSM_posterior(
             H,
+            Pinf,
             Pinf,
             As,
             Qs,
@@ -328,8 +332,9 @@ class KroneckerLTI(SSM):
 
         # smooth noisy samples
         def smooth_prior_sample(prior_samp_i):
-            smoothed_sample, _, _ = evaluate_LTI_posterior(
+            smoothed_sample, _, _ = evaluate_LGSSM_posterior(
                 H,
+                Pinf,
                 Pinf,
                 As,
                 Qs,

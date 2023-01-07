@@ -14,7 +14,7 @@ from ..base import module
 from ..utils.jax import safe_sqrt, softplus, softplus_inv
 from ..utils.linalg import rotation_matrix, solve_continuous_lyapunov
 
-from .linalg import bdiag, get_LTI_matrices, id_kronecker
+from .linalg import bdiag, id_kronecker, LTI_process_noise
 
 _sqrt_twopi = math.sqrt(2 * math.pi)
 
@@ -167,17 +167,24 @@ class MarkovianKernel(StationaryKernel):
         :param jnp.ndarray dt: time points of shape (out_dims, dt_locs)
         """
         H, Pinf = self._state_output()  # (out_dims, sd, sd)
-        dt = jnp.broadcast_to(dt, (Pinf.shape[0], dt.shape[1]))
+        dt = jnp.broadcast_to(dt, (Pinf.shape[0], dt.shape[-1]))
 
-        if dt.shape[1] == 1:
+        Id = jnp.broadcast_to(jnp.eye(Pinf.shape[0]), Pinf.shape)
+        Zs = jnp.zeros_like(Pinf)
+        
+        # insert convenience boundaries for kalman filter and smoother
+        if dt.shape[1] == 1:  # single dt value, e.g. regular time grid
             A = self._state_transition(dt[:, 0])  # (out_dims, sd, sd)
+            Q = vmap(LTI_process_noise, (0, 0), 0)(A, Pinf)
+            As = jnp.stack([Id] + [A] * (timesteps - 1) + [Id], axis=0)
+            Qs = jnp.stack([Zs] + [Q] * (timesteps - 1) + [Zs], axis=0)
         else:
-            A = vmap(self._state_transition, 1, 1)(dt)  # (out_dims, ts, sd, sd)
-        As, Qs = vmap(get_LTI_matrices, (0, 0, None), (1, 1))(
-            A, Pinf, timesteps
-        )  # (ts, out_dims, sd, sd)
+            A = vmap(self._state_transition, 1, 0)(dt)  # (ts, out_dims, sd, sd)
+            Q = vmap(vmap(LTI_process_noise, (0, 0), 0), (0, None), 0)(A, Pinf)
+            As = jnp.concatenate((Id[None, ...], A, Id[None, ...]), axis=0)
+            Qs = jnp.concatenate((Zs[None, ...], Q, Zs[None, ...]), axis=0)
 
-        return H, Pinf, As, Qs
+        return H, Pinf, As, Qs  # (ts, out_dims, sd, sd)
 
     def get_LDS(self, dt: jnp.ndarray, timesteps: int):
         """
@@ -206,7 +213,7 @@ class MarkovianKernel(StationaryKernel):
         :param jnp.array omega: angular frequency float
         """
         F, L, Qc = self.state_dynamics()
-        H, _, _ = self.state_output()
+        H, _ = self.state_output()
         imag_id = 1j * jnp.eye(self.state_dims)
         
         tmp = F + imag_id * omega
@@ -226,7 +233,7 @@ class MarkovianKernel(StationaryKernel):
         :param jnp.array tau: time interval float
         """
         F, _, _ = self.state_dynamics()
-        H, _, Pinf = self.state_output()
+        H, Pinf = self.state_output()
         
         A = expm(F * tau)
         At = expm(-F.T * tau)
@@ -295,8 +302,8 @@ class WienerProcess(Kernel):
 
     @eqx.filter_vmap()
     def _state_output(self):
-        H = jnp.ones(self.out_dims)
-        return H
+        H = self._to_jax([[1.]])
+        return H, None
 
     @eqx.filter_vmap(kwargs=dict(dt=0))
     def _state_transition(self, dt):
@@ -331,17 +338,11 @@ class DotProduct(Kernel):
         r"""
         Returns :math:`X \cdot Z`.
         """
-        if diagonal:
-            return (self._slice_input(X) ** 2).sum(-1)
-
-        if Z is None:
-            Z = X
-            
-        X = self._slice_input(X)
-        Z = self._slice_input(Z)
-        if X.size(-1) != Z.size(-1):
-            raise ValueError("Inputs must have the same number of features.")
-
+        if Y is None:  # autocovariance
+            if diagonal:
+                return self._K_r(jnp.zeros((*X.shape[:2], 1)))
+            Y = X
+        
         return X.matmul(Z.permute(0, 1, 3, 2))
     
     
@@ -396,25 +397,15 @@ class Polynomial(DotProduct):
 
 class Cosine(MarkovianKernel):
     """
-    Cosine kernel in SDE form.
-    Hyperparameters:
-        radial frequency, ω
-    The associated continuous-time state space model matrices are:
-    F      = ( 0   -ω
-               ω    0 )
-    L      = N/A
-    Qc     = N/A
-    H      = ( 1  0 )
-    Pinf   = ( 1  0
-               0  1 )
-    and the discrete-time transition matrix is (for step size Δt),
-    A      = ( cos(ωΔt)   -sin(ωΔt)
-               sin(ωΔt)    cos(ωΔt) )
+    Cosine kernel
     """
 
     pre_omega: jnp.ndarray
 
     def __init__(self, frequency, array_type=jnp.float32):
+        """
+        :param jnp.ndarray frequency: radial frequency ω
+        """
         in_dims = 1
         out_dims = 1
         state_dims = 2
@@ -427,6 +418,19 @@ class Cosine(MarkovianKernel):
 
     @eqx.filter_vmap()
     def _state_dynamics(self):
+        """
+        The associated continuous-time state space model matrices are:
+        F      = ( 0   -ω
+                   ω    0 )
+        L      = N/A
+        Qc     = N/A
+        H      = ( 1  0 )
+        Pinf   = ( 1  0
+                   0  1 )
+        and the discrete-time transition matrix is (for step size Δt),
+        A      = ( cos(ωΔt)   -sin(ωΔt)
+                   sin(ωΔt)    cos(ωΔt) )
+        """
         omega = softplus(self.pre_omega)
         F = self._to_jax([[0.0, -omega], [omega, 0.0]])
         L = []
@@ -443,14 +447,14 @@ class Cosine(MarkovianKernel):
     def _state_transition(self, dt):
         """
         Calculation of the closed form discrete-time state
-        transition matrix A = expm(FΔt) for the Cosine prior
+        transition matrix A = expm(FΔt)
 
-        :param dt: step size(s), Δt = tₙ - tₙ₋₁ [M+1, 1]
-        :param hyperparams: hyperparameters of the prior: frequency [1, 1]
-        :return: state transition matrix A [M+1, D, D]
+        :param float dt: step size(s), Δt = tₙ - tₙ₋₁
+        :return:
+            state transition matrix A (2, 2)
         """
         omega = softplus(self.pre_omega)
-        return rotation_matrix(dt, freq)  # [2, 2]
+        return rotation_matrix(dt, freq)
 
 
 class LEG(MarkovianKernel):
@@ -474,15 +478,6 @@ class LEG(MarkovianKernel):
         self.R = self._to_jax(R)
         self.B = self._to_jax(B)
         self.Lam = self._to_jax(Lam)
-
-    @staticmethod
-    def initialize_hyperparams(key, state_dims, out_dims):
-        keys = jr.split(key, 4)
-        N = jnp.ones(state_dims)
-        R = jnp.eye(state_dims)
-        B = jr.normal(keys[2], shape=(state_dims, out_dims)) / jnp.sqrt(state_dims)
-        Lam = jr.normal(keys[3], shape=(state_dims, state_dims)) / jnp.sqrt(state_dims)
-        return N, R, B, Lam
 
     def parameterize(self):
         # symmetric part
@@ -509,9 +504,9 @@ class LEG(MarkovianKernel):
     @eqx.filter_vmap(kwargs=dict(dt=0))
     def _state_transition(self, dt):
         """
-        :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
-        :param hyperparams: the kernel hyperparameters, lengthscale is in index 1 [2]
-        :return: state transition matrix A [4, 4]
+        :param float dt: step size(s), Δtₙ = tₙ - tₙ₋₁
+        :return:
+            state transition matrix A (sd, sd)
         """
         G, _ = self.parameterize()
         return expm(-dt * G / 2)
@@ -523,7 +518,7 @@ class LEG(MarkovianKernel):
             H P_inf*expm(F\tau)^TH^T
         """
         F, Q = self.state_dynamics()
-        H, _, P_inf = self.state_output()
+        H, P_inf = self.state_output()
         cond = jnp.sum(tau) >= 0.0
 
         def pos_tau():
@@ -566,7 +561,7 @@ class DecayingSquaredExponential(Kernel):
         ]  # N, K, T, D
         self.log_lengthscale = jnp.log(self._to_jax(lengthscale)).T  # N, D
 
-    def forward(self, X, Y, diagonal):
+    def K(self, X, Y, diagonal):
         if Y is None:  # autocovariance
             if diagonal:
                 return self._K_r(jnp.zeros((*X.shape[:2], 1)))
@@ -607,6 +602,10 @@ class Lengthscale(MarkovianKernel):
     def __init__(
         self, out_dims, state_dims, variance, lengthscale, distance_metric, array_type
     ):
+        """
+        :param jnp.ndarray variance: σ² (out_dims,)
+        :param jnp.ndarray lengthscale: l (out_dims, in_dims)
+        """
         in_dims = lengthscale.shape[-1]
         super().__init__(in_dims, out_dims, state_dims, array_type)
         self.pre_len = softplus_inv(self._to_jax(lengthscale))
@@ -728,16 +727,8 @@ class RationalQuadratic(Lengthscale):
 
 class Matern12(Lengthscale):
     """
-    Exponential, i.e. Matern-1/2 kernel in SDE form.
-    Hyperparameters:
-        variance, σ²
-        lengthscale, l
-    The associated continuous-time state space model matrices are:
-    F      = -1/l
-    L      = 1
-    Qc     = 2σ²/l
-    H      = 1
-    Pinf   = σ²
+    Exponential, i.e. Matern-1/2
+    Functions drawn from a GP with this kernel are not differentiable anywhere. 
     """
 
     def __init__(self, out_dims, variance, lengthscale, array_type=jnp.float32):
@@ -748,8 +739,7 @@ class Matern12(Lengthscale):
 
     def _K_r(self, r):
         """
-        The Matern 1/2 kernel. Functions drawn from a GP with this kernel are not
-        differentiable anywhere. The kernel equation is
+        The kernel equation is
         k(r) = σ² exp{-r}
         where:
         r  is the Euclidean distance between the input points, scaled by the lengthscales parameter ℓ.
@@ -761,7 +751,12 @@ class Matern12(Lengthscale):
     @eqx.filter_vmap
     def _state_dynamics(self):
         """
-        Uses variance and lengthscale hyperparameters to construct the state space model
+        The associated continuous-time state space model matrices are:
+        F      = -1/l
+        L      = 1
+        Qc     = 2σ²/l
+        H      = 1
+        Pinf   = σ²
         """
         var = softplus(self.pre_var)
         ell = softplus(self.pre_len[0])  # first  dimension
@@ -771,15 +766,16 @@ class Matern12(Lengthscale):
         Qc = 2.0 * (var / ell)[None, None]
         return F, L, Qc
 
-    @eqx.filter_vmap(kwargs=dict(dt=0))
+    @eqx.filter_vmap(kwargs=dict(dt=0))  # vmap over out_dims
     def _state_transition(self, dt):
         """
-        :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
-        :param hyperparams: the kernel hyperparameters, lengthscale is in index 1 [2]
-        :return: state transition matrix A [1, 1]
+        :param float dt: step size(s), Δtₙ = tₙ - tₙ₋₁
+        :return:
+            state transition matrix A (1, 1)
         """
         ell = softplus(self.pre_len[0])  # first dimension
         A = jnp.exp(-dt / ell)[None, None]
+        #Q = LTI_process_noise(A, Pinf)
         return A
 
     @eqx.filter_vmap
@@ -804,24 +800,12 @@ class Matern12(Lengthscale):
 
 class Matern32(Lengthscale):
     """
-    Matern-3/2 kernel in SDE form.
-    Hyperparameters:
-        variance, σ²
-        lengthscale, l
-
-    The associated continuous-time state space model matrices are:
-    letting λ = √3/l
-    F      = ( 0   1
-              -λ² -2λ)
-    L      = (0
-              1)
-    Qc     = 4λ³σ²
-    H      = (1  0)
-    Pinf   = (σ²  0
-              0   λ²σ²)
+    Matern-3/2 kernel
+    Functions drawn from a GP with this kernel are once differentiable
     """
 
     def __init__(self, out_dims, variance, lengthscale, array_type=jnp.float32):
+        
         state_dims = 2 * out_dims
         super().__init__(
             out_dims, state_dims, variance, lengthscale, _scaled_dist_Rn, array_type
@@ -829,8 +813,7 @@ class Matern32(Lengthscale):
 
     def _K_r(self, r):
         """
-        The Matern 3/2 kernel. Functions drawn from a GP with this kernel are once
-        differentiable. The kernel equation is
+        The kernel equation is
         k(r) = σ² (1 + √3r) exp{-√3 r}
         where:
         r  is the Euclidean distance between the input points, scaled by the lengthscales parameter ℓ,
@@ -842,6 +825,18 @@ class Matern32(Lengthscale):
 
     @eqx.filter_vmap
     def _state_dynamics(self):
+        """
+        The associated continuous-time state space model matrices are:
+        letting λ = √3/l
+        F      = ( 0   1
+                  -λ² -2λ)
+        L      = (0
+                  1)
+        Qc     = 4λ³σ²
+        H      = (1  0)
+        Pinf   = (σ²  0
+                  0   λ²σ²)
+        """
         var = softplus(self.pre_var)
         ell = softplus(self.pre_len[0])  # first dimension
 
@@ -855,8 +850,8 @@ class Matern32(Lengthscale):
     def _state_transition(self, dt):
         """
         :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁
-        :param hyperparams: the kernel hyperparameters, lengthscale is in index 1 [2]
-        :return: state transition matrix A [2, 2]
+        :return:
+            state transition matrix A (2, 2)
         """
         ell = softplus(self.pre_len[0])  # first dimension
 
@@ -890,24 +885,7 @@ class Matern32(Lengthscale):
 
 class Matern52(Lengthscale):
     """
-    Matern-5/2 kernel in SDE form.
-    Hyperparameters:
-        variance, σ²
-        lengthscale, l
-    The associated continuous-time state space model matrices are:
-    letting λ = √5/l
-    F      = ( 0    1    0
-               0    0    1
-              -λ³ -3λ² -3λ)
-    L      = (0
-              0
-              1)
-    Qc     = 16λ⁵σ²/3
-    H      = (1  0  0)
-    letting κ = λ²σ²/3,
-    Pinf   = ( σ²  0  -κ
-               0   κ   0
-              -κ   0   λ⁴σ²)
+    The Matern 5/2 kernel. Functions drawn from a GP with this kernel are twice differentiable
     """
 
     def __init__(self, out_dims, variance, lengthscale, array_type=jnp.float32):
@@ -918,8 +896,7 @@ class Matern52(Lengthscale):
 
     def _K_r(self, r):
         """
-        The Matern 5/2 kernel. Functions drawn from a GP with this kernel are twice
-        differentiable. The kernel equation is
+        The kernel equation is
         k(r) = σ² (1 + √5r + 5/3r²) exp{-√5 r}
         where:
         r  is the Euclidean distance between the input points, scaled by the lengthscales parameter ℓ,
@@ -931,6 +908,22 @@ class Matern52(Lengthscale):
 
     @eqx.filter_vmap
     def _state_dynamics(self):
+        """
+        The associated continuous-time state space model matrices are:
+        letting λ = √5/l
+        F      = ( 0    1    0
+                   0    0    1
+                  -λ³ -3λ² -3λ)
+        L      = (0
+                  0
+                  1)
+        Qc     = 16λ⁵σ²/3
+        H      = (1  0  0)
+        letting κ = λ²σ²/3,
+        Pinf   = ( σ²  0  -κ
+                   0   κ   0
+                  -κ   0   λ⁴σ²)
+        """
         var = softplus(self.pre_var)
         ell = softplus(self.pre_len[0])  # first dimension
 
@@ -949,9 +942,9 @@ class Matern52(Lengthscale):
     @eqx.filter_vmap(kwargs=dict(dt=0))
     def _state_transition(self, dt):
         """
-        :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
-        :param hyperparams: the kernel hyperparameters, lengthscale is in index 1 [2]
-        :return: state transition matrix A [3, 3]
+        :param float dt: step size(s), Δtₙ = tₙ - tₙ₋₁
+        :return:
+            state transition matrix A (3, 3)
         """
         ell = softplus(self.pre_len[0])  # first dimension
 
@@ -1006,27 +999,7 @@ class Matern52(Lengthscale):
 
 class Matern72(Lengthscale):
     """
-    Matern-7/2 kernel in SDE form.
-    Hyperparameters:
-        variance, σ²
-        lengthscale, l
-    The associated continuous-time state space model matrices are:
-    letting λ = √7/l
-    F      = ( 0    1    0    0
-               0    0    1    0
-               0    0    0    1
-              -λ⁴ -4λ³ -6λ²  -4λ)
-    L      = (0
-              0
-              0
-              1)
-    Qc     = 10976σ²√7/(5l⁷)
-    H      = (1  0  0  0)
-    letting κ = λ²σ²/5,
-    and    κ₂ = 72σ²/l⁴
-    Pinf   = ( σ²  0  -κ   0
-               0   κ   0  -κ₂
-               0  -κ₂  0   343σ²/l⁶)
+    Matern-7/2 kernel
     """
 
     def __init__(self, out_dims, variance, lengthscale, array_type=jnp.float32):
@@ -1053,6 +1026,25 @@ class Matern72(Lengthscale):
     # state space
     @eqx.filter_vmap
     def _state_dynamics(self):
+        """
+        The associated continuous-time state space model matrices are:
+        letting λ = √7/l
+        F      = ( 0    1    0    0
+                   0    0    1    0
+                   0    0    0    1
+                  -λ⁴ -4λ³ -6λ²  -4λ)
+        L      = (0
+                  0
+                  0
+                  1)
+        Qc     = 10976σ²√7/(5l⁷)
+        H      = (1  0  0  0)
+        letting κ = λ²σ²/5,
+        and    κ₂ = 72σ²/l⁴
+        Pinf   = ( σ²  0  -κ   0
+                   0   κ   0  -κ₂
+                   0  -κ₂  0   343σ²/l⁶)
+        """
         var = softplus(self.pre_var)
         ell = softplus(self.pre_len[0])  # first dimension
 
@@ -1116,15 +1108,15 @@ class Matern72(Lengthscale):
     @eqx.filter_vmap
     def _state_output(self):
         """
-        Calculation of the discrete-time state transition matrix A = expm(FΔt) for the Matern-7/2 prior.
-        :param dt: step size(s), Δtₙ = tₙ - tₙ₋₁ [scalar]
-        :param hyperparams: the kernel hyperparameters, lengthscale is in index 1 [2]
-        :return: state transition matrix A [4, 4]
+        Calculation of the discrete-time state transition matrix A = expm(FΔt)
+        
+        :param float dt: step size(s), Δtₙ = tₙ - tₙ₋₁
+        :return:
+            state transition matrix A (4, 4)
         """
         var = softplus(self.pre_var)
         ell = softplus(self.pre_len[0])  # first dimension
-
-        # F, L, Qc = self.state_dynamics(hyp)
+        
         H = self._to_jax([[1.0, 0.0, 0.0, 0.0]])  # observation projection
         kappa = 7.0 / 5.0 * var / ell**2.0
         kappa2 = 9.8 * var / ell**4.0
@@ -1299,17 +1291,73 @@ class GroupMarkovian(MarkovianKernel):
     """
     A group of LDSs with the same state dimension
     """
+    
+    kernels: List[MarkovianKernel]
 
     def __init__(self, kernels):
+        out_dims = kernels[0].out_dims
+        state_dims = kernels[0].state_dims
+        in_dims = kernels[0].in_dims
+        array_type = kernels[0].array_type
+        
+        for k in kernels[1:]:
+            if out_dims != k.out_dims:
+                raise ValueError("Output dimensions must be the same for all kernels")
+            if state_dims != k.state_dims:
+                raise ValueError("State dimensions must be the same for all kernels")
+            if in_dims != k.in_dims:
+                raise ValueError("Input dimensions must be the same for all kernels")
+            assert array_type == k.array_type
+            
+        super().__init__(in_dims, out_dims, state_dims, array_type)
         self.kernels = kernels
 
-    def get_LDS(self, discrete_state):
+    def _get_LDS(self, dt, timesteps):
         """
-        Compute the sequence of LDS matrices given discrete state
+        :param jnp.ndarray t: time points of shape broadcastable with (out_dims, timelocs)
+        :param jnp.ndarray dt: time points of shape (out_dims, dt_locs)
+        :return:
+            matrices of shape (orders, ts, out_dims, sd, sd)
+        """
+        H, Pinf, As, Qs = [], [], [], []
+        for k in self.kernels:
+            H_, Pinf_, As_, Qs_ = k._get_LDS(dt, timesteps)
+            H.append(H_)
+            Pinf.append(Pinf_)
+            As.append(As_)
+            Qs.append(Qs_)
+            
+        return [jnp.stack(A, axis=0) for A in [H, Pinf, As, Qs]]
 
-        :param jnp.ndarray discrete_state: discrete states of shape (ts, num_samps, K)
+    def get_LDS(self, dt: jnp.ndarray, timesteps: int):
         """
-        return
+        Block diagonal state form to move out_dims to state dimensions
+
+        :param jnp.ndarray t: time points of shape broadcastable with (out_dims, timelocs)
+        :return:
+            matrices of shape (orders, ts, sd, sd)
+        """
+        vbdiag = vmap(bdiag)  # vmap over orders
+        vvbdiag = vmap(vbdiag)  # vmap over timesteps
+        
+        H, Pinf, As, Qs = self._get_LDS(dt, timesteps)
+        H, Pinf = vbdiag(H), vbdiag(Pinf)
+        As, Qs = vvbdiag(As), vvbdiag(Qs)
+        return H, Pinf, As, Qs
+    
+    def state_transition(self, dt):
+        """
+        Calculation of the discrete-time state transition matrix A = expm(FΔt) for a sum of GPs
+
+        :param jnp.ndarray dt: step size(s), Δt = tₙ - tₙ₋₁ (out_dims, timelocs)
+        :return:
+            state transition matrix A (orders, sd, sd)
+        """
+        A = []
+        for k in self.kernels:
+            A.append(k.state_transition(dt))
+            
+        return jnp.stack(A, axis=0)
 
 
 class StackMarkovian(MarkovianKernel):
@@ -1321,26 +1369,24 @@ class StackMarkovian(MarkovianKernel):
     kernels: List[MarkovianKernel]
 
     def __init__(self, kernels):
-        out_dims = 0
-        state_dims = 0
+        out_dims = kernels[0].out_dims
+        state_dims = kernels[0].state_dims
         in_dims = kernels[0].in_dims
-
-        for k in kernels:
-            out_dims += k.out_dims
+        array_type = kernels[0].array_type
+        
+        for k in kernels[1:]:
+            out_dims += k.state_dims
             state_dims += k.state_dims
             if in_dims != k.in_dims:
                 raise ValueError("Input dimensions must be the same for all kernels")
+            assert array_type == k.array_type
 
-        super().__init__(in_dims, out_dims, state_dims)
+        super().__init__(in_dims, out_dims, state_dims, array_type)
         self.kernels = kernels
 
     # kernel
     def K(self, X, Y, diagonal):
         for i in range(1, len(self.kernels)):
-            #             if i == 0:  # use only variance of first kernel component
-            #                 variance = hyp[0][0]
-            #             else:
-            #                 variance = 1.0
             r_in = self.distance_metric(X, Y, diagonal)
             return self.K_r(r_in)
 
@@ -1374,9 +1420,9 @@ class StackMarkovian(MarkovianKernel):
         """
         Calculation of the discrete-time state transition matrix A = expm(FΔt) for a sum of GPs
 
-        :param dt: step size(s), Δt = tₙ - tₙ₋₁ [1]
-        :param hyperparams: hyperparameters of the prior: [array]
-        :return: state transition matrix A [D, D]
+        :param jnp.ndarray dt: step size(s), Δt = tₙ - tₙ₋₁
+        :return:
+            state transition matrix A (sd, sd)
         """
         A = self.kernels[0].state_transition(dt)
 
@@ -1421,7 +1467,20 @@ class SumMarkovian(MarkovianKernel):
     kernels: List[MarkovianKernel]
 
     def __init__(self, kernels):
-        super().__init__(in_dims, out_dims)
+        out_dims = kernels[0].out_dims
+        state_dims = kernels[0].state_dims
+        in_dims = kernels[0].in_dims
+        array_type = kernels[0].array_type
+        
+        for k in kernels[1:]:
+            if out_dims != k.out_dims:
+                raise ValueError("Output dimensions must be the same for all kernels")
+            state_dims += k.state_dims
+            if in_dims != k.in_dims:
+                raise ValueError("Input dimensions must be the same for all kernels")
+            assert array_type == k.array_type
+            
+        super().__init__(in_dims, out_dims, state_dims, array_type)
         self.kernels = kernels
 
     def state_dynamics(self):
@@ -1467,9 +1526,9 @@ class SumMarkovian(MarkovianKernel):
     def state_transition(self, dt):
         """
         Calculation of the discrete-time state transition matrix A = expm(FΔt) for a sum of GPs
-        :param dt: step size(s), Δt = tₙ - tₙ₋₁ [1]
-        :param hyperparams: hyperparameters of the prior: [array]
-        :return: state transition matrix A [D, D]
+        :param jnp.ndarray dt: step size(s), Δt = tₙ - tₙ₋₁
+        :return:
+            state transition matrix A (sd, sd)
         """
         A = self.kernels[0].state_transition(dt)
         for i in range(1, len(self.kernels)):
