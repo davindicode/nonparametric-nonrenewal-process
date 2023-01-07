@@ -1,10 +1,12 @@
 from typing import Any, Callable, Union
 
+from jax import lax
 import jax.numpy as jnp
 import jax.scipy as jsc
 
 from ..base import module
 from ..utils.linalg import get_blocks
+from ..utils.jax import safe_log
 
 
 ### classes ###
@@ -43,7 +45,7 @@ class Likelihood(module):
         elif link_type == "rectified":
             self.inverse_link = lambda x: jnp.maximum(x, 0.0)
         elif link_type == "logit":
-            self.inverse_link = lambda x: 1 / (1 + np.exp(-x))
+            self.inverse_link = lambda x: 1 / (1 + jnp.exp(-x))
         elif link_type == "probit":
             jitter = 1e-8
             self.inverse_link = (
@@ -101,8 +103,8 @@ class FactorizedLikelihood(Likelihood):
         The log marginal likelihood is log E[p(yₙ|fₙ)] = log ∫ p(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ
         onlt the block-diagonal part of f_std matters
 
-        :param np.array f_mean: mean of q(f) of shape (f_dims,)
-        :param np.array f_cov: covariance of q(f) of shape (f_dims, f_dims)
+        :param jnp.array f_mean: mean of q(f) of shape (f_dims,)
+        :param jnp.array f_cov: covariance of q(f) of shape (f_dims, f_dims)
         :return:
             log likelihood: expected log likelihood
         """
@@ -118,22 +120,22 @@ class FactorizedLikelihood(Likelihood):
         ### compute transformed f locations ###
         # turn f_cov into lower triangular block diagonal matrix f_
         if cubature_dim == 1:
-            f = np.tile(
+            f = jnp.tile(
                 f, (self.obs_dims, 1)
             )  # copy over obs_dims, (obs_dims, cubature_dim)
-            f_var = np.diag(f_cov)
-            f_std = np.sqrt(f_var)
+            f_var = jnp.diag(f_cov)
+            f_std = jnp.sqrt(f_var)
             f_mean = f_mean[:, None]  # (f_dims, 1)
             df_points = f_std[:, None] * f  # (obs_dims, approx_points)
 
         else:  # block-diagonal form
-            f = np.tile(
+            f = jnp.tile(
                 f[None, ...], (self.obs_dims, 1, 1)
             )  # copy subgrid (obs_dims, cubature_dim, approx_points)
             f_cov = get_blocks(np.diag(np.diag(f_cov)), self.obs_dims, cubature_dim)
-            # chol_f_cov = np.sqrt(np.maximum(f_cov, 1e-12)) # diagonal, more stable
+            # chol_f_cov = jnp.sqrt(np.maximum(f_cov, 1e-12)) # diagonal, more stable
             chol_f_cov = cholesky(
-                f_cov + jitter * np.eye(cubature_dim)[None, ...]
+                f_cov + jitter * jnp.eye(cubature_dim)[None, ...]
             )  # (obs_dims, cubature_dim, cubature_dim)
 
             f_mean = f_mean.reshape(self.obs_dims, cubature_dim, 1)
@@ -155,8 +157,8 @@ class FactorizedLikelihood(Likelihood):
 #         E[log p(yₙ|fₙ)] = ∫ log p(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ and its derivatives
 #         The log marginal likelihood is log E[p(yₙ|fₙ)] = log ∫ p(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ
 #         onlt the block-diagonal part of f_std matters
-#         :param np.array f_mean: mean of q(f) of shape (f_dims,)
-#         :param np.array f_cov: covariance of q(f) of shape (f_dims, f_dims)
+#         :param jnp.array f_mean: mean of q(f) of shape (f_dims,)
+#         :param jnp.array f_cov: covariance of q(f) of shape (f_dims, f_dims)
 #         :return:
 #             log likelihood: expected log likelihood
 #             dlambda_1: gradient of E_q(f)[ log p(y|f) ] w.r.t. mean natural parameter
@@ -168,22 +170,22 @@ class FactorizedLikelihood(Likelihood):
 #         ### compute transformed f locations ###
 #         # turn f_cov into lower triangular block diagonal matrix f_
 #         if cubature_dim == 1:
-#             f = np.tile(
+#             f = jnp.tile(
 #                 f, (self.obs_dims, 1)
 #             )  # copy over obs_dims, (obs_dims, cubature_dim)
-#             f_var = np.diag(f_cov)
-#             f_std = np.sqrt(f_var)
+#             f_var = jnp.diag(f_cov)
+#             f_std = jnp.sqrt(f_var)
 #             f_mean = f_mean[:, None]  # (f_dims, 1)
 #             df_points = f_std[:, None] * f  # (obs_dims, approx_points)
 
 #         else:  # block-diagonal form
-#             f = np.tile(
+#             f = jnp.tile(
 #                 f[None, ...], (self.obs_dims, 1, 1)
 #             )  # copy subgrid (obs_dims, cubature_dim, approx_points)
 #             f_cov = get_blocks(np.diag(np.diag(f_cov)), self.obs_dims, cubature_dim)
-#             # chol_f_cov = np.sqrt(np.maximum(f_cov, 1e-12)) # diagonal, more stable
+#             # chol_f_cov = jnp.sqrt(np.maximum(f_cov, 1e-12)) # diagonal, more stable
 #             chol_f_cov = cholesky(
-#                 f_cov + jitter * np.eye(cubature_dim)[None, ...]
+#                 f_cov + jitter * jnp.eye(cubature_dim)[None, ...]
 #             )  # (obs_dims, cubature_dim, cubature_dim)
 
 #             f_mean = f_mean.reshape(self.obs_dims, cubature_dim, 1)
@@ -201,10 +203,10 @@ class FactorizedLikelihood(Likelihood):
 #             )  # vmap over obs_dims
 
 #             if mask is not None:  # apply mask
-#                 dll_dm = np.where(
+#                 dll_dm = jnp.where(
 #                     mask[:, None], 0.0, dll_dm
 #                 )  # (obs_dims, approx_points)
-#                 d2ll_dm2 = np.where(
+#                 d2ll_dm2 = jnp.where(
 #                     mask[:, None], 0.0, d2ll_dm2
 #                 )  # (obs_dims, approx_points)
 
@@ -216,7 +218,7 @@ class FactorizedLikelihood(Likelihood):
 #                 dlambda_1 = (dEll_dm - 2 * (dEll_dV * f_mean[:, 0]))[
 #                     :, None
 #                 ]  # (f_dims, 1)
-#                 dlambda_2 = np.diag(dEll_dV)  # (f_dims, f_dims)
+#                 dlambda_2 = jnp.diag(dEll_dV)  # (f_dims, f_dims)
 
 #             else:
 #                 dEll_dV = 0.5 * d2Ell_dm2[..., 0]
@@ -238,7 +240,7 @@ class FactorizedLikelihood(Likelihood):
 #         ### expected log likelihood ###
 #         # f_mean and f_cov are from P_smoother
 #         if mask is not None:  # apply mask
-#             ll = np.where(mask[:, None], 0.0, ll)  # (obs_dims, approx_points)
+#             ll = jnp.where(mask[:, None], 0.0, ll)  # (obs_dims, approx_points)
 #         weighted_log_lik = w * ll.sum(0)  # (approx_pts,)
 #         E_log_lik = weighted_log_lik.sum()  # E_q(f)[log p(y|f)]
 
@@ -249,8 +251,8 @@ class FactorizedLikelihood(Likelihood):
 #         Factorization over data points n, vmap over obs_dims
 #         vmap over approx_points
 
-#         :param np.array f_mean: (scalar) or (cubature,) for cubature_dim > 1
-#         :param np.array df_points: (approx_points,) or (cubature, approx_points) for cubature_dim > 1
+#         :param jnp.array f_mean: (scalar) or (cubature,) for cubature_dim > 1
+#         :param jnp.array df_points: (approx_points,) or (cubature, approx_points) for cubature_dim > 1
 
 #         :return:
 #             expected log likelihood ll (approx_points,)
@@ -316,18 +318,22 @@ class RenewalLikelihood(Likelihood):
     def _rate_rescale(self, spikes, rates, compute_ll, return_tau):
         """
         rate rescaling, computes the log density on the way
+        
+        :param jnp.ndarray spikes: (ts, obs_dims)
+        :param jnp.ndarray rates: (ts, obs_dims)
         """
         rate_scale = self.dt / self.shape_scale()
         
         def step(carry, inputs):
-            tau, ll = val
+            tau, ll = carry
             rate, spike = inputs
 
-            tau += rate_scale * rates[:, i]
+            tau += rate_scale * rate
             if compute_ll:
                 ll += self.log_density(tau)
             
-            return (tau.at[spike].set(0.), ll), tau if return_tau else None
+            tau_ = jnp.where(spike, 0., tau)
+            return (tau_, ll), tau if return_tau else None
 
         init = (jnp.zeros(self.obs_dims), jnp.zeros(self.obs_dims))
         (_, log_renewals), taus = lax.scan(step, init=init, xs=(rates, spikes))
@@ -358,14 +364,14 @@ class RenewalLikelihood(Likelihood):
         ll = log_rates + log_renewals  # (obs_dims, ts)
         return ll
 
-    def log_renewal_density(self, ISI):
+    def log_density(self, ISI):
         raise NotImplementedError
 
-    def cum_renewal_density(self, ISI):
+    def cum_density(self, ISI):
         raise NotImplementedError
 
     def log_survival(self, ISI):
-        return jnp.log(1.0 - self.cum_renewal_density(ISI))
+        return safe_log(1.0 - self.cum_density(ISI))
 
     def shape_scale(self):
         raise NotImplementedError

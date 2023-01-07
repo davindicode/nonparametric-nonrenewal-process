@@ -41,16 +41,6 @@ class FilterModule(module):
 
         return model
 
-    def _spiketrain_filter(self, prng_state, spktrain):
-        """
-        Apply the spike train filter
-        """
-        if self.spikefilter is not None:
-            filtered, KL = self.spikefilter.apply_filter(spktrain)
-            return filtered, KL
-        
-        return 0., 0.
-
     def ELBO(self, prng_state, x, t, num_samps):
         raise NotImplementedError
 
@@ -93,26 +83,39 @@ class FilterGPLVM(FilterModule):
 
         return model
     
-    def _prior_input_samples(self, prng_state, num_samps, t_eval, jitter):
-        if self.ssgp is not None:
-            prior_samples = self.ssgp.sample_prior(
-                prng_state, num_samps, t_eval, jitter)
-            
-        return prior_samples
-
-    def _posterior_input_samples(self, prng_state, num_samps, t_eval, jitter, compute_KL):
+    def _prior_input_samples(self, prng_state, num_samps, x_eval, t_eval, jitter):
         """
         Combines observed inputs with latent trajectories
         """
+        x = []
+        
+        if x_eval is not None:
+            x.append(x_eval)
+            
         if self.ssgp is not None:
-            x_samples, KL = self.ssgp.sample_posterior(
+            x.append(self.ssgp.sample_prior(prng_state, num_samps, t_eval, jitter))
+        
+        return jnp.concatenate(x, axis=-1)
+
+    def _posterior_input_samples(self, prng_state, num_samps, x_eval, t_eval, jitter, compute_KL):
+        """
+        Combines observed inputs with latent trajectories
+        """
+        x, KL = [], 0.
+        
+        if x_eval is not None:
+            x.append(x_eval)
+            
+        if self.ssgp is not None:
+            x_samples, KL_x = self.ssgp.sample_posterior(
                 prng_state, num_samps, t_eval, jitter, compute_KL)  # (tr, time, N, 1)
 
-            return x_samples, KL
+            x.append(x_samples)
+            KL += KL_x
         
-        return None, 0.
+        return jnp.concatenate(x, axis=-1), KL
 
-    def _posterior_input_marginals(self, prng_state, num_samps, t_eval, jitter, compute_KL):
+    def _posterior_input_marginals(self, prng_state, num_samps, x_eval, t_eval, jitter, compute_KL):
         """
         Combines observed inputs with latent marginal samples
         """
@@ -123,4 +126,4 @@ class FilterGPLVM(FilterModule):
 
             return post_mean, post_cov, KL
         
-        return None, None, 0.
+        return jnp.concatenate(x, axis=-1), KL

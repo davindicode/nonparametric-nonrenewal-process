@@ -10,7 +10,7 @@ from ..utils.jax import safe_log
 
 from .base import SSM
 from .kernels import GroupMarkovian, MarkovianKernel
-from .linalg import bdiag, evaluate_LGSSM_posterior
+from .linalg import bdiag, evaluate_LGSSM_posterior, LTI_process_noise
 from .markovian import interpolation_times, order_times, sample_LGSSM
 
 
@@ -564,12 +564,12 @@ class JumpLTI(SSM):
         sd = self.site_obs.shape[-2]
         ts = len(obs_inds) + len(switch_inds)
         
-        site_obs = jnp.zeros((ts, sd, 1))
-        site_Lcov = 1e6 * jnp.eye(sd)[None, ...].repeat(ts, axis=0)  # empty observations
+        all_obs = jnp.zeros((ts, sd, 1))
+        all_Lcov = 1e6 * jnp.eye(sd)[None, ...].repeat(ts, axis=0)  # empty observations
         
-        site_obs = site_obs.at[obs_inds].set(self.site_obs)
-        site_Lcov = site_Lcov.at[obs_inds].set(self.site_Lcov)
-        return site_obs, site_Lcov
+        all_obs = all_obs.at[obs_inds].set(self.site_obs)
+        all_Lcov = all_Lcov.at[obs_inds].set(self.site_Lcov)
+        return all_obs, all_Lcov
 
     def get_conditional_LDS(self, dt, obs_inds, switch_inds, j_path):
         """
@@ -585,42 +585,40 @@ class JumpLTI(SSM):
         trans_without_jumps = observes + switches // 2 - 1
         trans_with_jumps = observes + switches + 1  # include boundary transitions
         
-        As = jnp.empty((trans_with_jumps, sd, sd))
-        Qs = jnp.empty((trans_with_jumps, sd, sd))
+        num_samps = j_path.shape[0]
+        As = jnp.empty((num_samps, trans_with_jumps, sd, sd))
+        Qs = jnp.empty((num_samps, trans_with_jumps, sd, sd))
         
         # use out_dims of kernel as states
         H, Pinf, As_, Qs_ = self.markov_kernel.get_LDS(dt, trans_without_jumps)  # (ts, sd, sd)
         
         # jump matrices
+        array_indexing = lambda ind, array: array[ind, ...]
+        varray_indexing = vmap(array_indexing, (0, None), 0)
+        
         Ajs, Qjs = self.switch_transitions.state_transition()  # (states, sd, sd)
-        Ajs, Qjs = Ajs[j_path], Qjs[j_path]  # (ts, sd, sd)
+        Ajs, Qjs = varray_indexing(j_path, Ajs), varray_indexing(j_path, Qjs)  # (num_samps, ts, sd, sd)
         
         # insert matrices
         trans_inds = jnp.concatenate((jnp.array([0]), obs_inds+1, switch_inds[1::2]+1))
         jump_inds = switch_inds[::2]+1
-        
-        As = As.at[trans_inds].set(As_).at[jump_inds].set(Ajs)
-        Qs = Qs.at[trans_inds].set(Qs_).at[jump_inds].set(Qjs)
+        As = As.at[:, trans_inds].set(As_).at[:, jump_inds].set(Ajs)
+        Qs = Qs.at[:, trans_inds].set(Qs_).at[:, jump_inds].set(Qjs)
 
         return H, Pinf, As, Qs
 
     ### posterior ###
-    def evaluate_conditional_posterior(self, t_eval, j_path):
+    def evaluate_conditional_posterior(self, t_eval, j_path, mean_only, compute_KL, jitter):
         """
         Compute posterior conditioned on HMM path
         
         :param jnp.ndarray j_path: (num_samps, path_locs)
         """
-        all_locs, obs_inds, switch_inds, unique_locs = self.get_site_locs()
+        all_locs, obs_inds, switch_inds, unique_dlocs = self.get_site_locs()
         
-        dt = jnp.diff(unique_locs)  # (eval_locs-1,)
-        if jnp.all(jnp.isclose(dt, dt[0])):  # grid
-            dt = dt[:1]
+        H, Pinf, As, Qs = self.get_conditional_LDS(unique_dlocs, obs_inds, switch_inds, j_path)
         
-        vLDS = vmap(self.get_conditional_LDS, (None, None, None, 0), (None, None, 0, 0))  # vmap over MC
-        H, Pinf, As, Qs = vLDS(dt, obs_inds, switch_inds, j_path)
-        
-        all_obs, all_Lcovs = self.get_site_params(obs_inds)
+        all_obs, all_Lcovs = self.get_site_params(obs_inds, switch_inds)
         
         # interpolation
         ind_eval, dt_fwd, dt_bwd = interpolation_times(t_eval, all_locs)
@@ -636,8 +634,8 @@ class JumpLTI(SSM):
             Pinf,
             As,
             Qs,
-            site_obs,
-            site_Lcov,
+            all_obs,
+            all_Lcovs,
             ind_eval,
             A_fwd_bwd,
             Q_fwd_bwd,
@@ -663,7 +661,7 @@ class JumpLTI(SSM):
             prng_state, num_samps, compute_KL)
 
         post_means, post_covs, KL_x = self.evaluate_conditional_posterior(
-            t_eval, j_path)
+            t_eval, j_path, mean_only, compute_KL, jitter)
             
         KL = KL_x + KL_s + KL_j
         return post_means, post_covs, KL
@@ -689,8 +687,7 @@ class JumpLTI(SSM):
         if jnp.all(jnp.isclose(unique_dlocs, unique_dlocs[0])):  # grid
             unique_dlocs = unique_dlocs[:1]
             
-        vLDS = vmap(self.get_conditional_LDS, (None, None, None, 0), (None, None, 0, 0))  # vmap over MC
-        H, Pinf, As, Qs = vLDS(unique_dlocs, obs_inds, switch_inds, j_path)
+        H, Pinf, As, Qs = self.get_conditional_LDS(unique_dlocs, obs_inds, switch_inds, j_path)
         minf = jnp.zeros((Pinf.shape[-1], 1))
         
         prng_state = jr.split(prng_state, num_samps)
@@ -750,8 +747,7 @@ class JumpLTI(SSM):
         if jnp.all(jnp.isclose(unique_dlocs, unique_dlocs[0])):  # grid
             unique_dlocs = unique_dlocs[:1]
             
-        vLDS = vmap(self.get_conditional_LDS, (None, None, None, 0), (None, None, 0, 0))  # vmap over MC
-        H, Pinf, As, Qs = vLDS(unique_dlocs, obs_inds, switch_inds, j_path)
+        H, Pinf, As, Qs = self.get_conditional_LDS(unique_dlocs, obs_inds, switch_inds, j_path)
         #minf = jnp.zeros((Pinf.shape[-1], 1))
 
         # sample prior at obs and eval locs

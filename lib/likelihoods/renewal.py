@@ -56,7 +56,7 @@ class Gamma(RenewalLikelihood):
 
         return model
 
-    def log_renewal_density(self, ISI):
+    def log_density(self, ISI):
         """
         :param jnp.ndarray ISI: interspike interval array with NaN padding (obs_dims,)
         :return:
@@ -68,7 +68,7 @@ class Gamma(RenewalLikelihood):
         ll = (alpha - 1) * log_ISI - ISI - gammaln(alpha)
         return ll
 
-    def cum_renewal_density(self, ISI):
+    def cum_density(self, ISI):
         """
         :param jnp.ndarray ISI: interspike interval (obs_dims,)
         """
@@ -123,7 +123,7 @@ class LogNormal(RenewalLikelihood):
 
         return model
 
-    def log_renewal_density(self, ISI):
+    def log_density(self, ISI):
         """
         :param jnp.ndarray ISI: interspike interval array with NaN padding (obs_dims,)
         :return:
@@ -138,7 +138,7 @@ class LogNormal(RenewalLikelihood):
         ll = norm_term - log_ISI + quad_term
         return ll
 
-    def cum_renewal_density(self, ISI):
+    def cum_density(self, ISI):
         """
         :param jnp.ndarray ISI: interspike interval (obs_dims,)
         """
@@ -192,7 +192,7 @@ class InverseGaussian(RenewalLikelihood):
 
         return model
 
-    def log_renewal_density(self, ISI):
+    def log_density(self, ISI):
         """
         :param jnp.ndarray ISI: (obs_dims,)
         """
@@ -205,7 +205,7 @@ class InverseGaussian(RenewalLikelihood):
         ll = norm_term - 1.5 * log_ISI + quad_term
         return ll
 
-    def cum_renewal_density(self, ISI):
+    def cum_density(self, ISI):
         Phi = lambda x: 0.5 * (1.0 + erf(x / jnp.sqrt(2.0)))
         sqrt_ISI = safe_sqrt(ISI)
         return Phi(sqrt_ISI / self.mu - 1.0 / sqrt_ISI) + jnp.exp(2.0 / self.mu) * Phi(
