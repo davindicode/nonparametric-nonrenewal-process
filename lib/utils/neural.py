@@ -1,9 +1,12 @@
-import jax
-import jax.numpy as jnp
-import jax.random as jr
 import numpy as np
 
+import jax
 from jax import lax
+import jax.numpy as jnp
+import jax.random as jr
+from jax.scipy.special import gammaln
+
+from ..utils.jax import safe_log
 
 
 # spike trains
@@ -339,7 +342,7 @@ def gen_NB(prng_state, mean, r):
     return jr.poisson(prng_state, s)
 
 
-def gen_CMP(prng_state, mu, nu, max_rejections=1000):
+def gen_CMP(prng_state, mu, nu):#, max_rejections=1000):
     """
     Use rejection sampling to sample from the COM-Poisson count distribution. [1]
 
@@ -355,57 +358,111 @@ def gen_CMP(prng_state, mu, nu, max_rejections=1000):
     :returns:
         inhomogeneous Poisson process sample (numpy.array)
     """
-    trials = mu.shape[0]
-    neurons = mu.shape[1]
-    Y = np.empty(mu.shape)
+    def cond_fun(val):
+        _, left_inds, _ = val
+        return left_inds.any()
+        
+    def poiss_reject(val):
+        Y, left_inds, prng_state = val
+        prng_keys = jr.split(prng_state, 3)
+        
+        mu_ = jnp.floor(mu)
+        y_dash = jr.poisson(prng_keys[0], mu)
 
-    for tr in range(trials):
-        for n in range(neurons):
-            mu_, nu_ = mu[tr, n, :], nu[tr, n, :]
+        log_alpha = (nu - 1) * (
+            (y_dash - mu_) * safe_log(mu) - gammaln(y_dash + 1.) + gammaln(mu_ + 1.)
+        )
 
-            # Poisson
-            k = 0
-            left_bins = np.where(nu_ >= 1)[0]
-            while len(left_bins) > 0:
-                mu__, nu__ = mu_[left_bins], nu_[left_bins]
-                y_dash = jnp.poisson(jnp.tensor(mu__)).numpy()
-                _mu_ = np.floor(mu__)
-                alpha = (
-                    mu__ ** (y_dash - _mu_)
-                    / scsps.factorial(y_dash)
-                    * scsps.factorial(_mu_)
-                ) ** (nu__ - 1)
+        u = jr.uniform(prng_keys[1], shape=mu.shape)
+        alpha = jnp.exp(log_alpha)
+        selected = (u <= alpha) * left_inds
+        
+        Y = jnp.where(selected, y_dash, Y)
+        left_inds *= (~selected)
+#         if k >= max_rejections:
+#             raise ValueError("Maximum rejection steps exceeded")
+#         else:
+#             k += 1
+        return Y, left_inds, prng_keys[2]
+    
+    def geom_reject(val):
+        Y, left_inds, prng_state = val
+        prng_keys = jr.split(prng_state, 3)
+        
+        p = 2 * nu / (2 * mu * nu + 1 + nu)
+        u_0 = jr.uniform(prng_keys[0], shape=mu.shape)
+        y_dash = jnp.floor(safe_log(u_0) / safe_log(1 - p))
+        a = jnp.floor(mu / (1 - p) ** (1 / nu))
 
-                u = np.random.rand(*mu__.shape)
-                selected = u <= alpha
-                Y[tr, n, left_bins[selected]] = y_dash[selected]
-                left_bins = left_bins[~selected]
-                if k >= max_rejections:
-                    raise ValueError("Maximum rejection steps exceeded")
-                else:
-                    k += 1
+        log_alpha = (a - y_dash) * safe_log(1 - p) + nu * (
+            (y_dash - a) * safe_log(mu) - gammaln(y_dash + 1.)  + gammaln(a + 1.)
+        )
 
-            # geometric
-            k = 0
-            left_bins = np.where(nu_ < 1)[0]
-            while len(left_bins) > 0:
-                mu__, nu__ = mu_[left_bins], nu_[left_bins]
-                p = 2 * nu__ / (2 * mu__ * nu__ + 1 + nu__)
-                u_0 = np.random.rand(*p.shape)
-
-                y_dash = np.floor(np.log(u_0) / np.log(1 - p))
-                a = np.floor(mu__ / (1 - p) ** (1 / nu__))
-                alpha = (1 - p) ** (a - y_dash) * (
-                    mu__ ** (y_dash - a) / scsps.factorial(y_dash) * scsps.factorial(a)
-                ) ** nu__
-
-                u = np.random.rand(*mu__.shape)
-                selected = u <= alpha
-                Y[tr, n, left_bins[selected]] = y_dash[selected]
-                left_bins = left_bins[~selected]
-                if k >= max_rejections:
-                    raise ValueError("Maximum rejection steps exceeded")
-                else:
-                    k += 1
-
+        u = jr.uniform(prng_keys[1], shape=mu.shape)
+        alpha = jnp.exp(log_alpha)
+        selected = (u <= alpha) * left_inds
+        
+        Y = jnp.where(selected, y_dash, Y)
+        left_inds *= (~selected)        
+        return Y, left_inds, prng_keys[2]
+    
+    prng_states = jr.split(prng_state, 2)
+    Y = jnp.empty_like(mu)
+    Y, _, _ = lax.while_loop(cond_fun, poiss_reject, init_val=(Y, (nu >= 1), prng_states[0]))
+    Y, _, _ = lax.while_loop(cond_fun, geom_reject, init_val=(Y, (nu < 1), prng_states[1]))
+    
     return Y
+#     trials = mu.shape[0]
+#     neurons = mu.shape[1]
+#     Y = np.empty(mu.shape)
+
+#     for tr in range(trials):
+#         for n in range(neurons):
+#             mu_, nu_ = mu[tr, n, :], nu[tr, n, :]
+            
+#             # Poisson rejection sampling for nu >= 1
+#             k = 0
+#             left_bins = np.where(nu_ >= 1)[0]
+#             while len(left_bins) > 0:
+#                 mu__, nu__ = mu_[left_bins], nu_[left_bins]
+#                 y_dash = jnp.poisson(jnp.tensor(mu__)).numpy()
+#                 _mu_ = np.floor(mu__)
+#                 alpha = (
+#                     mu__ ** (y_dash - _mu_)
+#                     / scsps.factorial(y_dash)
+#                     * scsps.factorial(_mu_)
+#                 ) ** (nu__ - 1)
+
+#                 u = np.random.rand(*mu__.shape)
+#                 selected = u <= alpha
+#                 Y[tr, n, left_bins[selected]] = y_dash[selected]
+#                 left_bins = left_bins[~selected]
+#                 if k >= max_rejections:
+#                     raise ValueError("Maximum rejection steps exceeded")
+#                 else:
+#                     k += 1
+
+#             # geometric rejection sampling for nu < 1
+#             k = 0
+#             left_bins = np.where(nu_ < 1)[0]
+#             while len(left_bins) > 0:
+#                 mu__, nu__ = mu_[left_bins], nu_[left_bins]
+#                 p = 2 * nu__ / (2 * mu__ * nu__ + 1 + nu__)
+#                 u_0 = np.random.rand(*p.shape)
+
+#                 y_dash = np.floor(np.log(u_0) / np.log(1 - p))
+#                 a = np.floor(mu__ / (1 - p) ** (1 / nu__))
+#                 alpha = (1 - p) ** (a - y_dash) * (
+#                     mu__ ** (y_dash - a) / scsps.factorial(y_dash) * scsps.factorial(a)
+#                 ) ** nu__
+
+#                 u = np.random.rand(*mu__.shape)
+#                 selected = u <= alpha
+#                 Y[tr, n, left_bins[selected]] = y_dash[selected]
+#                 left_bins = left_bins[~selected]
+#                 if k >= max_rejections:
+#                     raise ValueError("Maximum rejection steps exceeded")
+#                 else:
+#                     k += 1
+
+#     return Y

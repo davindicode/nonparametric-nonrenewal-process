@@ -342,14 +342,13 @@ class ZeroInflatedPoisson(CountLikelihood):
         """
         mu = self.inverse_link(f) * self.tbin
 
-        zero_spikes = y == 0  # mask
         ll_n = (
             y * safe_log(mu) - mu - gammaln(y + 1.0) + safe_log(1.0 - alpha)
         )  # -log (1-alpha)*p(N)
         p = jnp.exp(ll_n)  # stable as ll < 0
         ll_0 = safe_log(alpha + p)  # probability of zero counts, stable for alpha = 0
 
-        ll = zero_spikes * ll_0 + (~zero_spikes) * ll_n
+        ll = lax.select(y == 0, ll_0, ll_n)
         return ll
 
     def log_likelihood(self, f, y):
@@ -447,7 +446,7 @@ class NegativeBinomial(CountLikelihood):
         :returns:
             NLL of shape (trial, time), jnp.ndarray
         """
-        asymptotic_mask = r_inv < 1e-3  # when r becomes very large
+        asymptotic_mask = (r_inv < 1e-3)  # when r becomes very large
         r = 1.0 / (r_inv + asymptotic_mask)  # avoid NaNs
 
         mu = self.inverse_link(f) * self.tbin
@@ -462,9 +461,7 @@ class NegativeBinomial(CountLikelihood):
         ll = y * safe_log(mu) - gammaln(y + 1)
 
         # numerically stable for large range of r
-        ll = ll.at[asymptotic_mask].add(ll_r_inv[asymptotic_mask])
-        ll = ll.at[~asymptotic_mask].add(ll_r[~asymptotic_mask])
-
+        ll += lax.select(asymptotic_mask, ll_r_inv, ll_r)
         return ll
 
     def log_likelihood(self, f, y):

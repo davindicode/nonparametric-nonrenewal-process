@@ -89,7 +89,8 @@ class ModulatedFactorized(FilterGPLVM):
         
         else:
             prng_states = jr.split(prng_state, ts*num_samps).reshape(num_samps, ts, -1)
-            return vmap(vmap(self.likelihood.sample_Y), (1, 2), 2)(prng_states, f_samples)
+            Y = vmap(vmap(self.likelihood.sample_Y), (1, 2), 2)(prng_states, f_samples)
+            return Y, f_samples
 
     ### variational inference ###
     def ELBO(
@@ -206,51 +207,51 @@ class ModulatedRenewal(FilterGPLVM):
 
         return pre_rates
     
-    def _sample_spikes(self, prng_state, ini_spikes, pre_rates):
+    def _sample_spikes(self, prng_state, ini_spikes, tau_start, pre_rates):
         """
         Sample the spike train autoregressively
         
         :param jnp.dnarray ini_spikes: initial spike train (num_samps, obs_dims, filter_length)
+        :param jnp.ndarray tau_start: initial tau values at start (num_samps, obs_dims)
         """
         num_samps, obs_dims, ts = pre_rates.shape
-        prng_states = jr.split(prng_state, ts)
-        
-        def true_func(tau, rate):
-            return tau + rate * self.dt
-
-        def false_func(tau, rate):
-            return rate * self.dt
+        if self.spikefilter is not None:
+            prng_states = jr.split(prng_state, ts*2).reshape(ts, 2, -1)
+        else:
+            prng_states = jr.split(prng_state, ts).reshape(ts, 1, -1)
 
         def step(carry, inputs):
-            prng_state, pre_rate = inputs
-            tau_since, past_spikes = carry
+            prng_state, f = inputs
+            tau_since, past_spikes, spikes = carry
             
             if self.spikefilter is not None:
-                h, KL = self.spikefilter.apply_filter(prng_state, past_spikes, compute_KL)
-                prng_state, _ = jr.split(prng_state)
-            
-            f = pre_rate + h
+                h, KL = self.spikefilter.apply_filter(prng_state[0], past_spikes, compute_KL)
+                f += h
+                
             rate = self.renewal.inverse_link(f)
+            log_rate = f if self.renewal.link_type == 'log' else safe_log(rate)
             
-            cond = (past_spikes[..., -1] > 0)
-            tau_since = lax.cond(cond, true_func, false_func, tau_since, rate)
+            cond = (spikes > 0)  # (num_samps, obs_dims)
+            true_arr = (tau_since + rate * self.renewal.dt)
+            false_arr = (rate * self.renewal.dt)
+            tau_since_spike = lax.select(cond, true_arr, false_arr)
             
-            renewal_density = jnp.exp(self.renewal.log_density(tau_since_spike))
-            survival = 1.0 - self.renewal.cum_density(tau_since_spike)
+            log_renewal_density = self.renewal.log_density(tau_since_spike)
+            log_survival = self.renewal.log_survival(tau_since_spike)
 
-            rho_t = rate * renewal_density / survival
-            p_spike = jnp.maximum(rho_t * self.dt, 1.)  # approximate by discrete Bernoulli
-            spikes = jr.bernoulli(prng_state, p_spike)
+            log_rho_t = log_rate + log_renewal_density - log_survival
+            p_spike = jnp.maximum(jnp.exp(log_rho_t) * self.renewal.dt, 1.)  # approximate by discrete Bernoulli
+            spikes = jr.bernoulli(prng_state[-1], p_spike).astype(self.array_type)
             
             if self.spikefilter is not None:
                 past_spikes = jnp.concatenate((past_spikes[..., 1:], spikes[..., None]), axis=-1)
             
-            return (tau_since, past_spikes), (spikes, rho_t, rate)
+            return (tau_since, past_spikes, spikes), (spikes, log_rho_t)
 
-        init = (tau_start, ini_spikes)
-        xs = (prng_states, pre_rates)
-        _, (spikes, rho_ts, rates) = lax.scan(step, init, xs)
-        return spikes, rho_ts, rates  # (num_samps, obs_dims, ts)
+        init = (tau_start, ini_spikes, jnp.zeros((num_samps, obs_dims)))
+        xs = (prng_states, pre_rates.transpose(2, 0, 1))
+        _, (spikes, log_rho_ts) = lax.scan(step, init, xs)
+        return spikes.transpose(1, 2, 0), log_rho_ts.transpose(1, 2, 0)  # (num_samps, obs_dims, ts)
 
     ### inference ###
     def ELBO(self, prng_state, y, pre_rates, covariates, neuron, num_ISIs):
@@ -263,7 +264,8 @@ class ModulatedRenewal(FilterGPLVM):
             prng_state, x_samples, jitter, compute_KL=True
         )  # (evals, samp, f_dim)
 
-        y_filtered, KL_y = self._spiketrain_filter(prng_state, y)
+        if self.spikefilter is not None:
+            y_filtered, KL_y = self.spikefilter.apply_filter(prng_state[0], y, compute_KL)
         pre_rates = f_samples + y_filtered
         
         Ell = self.renewal.variational_expectation(
@@ -294,11 +296,11 @@ class ModulatedRenewal(FilterGPLVM):
             spikes, rates, False, True)  # (num_samps, ts, obs_dims)
         
         log_renewal_density = self.renewal.log_density(tau_since_spike)
-        survival = 1.0 - self.renewal.cum_density(tau_since_spike)
+        log_survival = self.renewal.log_survival(tau_since_spike)
         
         log_rates = pre_rates if self.renewal.link_type == 'log' else safe_log(rates)
-        log_rho_t = log_rates + log_renewal_density - log_survival
-        return log_rho_t.transpose(0, 2, 1)  # (num_samps, out_dims, ts)
+        log_rho_t = log_rates + (log_renewal_density - log_survival).transpose(0, 2, 1)
+        return log_rho_t  # (num_samps, out_dims, ts)
     
     
     def sample_instantaneous_renewal(
@@ -318,7 +320,7 @@ class ModulatedRenewal(FilterGPLVM):
         log_dens = vmap(vmap(self.renewal.log_density), 2, 2)(tau_eval)
         return jnp.exp(log_dens)  # (num_samps, obs_dims, ts)
     
-    def sample_prior(self, prng_state, num_samps, x_eval, ini_spikes):
+    def sample_prior(self, prng_state, num_samps, x_eval, time_eval, ini_spikes, ini_tau, jitter):
         """
         Sample from the generative model
         Sample spike trains from the modulated renewal process.
@@ -327,31 +329,32 @@ class ModulatedRenewal(FilterGPLVM):
         """
         prng_states = jr.split(prng_state, 3)
         
-        x_samples = self._prior_input_samples(prng_states[0], num_samps, time_eval, jitter)
-        x_samples = jnp.concatenate((x_eval, x_samples), axis=-1)
+        x_samples = self._prior_input_samples(prng_states[0], num_samps, x_eval, time_eval, jitter)
         
         f_samples = self._gp_sample(
             prng_states[1], x_samples, True, jitter
         )  # (num_samps, obs_dims, 1)
 
-        y_samples = self._sample_spikes(prng_states[2], ini_spikes, f_samples)
-        return y_samples, f_samples, x_samples
+        y_samples, log_rho_ts = self._sample_spikes(
+            prng_states[2], ini_spikes, ini_tau, f_samples)
+        return y_samples, log_rho_ts, x_samples
 
-    def sample_posterior(self, prng_state, num_samps, x_eval, ini_spikes):
+    def sample_posterior(self, prng_state, num_samps, x_eval, time_eval, ini_spikes, ini_tau, jitter):
         """
         Sample from posterior predictive
         """
         prng_states = jr.split(prng_state, 3)
         
-        x_samples = self._posterior_input_samples(prng_states[0], num_samps, time_eval, jitter)
-        x_samples = jnp.concatenate((x_eval, x_samples), axis=-1)
+        x_samples, _ = self._posterior_input_samples(
+            prng_states[0], num_samps, x_eval, time_eval, jitter, False)
         
         f_samples = self._gp_sample(
             prng_states[1], x_samples, False, jitter
         )  # (num_samps, obs_dims, 1)
 
-        y_samples = self._sample_spikes(prng_states[2], ini_spikes, f_samples)
-        return y_samples, f_samples, x_samples
+        y_samples, log_rho_ts = self._sample_spikes(
+            prng_states[2], ini_spikes, ini_tau, f_samples)
+        return y_samples, log_rho_ts, x_samples
 
     
 
@@ -491,6 +494,52 @@ class NonparametricPP(FilterGPLVM):
         log_rho_tau_mean = f_mean[..., 0] + m_eval
         return log_rho_tau_mean, f_cov[..., 0], KL
     
+    def _sample_spikes(self, prng_state, ini_spikes, ini_ISI, x_eval):
+        """
+        Sample the spike train autoregressively
+        
+        :param jnp.dnarray ini_spikes: initial spike train (num_samps, obs_dims, filter_length)
+        :param jnp.ndarray tau_start: initial tau values at start (num_samps, obs_dims)
+        """
+        num_samps, obs_dims, ts = pre_rates.shape
+        if self.spikefilter is not None:
+            prng_states = jr.split(prng_state, ts*2).reshape(ts, 2, -1)
+        else:
+            prng_states = jr.split(prng_state, ts).reshape(ts, 1, -1)
+
+        def step(carry, inputs):
+            prng_state, f = inputs
+            tau_since, past_spikes, spikes = carry
+            
+            if self.spikefilter is not None:
+                h, KL = self.spikefilter.apply_filter(prng_state[0], past_spikes, compute_KL)
+                f += h
+                
+            rate = self.renewal.inverse_link(f)
+            log_rate = f if self.renewal.link_type == 'log' else safe_log(rate)
+            
+            cond = (spikes > 0)  # (num_samps, obs_dims)
+            true_arr = (tau_since + rate * self.renewal.dt)
+            false_arr = (rate * self.renewal.dt)
+            tau_since_spike = lax.select(cond, true_arr, false_arr)
+            
+            log_renewal_density = self.renewal.log_density(tau_since_spike)
+            log_survival = self.renewal.log_survival(tau_since_spike)
+
+            log_rho_t = log_rate + log_renewal_density - log_survival
+            p_spike = jnp.maximum(jnp.exp(log_rho_t) * self.renewal.dt, 1.)  # approximate by discrete Bernoulli
+            spikes = jr.bernoulli(prng_state[-1], p_spike).astype(self.array_type)
+            
+            if self.spikefilter is not None:
+                past_spikes = jnp.concatenate((past_spikes[..., 1:], spikes[..., None]), axis=-1)
+            
+            return (tau_since, past_spikes, spikes), (spikes, log_rho_t)
+
+        init = (tau_start, ini_spikes, jnp.zeros((num_samps, obs_dims)))
+        xs = (prng_states, pre_rates.transpose(2, 0, 1))
+        _, (spikes, log_rho_ts) = lax.scan(step, init, xs)
+        return spikes.transpose(1, 2, 0), log_rho_ts.transpose(1, 2, 0)  # (num_samps, obs_dims, ts)
+    
 
     ### inference ###
     def ELBO(self, prng_state, num_samps):
@@ -593,35 +642,39 @@ class NonparametricPP(FilterGPLVM):
         renewal_density = rho_t_eval * exp_negintrho_t / normalizer[..., None]
         return renewal_density
     
-    def sample_prior(self, prng_state, num_samps):
+    def sample_prior(self, prng_state, num_samps, x_eval, time_eval, ini_spikes, ini_tau, jitter):
         """
         Sample from the generative model
         Sample spike trains from the modulated renewal process.
         :return:
             pike train of shape (trials, neuron, timesteps)
         """
-        x_samples, _ = self._sample_input_trajectories(
-            prng_state, x, t, num_samps, True, compute_KL)
+        prng_states = jr.split(prng_state, 3)
+        
+        x_samples = self._prior_input_samples(prng_states[0], num_samps, x_eval, time_eval, jitter)
         
         f_samples = self._gp_sample(
-            prng_state, x_cond[..., None, :], True, jitter
+            prng_states[1], x_samples, True, jitter
         )  # (num_samps, obs_dims, 1)
 
-        y_samples = self._sample_spikes()
-        return y_samples, f_samples, x_samples
+        y_samples, log_rho_ts = self._sample_spikes(
+            prng_states[2], ini_spikes, ini_tau, f_samples)
+        return y_samples, log_rho_ts, x_samples
 
-    def sample_posterior(self, prng_state, num_samps):
+    def sample_posterior(self, prng_state, num_samps, x_eval, time_eval, ini_spikes, ini_tau, jitter):
         """
         Sample from posterior predictive
         """
-        x_samples, _ = self._sample_input_trajectories(
-            prng_state, x, t, num_samps, False, compute_KL)
+        prng_states = jr.split(prng_state, 3)
+        
+        x_samples, _ = self._posterior_input_samples(
+            prng_states[0], num_samps, x_eval, time_eval, jitter, False)
         
         f_samples = self._gp_sample(
-            prng_state, x_cond[..., None, :], False, jitter
+            prng_states[1], x_samples, False, jitter
         )  # (num_samps, obs_dims, 1)
 
-        y_samples = self._sample_spikes()
-        return y_samples, f_samples, x_samples
-
+        y_samples, log_rho_ts = self._sample_spikes(
+            prng_states[2], ini_spikes, ini_tau, f_samples)
+        return y_samples, log_rho_ts, x_samples
     
