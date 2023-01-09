@@ -60,25 +60,6 @@ def SpikeTrainLoader(DataLoader):
         batch_edge, _, _ = self.batch_info
 
 
-def ISILoader(DataLoader):
-    """
-    Loading inter-spike intervals of some point process time series
-    """
-
-    def __init__(self, obs_inputs, tensor_type, allow_duplicate, dequantize):
-        super().__init__()
-
-    def set_Y(self, spikes, batch_info):
-        """
-        Get all the activity into batches useable format for quick log-likelihood evaluation
-        Tensor shapes: self.act [neuron_dim, batch_dim]
-        """
-        if self.allow_duplicate is False and spikes.max() > 1:  # only binary trains
-            raise ValueError("Only binary spike trains are accepted in set_Y() here")
-        super().set_Y(spikes, batch_info)
-        batch_edge, _, _ = self.batch_info
-
-
 
 def FIRLoader(DataLoader):
     """

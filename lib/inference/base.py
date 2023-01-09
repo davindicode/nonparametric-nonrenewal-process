@@ -95,7 +95,11 @@ class FilterGPLVM(FilterModule):
         if self.ssgp is not None:
             x.append(self.ssgp.sample_prior(prng_state, num_samps, t_eval, jitter))
         
-        return jnp.concatenate(x, axis=-1)
+        if len(x) > 0:
+            x = jnp.concatenate(x, axis=-1)
+        else:
+            x = None
+        return x
 
     def _posterior_input_samples(self, prng_state, num_samps, x_eval, t_eval, jitter, compute_KL):
         """
@@ -112,18 +116,34 @@ class FilterGPLVM(FilterModule):
 
             x.append(x_samples)
             KL += KL_x
-        
-        return jnp.concatenate(x, axis=-1), KL
+            
+        if len(x) > 0:
+            x = jnp.concatenate(x, axis=-1)
+        else:
+            x = None
+        return x, KL
 
     def _posterior_input_marginals(self, prng_state, num_samps, x_eval, t_eval, jitter, compute_KL):
         """
         Combines observed inputs with latent marginal samples
         """
+        x, x_cov, KL = [], [], 0.
+        
+        if x_eval is not None:
+            x.append(x_eval)
+            x_cov.append(jnp.zeros_like(x_eval))
+            
         if self.ssgp is not None:  # filtering-smoothing
-            post_mean, post_cov, _ = self.ssgp.evaluate_posterior(
+            post_mean, post_cov, KL_x = self.ssgp.evaluate_posterior(
                 t_eval, False, compute_KL, jitter)
             post_mean = post_mean[..., 0]  # (time, tr, x_dims, 1)
 
-            return post_mean, post_cov, KL
+            x.append(post_mean)
+            x_cov.append(post_cov)
+            KL += KL_x
         
-        return jnp.concatenate(x, axis=-1), KL
+        if len(x) > 0:
+            x, x_cov = jnp.concatenate(x, axis=-1), jnp.concatenate(x_cov, axis=-1)
+        else:
+            x, x_cov = None, None
+        return x, x_cov, KL

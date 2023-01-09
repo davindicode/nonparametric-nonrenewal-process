@@ -86,6 +86,9 @@ class RaisedCosineBumps(Filter):
         """
         Raised cosine basis as used in the literature.
 
+        higher a is more linear spacing of peaks
+        c shifts the peak maxima to the left
+        
         .. note::
 
             Stimulus history object needs to assert (w_u.shape[-1] == 1 or w_u.shape[-1] == self.rate_model.out_dims)

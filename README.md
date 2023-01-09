@@ -25,3 +25,19 @@ Formatting
 
 Code analysis linter
 #. [pylint](https://www.pylint.org/)
+
+
+
+- fit GP-GLM
+- fit modulated renewal
+- schematic plots
+- validation
+- biophysical
+- place cells
+
+
+- ELBO and fitting
+- Sample STGP
+- pathwise conditioned KS test
+- neural correlations
+- LVM

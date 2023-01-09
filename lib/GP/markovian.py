@@ -732,7 +732,7 @@ class MultiOutputLTI(SSM):
         # evaluation locations
         t_all, site_ind, eval_ind = vmap(order_times, (0, 0), (0, 0, 0))(
             t_eval, self.site_locs
-        )
+        )  # vmap over out_dims
         
         ind_eval, dt_fwd, dt_bwd = vmap(interpolation_times, (0, 0), (1, 1, 1))(
             t_eval, site_locs

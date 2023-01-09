@@ -149,9 +149,7 @@ class LogCoxProcess(FactorizedLikelihood):
         :return:
             log p(yₙ|fₙ), p(yₙ|fₙ) = Pʸ(1-P)⁽¹⁻ʸ⁾
         """
-        # return jnp.where(jnp.equal(y, 1), self.link_fn(f), 1 - self.link_fn(f))
-
-        return y * f - jnp.exp(f)
+        return y * f - jnp.exp(f) * self.dt
 
     def sample_Y(self, rate):
         """

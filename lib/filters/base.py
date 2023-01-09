@@ -57,7 +57,8 @@ class Filter(module):
                 (inputs.shape[0], 1, 1), (h.shape[0], 1, 1), ('NCW', 'WIO', 'NCW'))
             inputs = inputs[..., None, :]
             h = h[..., None]
-            
+            print(inputs.shape)
+            print(h.shape)
             out = vmap(lax.conv_general_dilated, (1, 1, None, None, None, None, None), 1)(
                 inputs,   # lhs = image tensor
                 h,      # rhs = conv kernel tensor
@@ -66,6 +67,6 @@ class Filter(module):
                 (1,),   # lhs/image dilation
                 (1,),   # rhs/kernel dilation
                 dn,     # dimension_numbers = lhs, rhs, out dimension permutation
-            )[..., 0, :]
+            )[..., 0, :]  # vmap over out_dims
             
         return out, KL
