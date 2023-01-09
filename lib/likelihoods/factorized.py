@@ -151,7 +151,7 @@ class LogCoxProcess(FactorizedLikelihood):
         """
         return y * f - jnp.exp(f) * self.dt
 
-    def sample_Y(self, rate):
+    def sample_Y(self, prng_state, f):
         """
         Bernoulli process approximation with small dt
 
@@ -159,7 +159,8 @@ class LogCoxProcess(FactorizedLikelihood):
         :returns:
             spike train of shape (obs_dims,)
         """
-        return jr.bernoulli(prng_state, rate)
+        rate = jnp.maximum(jnp.exp(f) * self.dt, 1.)
+        return jr.bernoulli(prng_state, rate).astype(self.array_type)
 
 
 ### discrete likelihoods ###
@@ -200,7 +201,7 @@ class Bernoulli(FactorizedLikelihood):
             spike train of shape (obs_dims,)
         """
         p_spike = self.inverse_link(f)
-        return jr.bernoulli(prng_state, p_spike)
+        return jr.bernoulli(prng_state, p_spike).astype(self.array_type)
 
 
 class Poisson(CountLikelihood):

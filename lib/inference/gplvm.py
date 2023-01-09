@@ -73,11 +73,11 @@ class ModulatedFactorized(FilterGPLVM):
             def step(carry, inputs):
                 prng_keys, f = inputs
                 past_Y = carry  # (mc, obs_dims, ts)
-
+                print(f.shape)
                 h, _ = self.spikefilter.apply_filter(prng_keys[-1], past_Y, compute_KL=False)
-                f = f.at[:, ::self.likelihood.num_f_per_obs].add(h)
+                f = f.at[:, ::self.likelihood.num_f_per_obs].add(h[..., 0])
 
-                y = vmap(self.likelihood.sample_Y)(prng_keys, f)  # vmap over MC
+                y = vmap(self.likelihood.sample_Y)(prng_keys[:-1], f)  # vmap over MC
                 past_Y = jnp.concatenate((past_Y[..., 1:], y[..., None]), axis=-1)
 
                 return past_Y, (y, f)
@@ -133,9 +133,11 @@ class ModulatedFactorized(FilterGPLVM):
         """
         pre_rates_mean, pre_rates_cov, _, _ = self.gp.evaluate_posterior(
             x_eval, mean_only=False, diag_cov=False, compute_KL=False, compute_aux=False, jitter=jitter)
+        pre_rates_mean = pre_rates_mean[..., 0]
         
         if self.spikefilter is not None:
-            y_filtered, _ = self.spikefilter.apply_filter(prng_state, y, compute_KL=False)
+            y_filtered, _ = self.spikefilter.apply_filter(
+                prng_state, y[..., :-1], compute_KL=False)  # leave out last time step (causality)
             pre_rates_mean += y_filtered
         
         return pre_rates_mean, pre_rates_cov  # (num_samps, out_dims, ts)
@@ -229,8 +231,8 @@ class ModulatedRenewal(FilterGPLVM):
             tau_since, past_spikes, spikes = carry
             
             if self.spikefilter is not None:
-                h, KL = self.spikefilter.apply_filter(prng_state[0], past_spikes, compute_KL)
-                f += h
+                h, _ = self.spikefilter.apply_filter(prng_state[0], past_spikes, False)
+                f += h[..., 0]
                 
             rate = self.renewal.inverse_link(f)
             log_rate = f if self.renewal.link_type == 'log' else safe_log(rate)
@@ -292,15 +294,20 @@ class ModulatedRenewal(FilterGPLVM):
         :param jnp.ndarray y: spike train corresponding to segment (neurons, ts)
         """
         pre_rates = self._gp_sample(prng_state, x_eval, False, jitter)  # (num_samps, obs_dims, ts)
+        y = jnp.broadcast_to(y, (pre_rates.shape[0],) + y.shape[1:])
+        
         if self.spikefilter is not None:
-            h, _ = self.spikefilter.apply_filter(prng_state[0], y, False)
+            h, _ = self.spikefilter.apply_filter(prng_state[0], y[..., :-1], False)
             pre_rates += h
+            
+            filter_length = len(self.spikefilter.filter_time)
+            y = y[..., filter_length:]
             
         rates = self.renewal.inverse_link(pre_rates).transpose(0, 2, 1)
         
         # rate rescaling, rescaled time since last spike
-        spikes = (y > 0).T
-        _, tau_since_spike = vmap(self.renewal._rate_rescale, (None, 0, None, None), (None, 0))(
+        spikes = (y > 0).transpose(0, 2, 1)
+        _, tau_since_spike = vmap(self.renewal._rate_rescale, (0, 0, None, None), (None, 0))(
             spikes, rates, False, True)  # (num_samps, ts, obs_dims)
         
         log_renewal_density = self.renewal.log_density(tau_since_spike)

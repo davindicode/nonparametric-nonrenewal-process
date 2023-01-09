@@ -57,8 +57,7 @@ class Filter(module):
                 (inputs.shape[0], 1, 1), (h.shape[0], 1, 1), ('NCW', 'WIO', 'NCW'))
             inputs = inputs[..., None, :]
             h = h[..., None]
-            print(inputs.shape)
-            print(h.shape)
+            
             out = vmap(lax.conv_general_dilated, (1, 1, None, None, None, None, None), 1)(
                 inputs,   # lhs = image tensor
                 h,      # rhs = conv kernel tensor
