@@ -1,8 +1,18 @@
+from typing import Union
+
 import jax.numpy as jnp
 import numpy as np
 
 
+
 class Dataset:
+    """
+    Data with loading functionality
+    """
+    
+    covariates: Union[None, np.ndarray]
+    observations: np.ndarray
+    
     def __init__(self, inputs, targets, batches, batch_axis=0, batch_order=None):
         # batch data into inputs for network
         inputs_batched = np.split(inputs, batches, axis=batch_axis)
@@ -20,16 +30,13 @@ class Dataset:
     def __iter__(self):
         return iter(zip(self.inputs, self.targets))
 
+    def __init__(self, covariates):
+        self.covariates = covariates
+        self.observations = observations
 
-def DataLoader():
-    obs_inputs: np.ndarray
-
-    def __init__(self, obs_inputs):
-        self.obs_inputs = obs_inputs
-
-    def load(self):
+    def load_batch(self):
         data = jnp.array(obs_inputs, dtype=dtype)
-        return timestamps, data
+        return timestamps, covariates, observations
 
 
 def SpikeTrainLoader(DataLoader):
@@ -80,3 +87,4 @@ def FIRLoader(DataLoader):
         self.likelihood.all_spikes = spikes.type(
             self.likelihood.tensor_type
         )  # overwrite
+

@@ -12,12 +12,12 @@ import numpy as np
 
 from ..GP.markovian import GaussianLTI
 
-from .base import FilterModule
+from .base import FilterObservations
 
 _log_twopi = math.log(2 * math.pi)
 
 
-class FilterGLM(FilterModule):
+class FilterGLM(FilterObservations):
     """
     The input-ouput (IO) mapping is deterministic or stochastic
 
