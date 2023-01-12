@@ -1,4 +1,6 @@
 from typing import List, Union
+
+import numpy as np
 import jax.numpy as jnp
 
 from ..base import module
@@ -8,6 +10,66 @@ from ..GP.gpssm import DTGPSSM
 
 
 
+class BatchedTimeSeries:
+    """
+    Data with loading functionality
+    
+    Allows for filtering
+    """
+
+    def __init__(self, timestamps, covariates, ISIs, observations, batch_size, filter_length=0):
+        """
+        :param np.ndarray timestamps: (ts,)
+        :param np.ndarray covariates: (ts, x_dims)
+        :param np.ndarray ISIs: (out_dims, ts, order)
+        :param np.ndarray observations: (out_dims, ts)
+        """
+        pts = len(timestamps)
+        
+        # checks
+        assert covariates.shape[0] == pts
+        if ISIs is not None:
+            assert ISIs.shape[1] == pts
+        assert observations.shape[1] == pts + filter_length
+        
+        self.batches = int(np.ceil(pts / batch_size))
+        self.batch_size = batch_size
+        self.filter_length = filter_length
+
+        self.timestamps = timestamps
+        self.covariates = covariates
+        self.ISIs = ISIs
+        self.observations = observations
+        
+    def load_batch(self, batch_index):
+        t_inds = slice(batch_index*self.batch_size, (batch_index + 1)*self.batch_size)
+        y_inds = slice(batch_index*self.batch_size, (batch_index + 1)*self.batch_size + self.filter_length)
+        
+        ts = self.timestamps[t_inds]
+        xs = self.covariates[t_inds]
+        deltas = self.ISIs[:, t_inds]
+        ys = self.observations[:, t_inds]
+        return ts, xs, deltas, ys
+    
+    
+    
+class BatchedTrials:
+    """
+    Subsample over batches
+    """
+    
+    def __init__(self, timestamps, covariates, ISIs, observations, batch_size, filter_length=0):
+        """
+        :param np.ndarray timestamps: (ts,)
+        :param np.ndarray covariates: (ts, x_dims)
+        :param np.ndarray ISIs: (out_dims, ts, order)
+        :param np.ndarray observations: (out_dims, ts)
+        """
+        pts = len(timestamps)
+
+    
+    
+    
 class GaussianLatentObservedSeries(module):
     """
     Time series with latent GP and observed covariates
@@ -21,7 +83,7 @@ class GaussianLatentObservedSeries(module):
     def __init__(self, ssgp, lat_dims, obs_dims, array_type=jnp.float32):
         if ssgp is not None:  # checks
             assert ssgp.array_type == array_type
-            assert len(lat_dims) == ssgp.f_dims
+            assert len(lat_dims) == ssgp.kernel.out_dims
             
         super().__init__(array_type)
         self.ssgp = ssgp
@@ -45,73 +107,96 @@ class GaussianLatentObservedSeries(module):
     def sample_prior(self, prng_state, num_samps, timestamps, x_eval, jitter):
         """
         Combines observed inputs with latent trajectories
+        
+        :param jnp.ndarray timestamps: time stamps of inputs (ts,)
+        :param jnp.ndarray x_eval: inputs for evaluation (ts, x_dims)
         """
-        x = jnp.empty((self.x_dims))
-        
+        ts = len(timestamps)
         if len(self.obs_dims) > 0:
-            x.append(x_eval)
+            x_eval = jnp.broadcast_to(x_eval, (num_samps, ts, len(self.obs_dims)))
             
-        if len(self.lat_dims) > 0:  # self.ssgp is not None
-            x.append(self.ssgp.sample_prior(prng_state, num_samps, t_eval, jitter))
-        
-        return x
+        if len(self.lat_dims) == 0:
+            x = x_eval
+            
+        else:
+            x_samples = self.ssgp.sample_prior(prng_state, num_samps, timestamps, jitter)[..., 0]
+            
+            if len(self.obs_dims) == 0:
+                x = x_samples
+                
+            else:
+                x = jnp.empty((num_samps, ts,  self.x_dims))
+                x = x.at[..., self.obs_dims].set(x_eval)
+                x = x.at[..., self.lat_dims].set(x_samples)
+            
+        return x  # (num_samps, ts, x_dims)
 
-    def sample_posterior(self, prng_state, num_samps, x_eval, t_eval, jitter, compute_KL):
+    def sample_posterior(self, prng_state, num_samps, timestamps, x_eval, jitter, compute_KL):
         """
         Combines observed inputs with latent trajectories
-        """
-        x, KL = [], 0.
         
-        if x_eval is not None:
-            x.append(x_eval)
+        :param jnp.ndarray timestamps: 
+        """
+        ts = len(timestamps)
+        if len(self.obs_dims) > 0:
+            x_eval = jnp.broadcast_to(x_eval, (num_samps, ts, len(self.obs_dims)))
             
-        if self.ssgp is not None:
-            x_samples, KL_x = self.ssgp.sample_posterior(
-                prng_state, num_samps, t_eval, jitter, compute_KL)  # (tr, time, N, 1)
-
-            x.append(x_samples)
-            KL += KL_x
+        if len(self.lat_dims) == 0:
+            x, KL = x_eval, 0.
             
-        if len(x) > 0:
-            x = jnp.concatenate(x, axis=-1)
         else:
-            x = None
+            x_samples, KL = self.ssgp.sample_posterior(
+                prng_state, num_samps, timestamps, jitter, compute_KL)  # (tr, time, x_dims)
+            x_samples = x_samples[..., 0]
+            
+            if len(self.obs_dims) == 0:
+                x = x_samples
+            
+            else:
+                x = jnp.empty((num_samps, len(timestamps),  self.x_dims))
+                x = x.at[..., self.obs_dims].set(x_eval)
+                x = x.at[..., self.lat_dims].set(x_samples)
+            
         return x, KL
 
-    def marginal_posterior(self, prng_state, num_samps, x_eval, t_eval, jitter, compute_KL):
+    def marginal_posterior(self, num_samps, timestamps, x_eval, jitter, compute_KL):
         """
         Combines observed inputs with latent marginal samples
         """
-        x, x_cov, KL = [], [], 0.
+        ts = len(timestamps)
+        if len(self.obs_dims) > 0:
+            x_eval = jnp.broadcast_to(x_eval, (num_samps, ts, len(self.obs_dims)))
         
-        if x_eval is not None:
-            x.append(x_eval)
-            x_cov.append(jnp.zeros_like(x_eval))
+        if len(self.lat_dims) == 0:
+            x_mean, KL = x_eval, 0.
+            x_cov = jnp.zeros_like(x)
             
-        if self.ssgp is not None:  # filtering-smoothing
-            post_mean, post_cov, KL_x = self.ssgp.evaluate_posterior(
-                t_eval, False, compute_KL, jitter)
-            post_mean = post_mean[..., 0]  # (time, tr, x_dims, 1)
-
-            x.append(post_mean)
-            x_cov.append(post_cov)
-            KL += KL_x
-        
-        if len(x) > 0:
-            x, x_cov = jnp.concatenate(x, axis=-1), jnp.concatenate(x_cov, axis=-1)
         else:
-            x, x_cov = None, None
-        return x, x_cov, KL
+            post_mean, post_cov, KL = self.ssgp.evaluate_posterior(
+                timestamps, False, compute_KL, jitter)
+            post_mean, post_cov = post_mean[..., 0], post_cov[..., 0]  # (tr, time, x_dims)
+            
+            if len(self.obs_dims) == 0:
+                x_mean, x_cov = post_mean, post_cov
+            
+            else:
+                x_mean, x_cov, KL = jnp.empty((num_samps, len(timestamps))), jnp.empty((num_samps, len(timestamps))), 0.
+                x_mean = x_mean.at[..., self.obs_dims].set(x_eval)
+                x_mean = x_mean.at[..., self.lat_dims].set(post_mean)
+                x_cov = x_cov.at[..., self.obs_dims].set(jnp.zeros_like(x_eval))
+                x_cov = x_cov.at[..., self.lat_dims].set(post_cov)
+                
+        return x_mean, x_cov, KL
     
     
-    def sample_marginal_posterior(self):
-        x_mean, x_cov, KL_x = self._posterior_input_marginals(
-            prng_state, num_samps, t_eval, jitter, compute_KL)  # (num_samps, obs_dims, ts, 1)
+    def sample_marginal_posterior(self, prng_state, num_samps, timestamps, x_eval, jitter, compute_KL):
+        x_mean, x_cov, KL = self.marginal_posterior(
+            prng_state, num_samps, timestamps, x_eval, jitter, compute_KL)  # (num_samps, obs_dims, ts, 1)
         
         # conditionally independent sampling
         x_std = safe_sqrt(x_cov)
-        x_samples = x_mean + jr.normal(prng_state, shape=x_mean.shape) * x_std
-
+        x = x_mean + jr.normal(prng_state, shape=x_mean.shape) * x_std
+        return x, KL
         
         
 #     switchgp: Union[SwitchingLTI, None]

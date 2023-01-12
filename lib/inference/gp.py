@@ -167,7 +167,7 @@ class ModulatedFactorized(FilterObservations):
         f_samples = self._gp_sample(prng_states[1], x_samples, True, jitter)  # (samp, evals, f_dim)
         y_samples, filtered_f = self._sample_Y(prng_states[2], ini_Y, f_samples)
         
-        return y_samples, filtered_f, x_samples
+        return y_samples, filtered_f
 
     def sample_posterior(self, prng_state, num_samps, x_samples, ini_Y, jitter):
         """
@@ -178,7 +178,7 @@ class ModulatedFactorized(FilterObservations):
         f_samples = self._gp_sample(prng_states[1], x_samples, False, jitter)  # (samp, evals, f_dim)
         y_samples, filtered_f = self._sample_Y(prng_states[2], ini_Y, f_samples)
         
-        return y_samples, filtered_f, x_samples
+        return y_samples, filtered_f
 
 
 class RateRescaledRenewal(FilterObservations):
@@ -351,7 +351,7 @@ class RateRescaledRenewal(FilterObservations):
 
         y_samples, log_rho_ts = self._sample_spikes(
             prng_states[1], ini_spikes, ini_tau, f_samples)
-        return y_samples, log_rho_ts, x_samples
+        return y_samples, log_rho_ts
 
     def sample_posterior(self, prng_state, num_samps, x_samples, ini_spikes, ini_tau, jitter):
         """
@@ -365,7 +365,7 @@ class RateRescaledRenewal(FilterObservations):
 
         y_samples, log_rho_ts = self._sample_spikes(
             prng_states[1], ini_spikes, ini_tau, f_samples)
-        return y_samples, log_rho_ts, x_samples
+        return y_samples, log_rho_ts
     
     
     
@@ -403,6 +403,25 @@ class ModulatedRenewal(FilterObservations):
             )  # (samp, f_dim, evals)
 
         return pre_rates
+    
+    def _log_rho_from_gp_sample(self, prng_state, num_samps, tau_eval, x_eval, prior, jitter):
+        """
+        Obtain the log conditional intensity given input path along which to evaluate
+        
+        :param jnp.ndarray tau_eval: evaluation time locs (out_dims, locs)
+        :param jnp.ndarray isi_eval: higher order ISIs (out_dims, locs, order)
+        :param jnp.ndarray x_eval: external covariates (out_dims, locs, x_dims)
+        :return:
+            log intensity in rescaled time tau (num_samps, out_dims, locs)
+        """
+        pre_modulator = self._gp_sample(prng_state, x_eval, prior, jitter)
+        log_hazard = self.renewal.log_density(tau_eval) - self.renewal.log_survival(tau_eval)
+        
+        log_modulator = pre_modulator if self.renewal.link_type == 'log' else safe_log(
+            self.renewal.inverse_link(pre_modulator))
+        
+        log_rho_t = log_modulator + log_hazard
+        return log_rho_t
 
     
 
@@ -735,7 +754,7 @@ class NonparametricPointProcess(FilterObservations):
         
         y_samples, log_rho_ts = self._sample_spikes(
             prng_states[1], timesteps, ini_spikes, ini_t_since, past_ISIs, x_samples, jitter)
-        return y_samples, log_rho_ts, x_samples
+        return y_samples, log_rho_ts
 
     def sample_posterior(
         self, 
@@ -755,5 +774,4 @@ class NonparametricPointProcess(FilterObservations):
         
         y_samples, log_rho_ts = self._sample_spikes(
             prng_states[1], timesteps, ini_spikes, ini_t_since, past_ISIs, x_samples, jitter)
-        return y_samples, log_rho_ts, x_samples
-    
+        return y_samples, log_rho_ts

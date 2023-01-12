@@ -4,8 +4,194 @@ import jax.random as jr
 from jax import lax, vmap
 
 from ..base import module
-from .base import GP
-from .markovian import LGSSM
+from .base import GP, SSM
+
+
+class LGSSM(SSM):
+    """
+    Linear Gaussian State Space Model
+
+    Temporal multi-output kernels have separate latent processes that can be coupled.
+    Spatiotemporal kernel modifies the process noise across latent processes, but dynamics uncoupled.
+    Multi-output GPs generally mix latent processes via dynamics as well.
+    """
+
+    As: jnp.ndarray
+    Qs: jnp.ndarray
+    H: jnp.ndarray
+    m0: jnp.ndarray
+    P0: jnp.ndarray
+
+    def __init__(
+        self, As, Qs, H, m0, P0, site_obs, site_Lcov, array_type=jnp.float32
+    ):
+        """
+        :param jnp.ndarray As: transitions of shape (time, out, sd, sd)
+        :param jnp.ndarray Qs: process noises of shape (time, out, sd, sd)
+        :param jnp.ndarray site_locs: means of shape (time, out, 1)
+        :param jnp.ndarray site_obs: means of shape (time, out, 1)
+        :param jnp.ndarray site_Lcov: covariances of shape (time, out, out)
+        """
+        super().__init__(None, site_obs, site_Lcov, array_type)
+        self.As = self._to_jax(As)
+        self.Qs = self._to_jax(Qs)
+        self.H = self._to_jax(H)
+        self.m0 = self._to_jax(m0)
+        self.P0 = self._to_jax(P0)
+
+    def get_LDS(self):
+        # convenience boundary transitions for kalman filter and smoother
+        Id = jnp.eye(self.As.shape[-1])
+        Zs = jnp.zeros_like(Id)
+        As = jnp.concatenate((Id[None, ...], self.As, Id[None, ...]), axis=0)
+        Qs = jnp.concatenate((Zs[None, ...], self.Qs, Zs[None, ...]), axis=0)
+        return self.H, self.m0, self.P0, As, Qs
+
+    ### posterior ###
+    def entropy_posterior(self):
+        """
+        Precision of joint process is block-tridiagonal
+
+        Compute the KL divergence and variational expectation of prior
+        """
+        return
+
+    def evaluate_posterior(self, mean_only, compute_KL, compute_joint, jitter):
+        """
+        predict at test locations X, which may includes training points
+        (which are essentially fixed inducing points)
+
+        :param jnp.ndarray t_eval: evaluation times of shape (locs,)
+        :return:
+            means of shape (time, out_dims, 1)
+            covariances of shape (time, out_dims, out_dims)
+        """
+        H, m0, P0, As, Qs = self.get_LDS()
+
+        smoother_means, smoother_covs, gains, logZ = fixed_interval_smoothing(
+            H,
+            m0,
+            P0,
+            As,
+            Qs,
+            self.site_obs,
+            self.site_Lcov,
+            compute_KL,
+            compute_joint,
+        )
+
+        post_means = H @ smoother_means
+        if compute_KL:  # compute using pseudo likelihood
+            post_covs = H @ smoother_covs @ H.T
+        post_covs = None if mean_only else H @ smoother_covs @ H.T
+
+        if compute_KL:
+            site_log_lik = pseudo_log_likelihood(
+                post_means, post_covs, site_obs, site_Lcov
+            )
+            KL = site_log_lik - logZ
+
+        else:
+            KL = 0.0
+
+        if compute_joint:
+            cross_cov = gain[ind] @ post_cov[ind + 1]
+            post_joint_covs = jnp.block(
+                [[post_cov[ind], cross_cov], [cross_cov.T, post_cov[ind + 1]]]
+            )
+
+            return post_means, post_covs, post_joint_covs, KL
+
+        else:  # only marginal
+            return post_means, post_covs, KL
+
+    ### sample ###
+    def sample_prior(self, prng_state, num_samps, jitter):
+        """
+        Sample from the model prior f~N(0,K) multiple times using a nested loop.
+        :param num_samps: the number of samples to draw [scalar]
+        :param t: the input locations at which to sample (defaults to train+test set) [N_samp, 1]
+        :return:
+            f_sample: the prior samples [S, N_samp]
+        """
+        H, m0, P0, As, Qs = self.get_LDS()
+        return sample_LGSSM(
+            H, m0, P0, As, Qs, prng_state, num_samps, jitter
+        )  # (time, tr, state_dims, 1)
+
+    def sample_posterior(
+        self,
+        prng_state,
+        num_samps,
+        jitter,
+        compute_KL,
+    ):
+        """
+        Sample from the posterior at specified time locations.
+        Posterior sampling works by smoothing samples from the prior using the approximate Gaussian likelihood
+        model given by the pseudo-likelihood, 𝓝(f|μ*,σ²*), computed during training.
+         - draw samples (f*) from the prior
+         - add Gaussian noise to the prior samples using auxillary model p(y*|f*) = 𝓝(y*|f*,σ²*)
+         - smooth the samples by computing the posterior p(f*|y*)
+         - posterior samples = prior samples + smoothed samples + posterior mean
+                             = f* + E[p(f*|y*)] + E[p(f|y)]
+        See Arnaud Doucet's note "A Note on Efficient Conditional Simulation of Gaussian Distributions" for details.
+
+        :param X: the sampling input locations [N, 1]
+        :param num_samps: the number of samples to draw [scalar]
+        :param seed: the random seed for sampling
+        :return:
+            the posterior samples (eval_locs, num_samps, N, 1)
+        """
+        H, m0, P0, As, Qs = self.get_LDS()
+
+        # sample prior at obs and eval locs
+        prng_keys = jr.split(prng_state, 2)
+        prior_samps = self.sample_prior(prng_keys[0], num_samps, t_all, jitter)
+
+        # posterior mean
+        post_means, _, KL_ss = fixed_interval_smoothing(
+            H,
+            m0,
+            P0,
+            As,
+            Qs,
+            self.site_obs,
+            self.site_Lcov,
+            interp_sites,
+            mean_only=True,
+            compute_KL=compute_KL,
+            return_gains=False,
+        )  # (time, N, 1)
+
+        # noisy prior samples at eval locs
+        prior_samps_t = prior_samps[site_ind, ...]
+        prior_samps_eval = prior_samps[eval_ind, ...]
+
+        prior_samps_noisy = prior_samps_t + self.site_Lcov[:, None, ...] @ jr.normal(
+            prng_keys[1], shape=prior_samps_t.shape
+        )  # (time, tr, N, 1)
+
+        # smooth noisy samples
+        def smooth_prior_sample(prior_samp_i):
+            smoothed_sample, _, _, _ = fixed_interval_smoothing(
+                H,
+                m0,
+                P0,
+                As,
+                Qs,
+                prior_samp_i,
+                self.site_Lcov,
+                compute_KL=False,
+                return_gains=False,
+            )
+
+            return smoothed_sample
+
+        smoothed_samps = vmap(smooth_prior_sample, 1, 1)(prior_samps_noisy)
+
+        # Matheron's rule pathwise samplig
+        return prior_samps_eval - smoothed_samps + post_means[:, None, ...], KL_ss
 
 
 # GPSSM
