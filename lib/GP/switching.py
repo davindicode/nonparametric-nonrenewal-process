@@ -19,12 +19,14 @@ def obs_switch_locs(obs_locs, switch_locs):
     Temporally order observation and switch locations
     Return relative order indices
     """
+    obs_num = len(obs_locs)
     unique_locs = jnp.concatenate((obs_locs, switch_locs), axis=0)
     locs = jnp.concatenate((unique_locs, switch_locs), axis=0)  # double switch locs
+    locs_num = len(locs)
     
     sort_ind = jnp.argsort(locs)
-    switch_inds = jnp.where(sort_ind >= len(obs_locs))[0]
-    obs_inds = jnp.where(sort_ind < len(obs_locs))[0]
+    switch_inds = jnp.where(sort_ind >= obs_num, size=locs_num-obs_num)[0]
+    obs_inds = jnp.where(sort_ind < obs_num, size=obs_num)[0]
 
     locs = locs[sort_ind]
     unique_locs = jnp.sort(unique_locs)
@@ -34,6 +36,7 @@ def obs_switch_locs(obs_locs, switch_locs):
 
 def tile_between_inds(path, inds, ts):
     """
+    Continue the GP state path around observation points
     """
     assert len(path) == len(inds) + 1
 
@@ -484,6 +487,12 @@ vLGSSM = vmap(
     (0, 0, 0), 
 )  # vmap over MC
 
+vLGSSM_ = vmap(
+    evaluate_LGSSM_posterior, 
+    (None, None, None, 0, 0, 0, None, None, None, None, None, None, None), 
+    (0, 0, 0), 
+)  # vmap over MC
+
 vsample = vmap(sample_LGSSM, (None, None, None, 0, 0, 0, None, None), 0)  # vmap over MC
 
 
@@ -497,7 +506,7 @@ class JumpLTI(SSM):
     switch_HMM: DTMarkovChain
         
     switch_transitions: Transition
-    markov_kernel: MarkovianKernel
+    kernel: MarkovianKernel
         
     fixed_grid_locs: bool
     
@@ -505,7 +514,7 @@ class JumpLTI(SSM):
         self,
         switch_locs, 
         switch_HMM,
-        markov_kernel,
+        kernel,
         switch_transitions,
         site_locs,
         site_obs,
@@ -516,14 +525,14 @@ class JumpLTI(SSM):
         :param jnp.ndarray switch_locs: locations of switches (K, K, switches)
         """
         assert switch_HMM.site_ll.shape[0] == switch_locs.shape[0]
-        assert switch_HMM.array_type == markov_kernel.array_type
+        assert switch_HMM.array_type == kernel.array_type
         assert switch_HMM.array_type == switch_transitions.array_type
         super().__init__(site_locs, site_obs, site_Lcov, switch_HMM.array_type)
         self.switch_locs = self._to_jax(switch_locs)
         self.switch_HMM = switch_HMM
         
         self.switch_transitions = switch_transitions
-        self.markov_kernel = markov_kernel
+        self.kernel = kernel
         
         self.fixed_grid_locs = fixed_grid_locs
 
@@ -564,8 +573,8 @@ class JumpLTI(SSM):
         sd = self.site_obs.shape[-2]
         ts = len(obs_inds) + len(switch_inds)
         
-        all_obs = jnp.zeros((ts, sd, 1))
-        all_Lcov = 1e6 * jnp.eye(sd)[None, ...].repeat(ts, axis=0)  # empty observations
+        all_obs = jnp.zeros((ts, sd, 1), dtype=self.array_type)
+        all_Lcov = 1e6 * jnp.eye(sd, dtype=self.array_type)[None, ...].repeat(ts, axis=0)  # empty observations
         
         all_obs = all_obs.at[obs_inds].set(self.site_obs)
         all_Lcov = all_Lcov.at[obs_inds].set(self.site_Lcov)
@@ -581,16 +590,16 @@ class JumpLTI(SSM):
         :param jnp.ndarray s_path: GP state trajectories (switch_locs + 1,), [0, s_dims)
         :param jnp.ndarray j_path: switch state trajectories (switch_locs,), [0, j_dims)
         """
-        switches, observes, sd = len(switch_inds), len(obs_inds), self.markov_kernel.state_dims
+        switches, observes, sd = len(switch_inds), len(obs_inds), self.kernel.state_dims
         trans_without_jumps = observes + switches // 2 - 1
         trans_with_jumps = observes + switches + 1  # include boundary transitions
         
         num_samps = j_path.shape[0]
-        As = jnp.empty((num_samps, trans_with_jumps, sd, sd))
-        Qs = jnp.empty((num_samps, trans_with_jumps, sd, sd))
+        As = jnp.empty((num_samps, trans_with_jumps, sd, sd), dtype=self.array_type)
+        Qs = jnp.empty((num_samps, trans_with_jumps, sd, sd), dtype=self.array_type)
         
         # use out_dims of kernel as states
-        H, Pinf, As_, Qs_ = self.markov_kernel.get_LDS(dt, trans_without_jumps)  # (ts, sd, sd)
+        H, Pinf, As_, Qs_ = self.kernel.get_LDS(dt, trans_without_jumps)  # (ts, sd, sd)
         
         # jump matrices
         array_indexing = lambda ind, array: array[ind, ...]
@@ -623,7 +632,7 @@ class JumpLTI(SSM):
         # interpolation
         ind_eval, dt_fwd, dt_bwd = interpolation_times(t_eval, all_locs)
         dt_fwd_bwd = jnp.concatenate([dt_fwd, dt_bwd])  # (2*num_evals,)
-        A_fwd_bwd = vmap(self.markov_kernel.state_transition)(
+        A_fwd_bwd = vmap(self.kernel.state_transition)(
             dt_fwd_bwd
         )  # vmap over num_evals
         Q_fwd_bwd = vmap(LTI_process_noise, (0, None), 0)(A_fwd_bwd, Pinf)
@@ -663,10 +672,117 @@ class JumpLTI(SSM):
         post_means, post_covs, KL_x = self.evaluate_conditional_posterior(
             t_eval, j_path, mean_only, compute_KL, jitter)
             
-        KL = KL_x + KL_s + KL_j
+        KL = KL_x + KL_j
         return post_means, post_covs, KL
     
     ### sample ###
+    def sample_conditional_prior(self, prng_states, t_eval, j_path, jitter):
+        """
+        Sample from the model prior f~N(0,K) via simulation of the LGSSM
+
+        :param int num_samps: number of samples to draw
+        :param jnp.ndarray t_eval: the input locations at which to sample (out_dims, locs,)
+        :return:
+            f_sample: the prior samples (num_samps, time, out_dims, 1)
+        """
+        num_samps = prng_states.shape[0]
+        all_locs, obs_inds, switch_inds, unique_locs = obs_switch_locs(
+            t_eval, self.switch_locs)
+            
+        unique_dlocs = jnp.diff(unique_locs)  # (eval_locs-1,)
+        if jnp.all(jnp.isclose(unique_dlocs, unique_dlocs[0])):  # grid
+            unique_dlocs = unique_dlocs[:1]
+            
+        H, Pinf, As, Qs = self.get_conditional_LDS(unique_dlocs, obs_inds, switch_inds, j_path)
+        minf = jnp.zeros((Pinf.shape[-1], 1))
+        
+        samples = vsample(H, minf, Pinf, As, Qs, prng_states, 1, jitter)
+        x_samples = samples[:, obs_inds, 0, ...]
+        return x_samples
+    
+    def sample_conditional_posterior(
+        self,
+        prng_states,
+        t_eval,
+        j_path, 
+        jitter,
+        compute_KL,
+    ):
+        prng_state, prng_states = prng_states[0], prng_states[1:]
+        all_locs, obs_inds, switch_inds, unique_locs = obs_switch_locs(
+            self.site_locs, self.switch_locs)
+        all_obs, all_Lcovs = self.get_site_params(obs_inds, switch_inds)
+
+        # compute linear dynamical system
+        unique_dlocs = jnp.diff(unique_locs)  # (eval_locs-1,)
+        if jnp.all(jnp.isclose(unique_dlocs, unique_dlocs[0])):  # grid
+            unique_dlocs = unique_dlocs[:1]
+        H, Pinf, As, Qs = self.get_conditional_LDS(unique_dlocs, obs_inds, switch_inds, j_path)
+        
+        # evaluation locations
+        t_all, site_ind, eval_ind = order_times(t_eval, all_locs)
+        if t_eval is not None:
+            num_evals = t_eval.shape[0]
+            ind_eval, dt_fwd, dt_bwd = interpolation_times(t_eval, all_locs)
+            dt_fwd_bwd = jnp.concatenate([dt_fwd, dt_bwd])  # (2*num_evals,)
+            A_fwd_bwd = vmap(self.kernel.state_transition)(
+                dt_fwd_bwd
+            )  # vmap over num_evals
+            Q_fwd_bwd = vmap(LTI_process_noise, (0, None), 0)(A_fwd_bwd, Pinf)
+            
+        else:
+            ind_eval, A_fwd_bwd, Q_fwd_bwd = None, None, None
+
+        # posterior mean
+        post_means, _, KL_x = vLGSSM(
+            H,
+            Pinf,
+            Pinf,
+            As,
+            Qs,
+            all_obs,
+            all_Lcovs,
+            ind_eval,
+            A_fwd_bwd,
+            Q_fwd_bwd,
+            True,
+            compute_KL,
+            jitter,
+        )  # (tr, time, out_dims, 1)
+
+        # sample prior at obs and eval locs
+        prior_samps = self.sample_conditional_prior(prng_states, t_all, j_path, jitter)
+        
+        # noisy prior samples at eval locs
+        prior_samps_t = prior_samps[:, site_ind]
+        prior_samps_eval = prior_samps[:, eval_ind]
+
+        prior_samps_noisy = prior_samps_t + all_Lcovs[None, ...] @ jr.normal(
+            prng_state, shape=prior_samps_t.shape
+        )  # (tr, time, out_dims, 1)
+
+        # smooth noisy samples
+        def smooth_prior_sample(prior_samp_i, As, Qs):
+            smoothed_sample, _, _ = evaluate_LGSSM_posterior(
+                H,
+                Pinf,
+                Pinf,
+                As,
+                Qs,
+                prior_samp_i,
+                all_Lcovs,
+                ind_eval,
+                A_fwd_bwd,
+                Q_fwd_bwd,
+                mean_only=True,
+                compute_KL=False,
+                jitter=jitter,
+            )
+            return smoothed_sample
+
+        smoothed_samps = vmap(smooth_prior_sample, (0, 0, 0), 0)(prior_samps_noisy, As, Qs)
+        return prior_samps_eval - smoothed_samps + post_means, KL_x
+    
     def sample_prior(self, prng_state, num_samps, t_eval, jitter):
         """
         Sample from the model prior f~N(0,K) via simulation of the LGSSM
@@ -676,24 +792,11 @@ class JumpLTI(SSM):
         :return:
             f_sample: the prior samples (num_samps, time, out_dims, 1)
         """
-        all_locs, obs_inds, switch_inds, unique_locs = obs_switch_locs(
-            t_eval, self.switch_locs)
-            
         # sample from HMMs
         switches = self.switch_locs.shape[0]
         j_path = self.switch_HMM.sample_prior(prng_state, num_samps, switches)
-        
-        unique_dlocs = jnp.diff(unique_locs)  # (eval_locs-1,)
-        if jnp.all(jnp.isclose(unique_dlocs, unique_dlocs[0])):  # grid
-            unique_dlocs = unique_dlocs[:1]
-            
-        H, Pinf, As, Qs = self.get_conditional_LDS(unique_dlocs, obs_inds, switch_inds, j_path)
-        minf = jnp.zeros((Pinf.shape[-1], 1))
-        
-        prng_state = jr.split(prng_state, num_samps)
-        samples = vsample(H, minf, Pinf, As, Qs, prng_state, 1, jitter)
-        x_samples = samples[:, obs_inds, 0, ...]
-        
+        prng_states = jr.split(prng_state, num_samps)
+        x_samples = self.sample_conditional_prior(prng_states, t_eval, j_path, jitter)
         return x_samples, j_path
 
     def sample_posterior(
@@ -721,91 +824,12 @@ class JumpLTI(SSM):
         :return:
             the posterior samples (eval_locs, num_samps, N, 1)
         """
-        all_locs, obs_inds, switch_inds, unique_locs = obs_switch_locs(
-            t_eval, self.switch_locs)
-        
         # sample from HMMs
         j_path, KL_j = self.switch_HMM.sample_posterior(prng_state, num_samps, compute_KL)
-
-        # evaluation locations
-        t_all, site_ind, eval_ind = order_times(t_eval, all_locs)
-        if t_eval is not None:
-            num_evals = t_eval.shape[0]
-            ind_eval, dt_fwd, dt_bwd = interpolation_times(t_eval, all_locs)
-
-            stack_dt = jnp.concatenate([dt_fwd, dt_bwd])  # (2*num_evals,)
-            stack_A = vmap(self.markov_kernel.state_transition)(
-                stack_dt
-            )  # vmap over num_evals
-            A_fwd, A_bwd = stack_A[:num_evals], stack_A[-num_evals:]
-            
-        else:
-            ind_eval, A_fwd, A_bwd = None, None, None
-
-        # compute linear dynamical system
-        unique_dlocs = jnp.diff(unique_locs)  # (eval_locs-1,)
-        if jnp.all(jnp.isclose(unique_dlocs, unique_dlocs[0])):  # grid
-            unique_dlocs = unique_dlocs[:1]
-            
-        H, Pinf, As, Qs = self.get_conditional_LDS(unique_dlocs, obs_inds, switch_inds, j_path)
-        #minf = jnp.zeros((Pinf.shape[-1], 1))
-
-        # sample prior at obs and eval locs
-        prng_keys = jr.split(prng_state, 2)
-        prior_samps = self.sample_prior(
-            prng_keys[0], num_samps, t_all, jitter
-        )  # (time, num_samps, out_dims, 1)
-
-        # posterior mean
-        post_means, _, KL_x = vLGSSM(
-            H,
-            Pinf,
-            Pinf,
-            As,
-            Qs,
-            site_obs,
-            site_Lcov,
-            ind_eval,
-            A_fwd_bwd,
-            Q_fwd_bwd,
-            mean_only=True,
-            compute_KL=compute_KL,
-            jitter=jitter,
-        )  # (time, out_dims, 1)
-
-        # noisy prior samples at eval locs
-        prior_samps_t = prior_samps[:, site_ind]
-        prior_samps_eval = prior_samps[:, eval_ind]
-
-        prior_samps_noisy = prior_samps_t + all_Lcov[None, ...] @ jr.normal(
-            prng_keys[1], shape=prior_samps_t.shape
-        )  # (time, tr, out_dims, 1)
-
-        # smooth noisy samples
-        def smooth_prior_sample(prior_samp_i):
-            smoothed_sample, _, _ = evaluate_LGSSM_posterior(
-                H,
-                Pinf,
-                Pinf,
-                As,
-                Qs,
-                prior_samp_i,
-                site_Lcov,
-                ind_eval,
-                A_fwd_bwd,
-                Q_fwd_bwd,
-                mean_only=True,
-                compute_KL=False,
-                jitter=jitter,
-            )
-            return smoothed_sample
-
-        smoothed_samps = vmap(smooth_prior_sample, 0, 0)(prior_samps_noisy)
-
+        prng_keys = jr.split(prng_state, num_samps+1)
+        x_samples, KL_x = self.sample_conditional_posterior(prng_keys, t_eval, j_path, jitter, compute_KL)
         KL = KL_x + KL_j
-        
-        # Matheron's rule pathwise samplig
-        return prior_samps_eval - smoothed_samps + post_means[None, ...], j_path, KL
+        return x_samples, j_path, KL
 
     
     

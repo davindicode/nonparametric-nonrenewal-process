@@ -436,25 +436,25 @@ class NonparametricPointProcess(FilterObservations):
         
     modulated: bool
 
-    t0: jnp.ndarray
+    warp_tau: jnp.ndarray
     refract_tau: jnp.ndarray
     refract_neg: float
     mean_bias: jnp.ndarray
 
-    def __init__(self, gp, t0, refract_tau, refract_neg, mean_bias, dt, spikefilter=None):
+    def __init__(self, gp, warp_tau, refract_tau, refract_neg, mean_bias, dt, spikefilter=None):
         """
-        :param jnp.ndarray t0: time transform timescales of shape (out_dims,)
+        :param jnp.ndarray warp_tau: time transform timescales of shape (out_dims,)
         :param jnp.ndarray tau: refractory mean timescales of shape (out_dims,)
         """
         super().__init__(spikefilter, gp.array_type)
         self.gp = gp
         self.pp = LogCoxProcess(gp.kernel.out_dims, dt, self.array_type)
 
-        self.t0 = self._to_jax(t0)
+        self.warp_tau = self._to_jax(warp_tau)
         self.refract_tau = self._to_jax(refract_tau)
         self.refract_neg = refract_neg
         self.mean_bias = self._to_jax(mean_bias)
-
+        
         self.modulated = False if type(gp) == MultiOutputLTI else True
 
     ### functions ###
@@ -463,9 +463,9 @@ class NonparametricPointProcess(FilterObservations):
         Inverse transform is from tau [0, 1] to t in R
         """
         if inverse:
-            t_ = -jnp.log(1 - t) * self.t0
+            t_ = -jnp.log(1 - t) * self.warp_tau
         else:
-            s = jnp.exp(-t / self.t0)
+            s = jnp.exp(-t / self.warp_tau)
             t_ = 1 - s
             
         return t_
@@ -477,9 +477,9 @@ class NonparametricPointProcess(FilterObservations):
         t_ = self._log_time_transform(t, inverse)
         
         if inverse:
-            log_jac = jnp.log(self.t0) - jnp.log(1 - t)  # t0 / (1 - t)
+            log_jac = jnp.log(self.warp_tau) - jnp.log(1 - t)  # warp_tau / (1 - t)
         else:
-            log_jac = -t / self.t0 - jnp.log(self.t0)  # s / t0
+            log_jac = -t / self.warp_tau - jnp.log(self.warp_tau)  # s / warp_tau
             
         return t_, log_jac
 
@@ -489,7 +489,7 @@ class NonparametricPointProcess(FilterObservations):
         
         :param jnp.ndarray tau: (out_dims,)
         """
-        return self.refract_neg * jnp.exp(-tau / self.refract_tau) + self.mean_bias
+        return self.refract_neg * (tau + 1.) ** (-self.warp_tau / self.refract_tau) + self.mean_bias
     
     def _combine_input(self, isi_eval, x_eval):
         cov_eval = []

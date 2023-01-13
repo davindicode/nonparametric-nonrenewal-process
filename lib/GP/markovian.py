@@ -56,13 +56,13 @@ def order_times(t_eval, t_site):
     num_eval = len(t_eval)
     t_all = jnp.concatenate([t_site, t_eval])
     #t_all, input_ind = jnp.unique(t_all, return_inverse=True)
-
+    
     sort_ind = jnp.argsort(t_all)
     t_all = t_all[sort_ind]
 
     site_ind, eval_ind = (
-        sort_ind[:num_sites],#input_ind[:num_sites]],
-        sort_ind[num_sites:],#input_ind[num_sites:]],
+        jnp.where(sort_ind < num_sites, size=num_sites)[0],#input_ind[:num_sites]],
+        jnp.where(sort_ind >= num_sites, size=num_eval)[0],#input_ind[num_sites:]],
     )
     return t_all, site_ind, eval_ind
 
@@ -281,7 +281,7 @@ class GaussianLTI(SSM):
             
         else:
             ind_eval, A_fwd_bwd, Q_fwd_bwd = None, None, None
-
+        
         # posterior mean
         post_means, _, KL_ss = evaluate_LGSSM_posterior(
             H,

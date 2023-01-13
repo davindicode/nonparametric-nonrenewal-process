@@ -167,9 +167,10 @@ class MarkovianKernel(StationaryKernel):
         :param jnp.ndarray dt: time points of shape (out_dims, dt_locs)
         """
         H, Pinf = self._state_output()  # (out_dims, sd, sd)
-        dt = jnp.broadcast_to(dt, (Pinf.shape[0], dt.shape[-1]))
-
-        Id = jnp.broadcast_to(jnp.eye(Pinf.shape[0]), Pinf.shape)
+        out_dims, state_dims_per_out = Pinf.shape[0], Pinf.shape[1]
+        
+        dt = jnp.broadcast_to(dt, (out_dims, dt.shape[-1]))
+        Id = jnp.broadcast_to(jnp.eye(state_dims_per_out, dtype=self.array_type), Pinf.shape)
         Zs = jnp.zeros_like(Pinf)
         
         # insert convenience boundaries for kalman filter and smoother
@@ -195,6 +196,7 @@ class MarkovianKernel(StationaryKernel):
             matrices of shape (ts, sd, sd)
         """
         H, Pinf, As, Qs = self._get_LDS(dt, timesteps)
+        
         H, Pinf = bdiag(H), bdiag(Pinf)
 
         vbdiag = vmap(bdiag)  # vmap over timesteps
@@ -465,18 +467,17 @@ class LEG(MarkovianKernel):
 
     N: jnp.ndarray
     R: jnp.ndarray
-    B: jnp.ndarray
     H: jnp.ndarray
     Lam: jnp.ndarray
 
-    def __init__(self, N, R, B, Lam, array_type=jnp.float32):
-        out_dims = B.shape[-1]
+    def __init__(self, N, R, H, Lam, array_type=jnp.float32):
+        out_dims = H.shape[0]
         state_dims = N.shape[0]
         in_dims = 1
         super().__init__(in_dims, out_dims, state_dims, array_type)
         self.N = self._to_jax(N)
         self.R = self._to_jax(R)
-        self.B = self._to_jax(B)
+        self.H = self._to_jax(H)
         self.Lam = self._to_jax(Lam)
 
     def parameterize(self):
@@ -762,7 +763,7 @@ class Matern12(Lengthscale):
         ell = softplus(self.pre_len[0])  # first  dimension
 
         F = -1.0 / ell[None, None]
-        L = jnp.ones((1, 1))
+        L = jnp.ones((1, 1), dtype=self.array_type)
         Qc = 2.0 * (var / ell)[None, None]
         return F, L, Qc
 
@@ -781,7 +782,7 @@ class Matern12(Lengthscale):
     @eqx.filter_vmap
     def _state_output(self):
         var = softplus(self.pre_var)
-        H = jnp.ones((1, 1))  # observation projection
+        H = jnp.ones((1, 1), dtype=self.array_type)  # observation projection
         Pinf = var[None, None]
         return H, Pinf
     

@@ -23,6 +23,17 @@ def gen_name():
     return
 
 
+
+def build_factorized():
+    
+    return
+
+
+
+def build_
+
+
+
 def main():
     ### parser ###
     parser = template.standard_parser(
