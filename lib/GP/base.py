@@ -17,18 +17,15 @@ from .linalg import mvn_conditional
 
 class GP(module):
     """
-    GP with function and RFF kernel
+    GP with function and RFF kernel, zero mean
     """
 
     kernel: Kernel
     RFF_num_feats: int
 
-    mean: jnp.ndarray
-
-    def __init__(self, kernel, mean, RFF_num_feats):
+    def __init__(self, kernel, RFF_num_feats):
         super().__init__(kernel.array_type)
         self.kernel = kernel
-        self.mean = self._to_jax(mean)  # (out_dims,)
         self.RFF_num_feats = RFF_num_feats  # use random Fourier features
 
     def apply_constraints(self):
@@ -63,10 +60,7 @@ class GP(module):
             0 if mean_only else (0, 0),
         )(x, x_obs, f_obs, self.kernel.K, mean_only, diag_cov, jitter)
 
-        if mean_only:
-            return cond_out + self.mean[None, :, None, None]
-        else:
-            return cond_out[0] + self.mean[None, :, None, None], cond_out[1]
+        return cond_out
 
     def sample_prior(self, prng_state, x, jitter):
         """
@@ -102,7 +96,7 @@ class GP(module):
             amps = amplitude[None, :, None] * jnp.sqrt(
                 2.0 / self.RFF_num_feats
             )  # (num_samps, out_dims, feats)
-            samples = self.mean[None, :, None] + amps * cos_terms.sum(
+            samples = amps * cos_terms.sum(
                 -1
             )  # (num_samps, out_dims, time)
 
@@ -112,8 +106,7 @@ class GP(module):
             )  # (num_samps, out_dims, time, time)
             eps_I = jitter * jnp.eye(ts)
             Lcov = cholesky(Kxx + eps_I)
-            mean = self.mean[None, :, None, None]  # match (num_samps, out_dims, ts, 1)
-            samples = mean + Lcov @ jr.normal(
+            samples = Lcov @ jr.normal(
                 prng_state, shape=(num_samps, out_dims, ts, 1)
             )
             samples = samples[..., 0]
@@ -137,8 +130,8 @@ class SSM(module):
     def __init__(self, site_locs, site_obs, site_Lcov, array_type):
         """
         :param module markov_kernel: (hyper)parameters of the state space model
-        :param jnp.ndarray site_locs: means of shape (time, 1)
-        :param jnp.ndarray site_obs: means of shape (time, x_dims, 1)
+        :param jnp.ndarray site_locs: locations of shape (time, 1)
+        :param jnp.ndarray site_obs: observations of shape (time, x_dims, 1)
         :param jnp.ndarray site_Lcov: covariances of shape (time, x_dims, x_dims)
         """
         super().__init__(array_type)

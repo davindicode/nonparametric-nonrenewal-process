@@ -60,7 +60,7 @@ class SparseGP(GP):
 
     induc_locs: jnp.ndarray
 
-    def __init__(self, kernel, mean, RFF_num_feats, induc_locs):
+    def __init__(self, kernel, RFF_num_feats, induc_locs):
         if induc_locs.shape[2] != kernel.in_dims:
             raise ValueError(
                 "Dimensions of inducing locations do not match kernel input dimensions"
@@ -69,7 +69,7 @@ class SparseGP(GP):
             raise ValueError(
                 "Dimensions of inducing locations do not match kernel output dimensions"
             )
-        super().__init__(kernel, mean, RFF_num_feats)
+        super().__init__(kernel, RFF_num_feats)
         self.induc_locs = self._to_jax(induc_locs)  # (num_induc, out_dims, in_dims)
 
     def sample_posterior(self, prng_state, x, jitter, compute_KL):
@@ -145,13 +145,13 @@ class qSVGP(SparseGP):
     whitened: bool
 
     def __init__(
-        self, kernel, mean, induc_locs, u_mu, u_Lcov, RFF_num_feats=0, whitened=False
+        self, kernel, induc_locs, u_mu, u_Lcov, RFF_num_feats=0, whitened=False
     ):
         """
         :param induc_locs: inducing point locations z, array of shape (out_dims, num_induc, in_dims)
         :param variance: The observation noise variance, σ²
         """
-        super().__init__(kernel, mean, RFF_num_feats, induc_locs)
+        super().__init__(kernel, RFF_num_feats, induc_locs)
         self.u_mu = self._to_jax(u_mu)
         self.u_Lcov = self._to_jax(u_Lcov)
         self.whitened = whitened
@@ -188,7 +188,6 @@ class qSVGP(SparseGP):
         post_means, post_covs, KL, aux = evaluate_qsparse_posterior(
             self.kernel,
             self.induc_locs,
-            self.mean,
             x,
             self.u_mu,
             self.u_Lcov,
@@ -222,13 +221,13 @@ class tSVGP(SparseGP):
     chol_Lambda_2: jnp.ndarray
 
     def __init__(
-        self, kernel, mean, induc_locs, lambda_1, chol_Lambda_2, RFF_num_feats=0
+        self, kernel, induc_locs, lambda_1, chol_Lambda_2, RFF_num_feats=0
     ):
         """
         :param induc_locs: inducing point locations z, array of shape (out_dims, num_induc, in_dims)
         :param variance: The observation noise variance, σ²
         """
-        super().__init__(kernel, mean, RFF_num_feats, induc_locs)
+        super().__init__(kernel, RFF_num_feats, induc_locs)
         self.lambda_1 = self._to_jax(lambda_1)
         self.chol_Lambda_2 = self._to_jax(chol_Lambda_2)
 
@@ -263,7 +262,6 @@ class tSVGP(SparseGP):
         post_means, post_covs, KL, aux = evaluate_tsparse_posterior(
             self.kernel,
             self.induc_locs,
-            self.mean,
             x,
             self.lambda_1,
             self.chol_Lambda_2,

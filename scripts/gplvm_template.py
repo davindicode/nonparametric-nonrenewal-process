@@ -19,6 +19,9 @@ import sys
 sys.path.append("..")
 import lib
 
+from lib.base import module
+from lib.inference.gp import ModulatedFactorized, RateRescaledRenewal, ModulatedRenewal, NonparametricPointProcess
+
 
 
 ### script ###
@@ -57,12 +60,41 @@ def standard_parser(usage, description):
     parser.add_argument("--margin_epochs", default=100, type=int)
 
     parser.add_argument("--likelihood", action="store", type=str)
-    parser.add_argument("--filter", default="", action="store", type=str)
+    parser.add_argument("--filter_type", default="", action="store", type=str)
     parser.add_argument("--filter_length", default=0, type=int)
-    parser.add_argument("--mapping", default="", action="store", type=str)
-    parser.add_argument("--observed_cov", default="", action="store", type=str)
-    parser.add_argument("--latent_cov", default="", action="store", type=str)
+    parser.add_argument("--observations", default="", action="store", type=str)
+    parser.add_argument("--observed_covs", default="", action="store", type=str)
+    parser.add_argument("--latent_covs", default="", action="store", type=str)
     return parser
+
+
+
+### inputs ###
+def setup_inputs(dataset_dict, observed_covs, likelihood, site_locs, diagonal_site, fixed_grid_locs, array_type):
+    """
+    Create the inputs to the model
+    """
+    
+    ### ISIs ###
+    if likelihood[:3] == 'isi':
+        ISI_order = int(likelihood[3:])
+        ISIs = dataset_dict["ISIs"][..., :ISI_order]
+        
+    else:
+        ISIs = None
+    
+    ### observed covariates ###
+    observed_covs_comps = observed_covs.split("-")
+    covariates = dataset_dict["covariates"]
+    
+    input_data = []
+    for xc in observed_covs_comps:
+        if xc == "":
+            continue
+        input_data.append(covariates[xc])
+
+    covs = np.stack(input_data, axis=-1)  # (ts, x_dims)
+    return ISIs, covs
 
 
 
@@ -156,16 +188,16 @@ def ISI_kernel_dict_induc_list(isi_order):
     return kernel_dicts, induc_list
 
 
-def latent_kernel_dict_induc_list(z_mode, num_induc, out_dims):
+def latent_kernel_dict_induc_list(latent_covs, num_induc, out_dims):
     """
     Construct kernel tuples for latent space
     """
-    z_mode_comps = z_mode.split("-")
+    latent_covs_comps = latent_covs.split("-")
 
     induc_list = []
     kernel_dicts = []
 
-    for zc in z_mode_comps:
+    for zc in latent_covs_comps:
         d_z = int(zc.split("d")[-1])
         induc_list += [np.random.randn(num_induc)] * d_z
         ls = np.ones((out_dims, d_z))
@@ -175,12 +207,27 @@ def latent_kernel_dict_induc_list(z_mode, num_induc, out_dims):
     return kernel_dicts, induc_list
 
 
-
+def compactify_kernel_dicts(kernel_dicts, concat_params):
+    """
+    Stack together parameters for consecutive kernels of same type
+    """
+    compact_kernel_dicts = [kernel_dicts[0]]
+    
+    for kd in kernel_dicts[1:]:
+        if kd["type"] == compact_kernel_dicts[-1]["type"]:
+            for name in concat_params:
+                compact_kernel_dicts[-1][names] = np.concatenate(
+                    [compact_kernel_dicts[-1][name], kd[name]], axis=-1
+                )
+        else:
+            compact_kernel_dicts += [kd]
+    
+    return compact_kernel_dicts
 
 
 
 ### observation models ###
-def build_spikefilters(filt_mode, filter_length):                   
+def build_spikefilters(filter_type, filter_length):                   
     """
     Create the spike coupling object.
     
@@ -207,7 +254,7 @@ def build_spikefilters(filt_mode, filter_length):
         kernel_tuples_ = temp
         
     """
-    if filt_mode == 'sigmoid':
+    if filter_type == 'sigmoid':
         alpha = np.ones((neurons, 1))
         beta = np.ones((neurons, 1))
         tau = 10*np.ones((neurons, 1))
@@ -219,13 +266,13 @@ def build_spikefilters(filt_mode, filter_length):
             filter_length,
         )
         
-    elif filt_mode[4:8] == 'svgp':
-        num_induc = int(filt_mode[8:])
+    elif filter_type[4:8] == 'svgp':
+        num_induc = int(filter_type[8:])
         
-        if filt_mode[:4] == 'full':
+        if filter_type[:4] == 'full':
             D = neurons*neurons
             out_dims = neurons
-        elif filt_mode[:4] == 'self':
+        elif filter_type[:4] == 'self':
             D = neurons
             out_dims = 1
             
@@ -255,16 +302,16 @@ def build_spikefilters(filt_mode, filter_length):
         flt = lib.filters.GaussianProcess(out_dims, neurons, hist_len+1, tbin, gp, tens_type=tensor_type)
         
         
-    elif filt_mode[4:7] == 'rcb':
-        strs = filt_mode[7:].split('-')
+    elif filter_type[4:7] == 'rcb':
+        strs = filter_type[7:].split('-')
         B, L, a, c = int(strs[0]), float(strs[1]), torch.tensor(float(strs[2])), torch.tensor(float(strs[3]))
         
         ini_var = 1.
-        if filt_mode[:4] == 'full':
+        if filter_type[:4] == 'full':
             phi_h = np.linspace(0., L, B)[:, None, None].repeat(1, neurons, neurons)
             w_h = np.sqrt(ini_var) * np.random.randn(B, neurons, neurons)
 
-        elif filt_mode[:4] == 'self':
+        elif filter_type[:4] == 'self':
             phi_h = np.linspace(0., L, B)[:, None].repeat(1, neurons)
             w_h = np.sqrt(ini_var) * np.random..randn(B, neurons)
             
@@ -290,7 +337,7 @@ def build_spikefilters(filt_mode, filter_length):
 
 
 
-def build_factorized_gp(cov_kernel, induc_list, ll_mode, tbin, obs_dims, obs_filter, jitter, array_type):
+def build_factorized_gp(cov_kernel, induc_list, likelihood, tbin, obs_dims, obs_filter, jitter, array_type):
     """
     Build models with likelihoods that factorize over time steps
     """
@@ -302,71 +349,70 @@ def build_factorized_gp(cov_kernel, induc_list, ll_mode, tbin, obs_dims, obs_fil
     u_mu = 1. + 0.*np.random.randn(prng_state, shape=(f_dims, num_induc, 1))
     u_Lcov = 0.01*np.eye(num_induc)[None, ...].repeat(f_dims, axis=0)
     
-    mean_f = np.zeros(f_dims)
-    svgp = lib.GP.sparse.qSVGP(kern, mean_f, induc_locs, u_mu, u_Lcov, 
+    gp_mean = np.zeros(f_dims)
+    svgp = lib.GP.sparse.qSVGP(kern, induc_locs, u_mu, u_Lcov, 
                                RFF_num_feats=0, array_type=array_type)
 
-    Kzz = svgp.kernel.K(svgp.induc_locs, None, False)
-    lambda_1, chol_Lambda_2 = lib.GP.sparse.t_from_q_svgp_moments(Kzz, u_mu, u_Lcov)
-
-    ll_mode_comps = ll_mode.split("-")
-    lik_type = ll_mode_comps[0]
+    likelihood_comps = likelihood.split("-")
+    lik_type = likelihood_comps[0]
 
     # likelihood
     if lik_type == "IBP":
         likelihood = lib.likelihoods.factorized.Bernoulli(
-            obs_dims, tbin, ll_mode_comps[-1], array_type=array_type
+            obs_dims, tbin, likelihood_comps[-1], array_type=array_type
         )
 
     elif lik_type == "PP":
         likelihood = lib.likelihoods.PointProcess(
-            obs_dims, tbin, ll_mode_comps[-1], array_type=array_type
+            obs_dims, tbin, likelihood_comps[-1], array_type=array_type
         )
         
     elif lik_type == "IP":
         likelihood = lib.likelihoods.Poisson(
-            obs_dims, tbin, ll_mode_comps[-1], array_type=array_type
+            obs_dims, tbin, likelihood_comps[-1], array_type=array_type
         )
 
     elif lik_type == "ZIP":
         alpha = 0.1 * torch.ones(inner_dims)
         likelihood = lib.likelihoods.ZeroInflatedPoisson(
-            obs_dims, tbin, alpha, ll_mode_comps[-1], array_type=array_type
+            obs_dims, tbin, alpha, likelihood_comps[-1], array_type=array_type
         )
 
     elif lik_type == "hZIP":
         likelihood = lib.likelihoods.HeteroscedasticZeroInflatedPoisson(
-            obs_dims, tbin, ll_mode_comps[-1], array_type=array_type
+            obs_dims, tbin, likelihood_comps[-1], array_type=array_type
         )
 
     elif lik_type == "NB":
         r_inv = 10.0 * torch.ones(inner_dims)
         likelihood = lib.likelihoods.factorized.NegativeBinomial(
-            obs_dims, tbin, r_inv, ll_mode_comps[-1], array_type=array_type
+            obs_dims, tbin, r_inv, likelihood_comps[-1], array_type=array_type
         )
 
     elif lik_type == "hNB":
         likelihood = lib.likelihoods.factorized.HeteroscedasticNegativeBinomial(
-            obs_dims, tbin, ll_mode_comps[-1], array_type=array_type
+            obs_dims, tbin, likelihood_comps[-1], array_type=array_type
         )
 
     elif lik_type == "CMP":
-        J = int(ll_mode_comps[1])
+        J = int(likelihood_comps[1])
         log_nu = torch.zeros(inner_dims)
         likelihood = lib.likelihoods.factorized.ConwayMaxwellPoisson(
-            obs_dims, tbin, log_nu, ll_mode_comps[-1], J=J, array_type=array_type
+            obs_dims, tbin, log_nu, likelihood_comps[-1], J=J, array_type=array_type
         )
 
     elif lik_type == "hCMP":
-        J = int(ll_mode_comps[1])
+        J = int(likelihood_comps[1])
         likelihood = lib.likelihoods.factorized.HeteroscedasticConwayMaxwellPoisson(
-            obs_dims, tbin, ll_mode_comps[-1], J=J, array_type=array_type
+            obs_dims, tbin, likelihood_comps[-1], J=J, array_type=array_type
         )
 
     elif lik_type == "U":
-        basis_mode = ll_mode_comps[1]
-        C = int(ll_mode_comps[2])
-        K = int(ll_mode_comps[3])
+        gp_mean = None  # bias is already in the likelihood
+        
+        basis_mode = likelihood_comps[1]
+        C = int(likelihood_comps[2])
+        K = int(likelihood_comps[3])
         
         likelihood = lib.likelihoods.factorized.UniversalCount(
             obs_dims, C, K, basis_mode, array_type=array_type
@@ -375,7 +421,7 @@ def build_factorized_gp(cov_kernel, induc_list, ll_mode, tbin, obs_dims, obs_fil
     else:
         raise NotImplementedError
     
-    model = lib.inference.gp.ModulatedFactorized(svgp, likelihood, spikefilter=obs_filter)
+    model = lib.inference.gp.ModulatedFactorized(svgp, gp_mean, likelihood, spikefilter=obs_filter)
     return model
 
 
@@ -392,8 +438,8 @@ def build_renewal_gp(renewal_type, model_type, jitter, array_type):
     u_mu = 1. + 0.*np.random.randn(prng_state, shape=(f_dims, num_induc, 1))
     u_Lcov = 0.01*np.eye(num_induc)[None, ...].repeat(f_dims, axis=0)
     
-    mean_f = np.zeros(f_dims)
-    svgp = lib.GP.sparse.qSVGP(kern, mean_f, induc_locs, u_mu, u_Lcov, 
+    gp_mean = np.zeros(f_dims)
+    svgp = lib.GP.sparse.qSVGP(kern, induc_locs, u_mu, u_Lcov, 
                                RFF_num_feats=0, array_type=array_type)
 
     Kzz = svgp.kernel.K(svgp.induc_locs, None, False)
@@ -428,10 +474,10 @@ def build_renewal_gp(renewal_type, model_type, jitter, array_type):
         raise ValueError('Invalid renewal likelihood')
 
     if model_type == 'rescaled':
-        model = lib.inference.gp.RateRescaledRenewal(svgp, renewal, spikefilter=flt)
+        model = lib.inference.gp.RateRescaledRenewal(svgp, gp_mean, renewal, spikefilter=flt)
         
     elif model_type == 'modulated':
-        model = lib.inference.gp.ModulatedRenewal(svgp, renewal, spikefilter=flt)
+        model = lib.inference.gp.ModulatedRenewal(svgp, gp_mean, renewal, spikefilter=flt)
         
     else:
         raise ValueError('Invalid renewal model type')
@@ -440,13 +486,14 @@ def build_renewal_gp(renewal_type, model_type, jitter, array_type):
 
 
 
-def build_nonparametric(ss_kernel, cov_kernel, induc_locs, site_locs, spatial_MF, fixed_grid_locs, jitter, array_type):
+def build_nonparametric(ss_kernel, cov_kernel, induc_locs, dt, site_locs, spatial_MF, fixed_grid_locs, jitter, array_type):
     """
     Build point process models with nonparametric CIFs
+    
+    :param jnp.ndarray site_locs: temporal inducing point locations (f_dims, num_induc)
+    :param float dt: time bin size for spike train data
     """
     x_dims = ss_kernel.out_dims
-    dt = 1e-3  # ms
-    
 #     if len(kernel_list) == 0:  # not modulated
 #         Tsteps = 1000
 
@@ -463,17 +510,14 @@ def build_nonparametric(ss_kernel, cov_kernel, induc_locs, site_locs, spatial_MF
     f_dims = cov_kernel.out_dims
 
     ### SVGP ###
-    mean_f = np.zeros(f_dims)
-    svgp = lib.GP.sparse.qSVGP(cov_kernel, mean_f, induc_locs, u_mu, u_Lcov, 
+    svgp = lib.GP.sparse.qSVGP(cov_kernel, induc_locs, u_mu, u_Lcov, 
                                RFF_num_feats=0, array_type=array_type)
 
     ### SSGP ###
     num_induc_t = site_locs.shape[-1]
     num_induc_sp = induc_locs.shape[1]
     num_induc = num_induc_sp * num_induc_t
-
-    #site_locs = np.linspace(0., 1., num_t_ind)[None, :].repeat(f_dims, axis=0)  # s
-
+    
     site_obs = 0.1 * np.random.randn(f_dims, num_induc_t, num_induc_sp, 1)
     site_Lcov = 0.1 * np.eye(num_induc_sp)[None, None, ...].repeat(
         num_induc_t, axis=1).repeat(f_dims, axis=0)
@@ -495,39 +539,59 @@ def build_nonparametric(ss_kernel, cov_kernel, induc_locs, site_locs, spatial_MF
 
 
 ### model ###
-def setup_inputs(dataset_dict, x_mode, ll_mode, site_locs, diagonal_site, fixed_grid_locs, array_type):
+class GPLVM(module):
     """
-    Create the inputs to the model
+    base class for likelihoods
     """
-    
-    ### ISIs ###
-    if ll_mode[:3] == 'isi':
-        ISI_order = int(ll_mode[3:])
-        ISIs = dataset_dict["ISIs"][..., :ISI_order]
+
+    inp_model: GaussianLatentObservedSeries
+    obs_model: Observations
+
+    def __init__(self, inp_model, obs_model):
+        """
+        The logit link function:
+        P = E[yₙ=1|fₙ] = 1 / 1 + exp(-fₙ)
+
+        The Probit link function, i.e. the Error Function Likelihood:
+        i.e. the Gaussian (Normal) cumulative density function:
+        P = E[yₙ=1|fₙ] = Φ(fₙ)
+                       = ∫ 𝓝(x|0,1) dx, where the integral is over (-∞, fₙ],
+        The Normal CDF is calulcated using the error function:
+                       = (1 + erf(fₙ / √2)) / 2
+        for erf(z) = (2/√π) ∫ exp(-x²) dx, where the integral is over [0, z]
+        """
+        assert inp_model.array_type == obs_model.array_type
+        super().__init__(obs_model.array_type)
+        self.inp_model = inp_model
+        self.obs_model = obs_model
         
-    else:
-        ISIs = None
-    
-    ### observed covariates ###
-    x_mode_comps = x_mode.split("-")
-    covariates = dataset_dict["covariates"]
-    
-    input_data = []
-    for xc in x_mode_comps:
-        if xc == "":
-            continue
-        input_data.append(covariates[xc])
+    def ELBO(self, ts, xs, deltas, ys, ys_filt):
+        if type(self.obs_model) == NonparametricPointProcess:
+            xs, KL_x = self.inp_model.sample_marginal_posterior(xs)
+            ELBO = self.obs_model.ELBO(ts, xs, deltas, ys)
+            return ELBO + KL_x
+        
+        elif type(self.obs_model) == ModulatedFactorized:
+            xs, KL_x = self.inp_model.sample_marginal_posterior(xs)
+            ELBO = self.obs_model.ELBO(ts, xs, deltas, ys)
+            return ELBO + KL_x
+        
+        elif type(self.obs_model) == RateRescaledRenewal:
+            xs, KL_x = self.inp_model.sample_posterior(xs)
+            ELBO = self.obs_model.ELBO(ts, xs, deltas, ys)
+            return ELBO + KL_x
+        
+        else:
+            raise ValueError
 
-    return ISIs, input_data
 
 
-
-def setup_latents(obs_dims, z_mode):
+def setup_latents(obs_dims, latent_covs):
     ### latent covariates ###
-    z_mode_comps = z_mode.split("-")
+    latent_covs_comps = latent_covs.split("-")
 
     tot_d_z, ss_kernels = 0, []
-    for zc in z_mode_comps:
+    for zc in latent_covs_comps:
         d_z = 0
 
         if zc[:9] == "matern12d":
@@ -552,7 +616,7 @@ def setup_latents(obs_dims, z_mode):
             ss_kernels.append(lib.GP.kernels.Matern52(d_z, variance=var_z, lengthscale=len_z))
 
         elif zc[:4] == "LEGd":
-            d_z, d_s = [int(d) for d in z_mode.split("s")]
+            d_z, d_s = [int(d) for d in latent_covs.split("s")]
             
             N = np.ones(d_s)[None]
             R = np.eye(d_s)[None]
@@ -590,12 +654,14 @@ def setup_latents(obs_dims, z_mode):
     
     inputs_model = lib.inference.timeseries.GaussianLatentObservedSeries(
         ssgp, lat_dims, obs_dims, array_type=jnp.float32)
+    
+    return inputs_model
 
 
 
 def setup_observations(
     config, covariates_kernel_dicts, covariates_induc_list, 
-    ll_mode, filt_mode, map_mode, x_mode, z_mode, array_type
+    likelihood, filter_type, observations, observed_covs, latent_covs, array_type
 ):
     """
     Assemble the encoding model
@@ -607,51 +673,53 @@ def setup_observations(
     neurons, timesamples = spktrain.shape[0], spktrain.shape[-1]
 
     # checks
-    if filt_mode == "" and config.filter_length > 0:
+    if filter_type == "" and config.filter_length > 0:
         raise ValueError
     
     ### kernel ###
-    map_mode_comps = map_mode.split("-")
-    num_induc = int(map_mode_comps[1])
+    observations_comps = observations.split("-")
+    num_induc = int(observations_comps[1])
     
     kernel_dicts, induc_list = [], []
     
-    if map_mode == "nonparam_pp_gp":
-        kernel_dicts_isi, induc_list_isi = ISI_kernel_dict_induc_list(ll_mode, num_induc)
+    if observations == "nonparam_pp_gp":
+        isi_order = int(likelihood[3:])
+        kernel_dicts_isi, induc_list_isi = ISI_kernel_dict_induc_list(isi_order, num_induc)
         kernel_dicts += kernel_dicts_isi
         induc_list += induc_list_isi
         
     kernel_dicts += covariates_kernel_dicts
     induc_list += covariates_induc_list
     
-    kernel_dicts_lat, induc_list_lat = latent_kernel(z_mode, num_induc, out_dims)
+    kernel_dicts_lat, induc_list_lat = latent_kernel(latent_covs, num_induc, out_dims)
     kernel_dicts += kernel_dicts_lat
     induc_list += induc_list_lat
     
+    kernel_dicts = compactify_kernel_dicts(kernel_dicts, ["len"])
     kernel_list, dims_list = covariates_kernel_list(kernel_dicts, array_type)
     cov_kernel = lib.GP.kernels.Product(kernel_list, dims_list)
     induc_locs = np.array(induc_list)  # (f_dims, num_induc, x_dims)
     
     ### filter ###
-    if filt_mode != "":
+    if filter_type != "":
         obs_filter = build_spikefilters(filter_length)
     else:
         obs_filter = None
     
     ### GP observation model ###
-    if map_mode == "factorized_gp":
+    if observations_comps[0] == "factorized_gp":
         obs_model = build_factorized_gp(
             cov_kernel, induc_locs, obs_dims, obs_filter, jitter)
 
-    elif map_mode == "rate_renewal_gp":
+    elif observations_comps[0] == "rate_renewal_gp":
         obs_model = build_renewal_gp(
             cov_kernel, induc_locs, obs_filter, jitter, model_type="rescaled")
         
-    elif map_mode == "mod_renewal_gp":
+    elif observations_comps[0] == "mod_renewal_gp":
         obs_model = build_renewal_gp(
             cov_kernel, induc_locs, obs_filter, jitter, model_type="modulated")
         
-    elif map_mode == "nonparam_pp_gp":
+    elif observations_comps[0] == "nonparam_pp_gp":
         obs_model = build_nonparametric(
             cov_kernel, induc_locs)
         
@@ -681,6 +749,17 @@ def fit(parser_args, dataset_dict, observed_kernel_dict_induc_list, fix_param_na
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # see issue #152
     os.environ["CUDA_VISIBLE_DEVICES"] = f"{config.device}"
     
+    # data preparation
+    ISIs, covariates = setup_inputs(dataset_dict, config.observed_covs, config.latent_covs, config.likelihood)
+    
+    align_start_ind = dataset_dict["align_start_ind"]
+    align_end_ind = align_start_ind + covariates.shape[0]
+    observations = spktrain[None, :, align_start_ind-filter_length:]
+    ISIs = ISIs.transpose(1, 0, 2)  # (ts, obs_dims, order)
+
+    dataloader = lib.inference.timeseries.BatchedTimeSeries(
+        timestamps, covariates, ISIs, observations, config.batch_size, config.filter_length)
+    
     # optimizer
     learning_rate_schedule = optax.exponential_decay(
         init_value=config.lr_start,
@@ -693,10 +772,8 @@ def fit(parser_args, dataset_dict, observed_kernel_dict_induc_list, fix_param_na
     optim = optax.adam(learning_rate_schedule)
     
     # freeze parameters
-    learn_mean = (ll_mode[0] != "U")
-    
     select_fixed_params = lambda tree: [
-        getattr(tree, name) for name in fix_param_names
+        getattr(tree, name) for name in config.fix_param_names
     ]
     
     filter_spec = jax.tree_map(lambda _: True, model)
@@ -706,164 +783,84 @@ def fit(parser_args, dataset_dict, observed_kernel_dict_induc_list, fix_param_na
         replace=(False,) * len(fix_param_names),
     )
     
-    # inputs
-    ISIs, covariates, inputs_model = build_inputs(dataset_dict, x_mode, z_mode, ll_mode)
-    isi_order = ISIs.shape[-1] if ISIs is not None else 0
-    
     # loss
     @partial(eqx.filter_value_and_grad, arg=filter_spec)
-    def compute_loss(model, ic, inputs, targets):
-        outputs = model(inputs, ic, dt, activity_L2 > 0.0)  # (time, tr, out_d)
-
-        L2_weights = weight_L2 * ((model.W_rec) ** 2).sum() if weight_L2 > 0.0 else 0.0
-        L2_activities = (
-            activity_L2 * (outputs[1] ** 2).mean(1).sum() if activity_L2 > 0.0 else 0.0
-        )
-        return ((outputs[0] - targets) ** 2).mean(1).sum() + L2_weights + L2_activities
+    def compute_loss(model, data):
+        ts, xs, deltas, ys, ys_filt = data
+        nELBO = -model.ELBO(ts, xs, deltas, ys, ys_filt).mean()  # mean over MC
+        return nELBO
 
     @partial(eqx.filter_jit, device=jax.devices()[0])
-    def make_step(model, ic, inputs, targets, opt_state):
-        loss, grads = compute_loss(model, ic, inputs, targets)
+    def make_step(model, data, opt_state):
+        loss, grads = compute_loss(model, data)
         updates, opt_state = optim.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
-        model = constraints(model)
+        model = model.apply_constraints(model)
         return loss, model, opt_state
 
-    opt_state = optim.init(model)
-    loss_tracker = []
-
-    iterator = tqdm(range(epochs))  # graph iterations/epochs
-    for ep in iterator:
-
-        dataloader = iter(dataset)
-        for (x, y) in dataloader:
-            ic = jnp.zeros((x.shape[0], hidden_size))
-            x = jnp.array(x.transpose(2, 0, 1))  # (time, tr, dims)
-            y = jnp.array(y.transpose(2, 0, 1))
-
-            if input_std > 0.0:
-                x += input_std * jr.normal(prng_state, shape=x.shape)
-                prng_state, _ = jr.split(prng_state)
-
-            if priv_std > 0.0:
-                eps = priv_std * jr.normal(
-                    prng_state, shape=(*x.shape[:2], hidden_size)
-                )
-                prng_state, _ = jr.split(prng_state)
-            else:
-                eps = jnp.zeros((*x.shape[:2], hidden_size))
-
-            loss, model, opt_state = make_step(model, ic, (x, eps), y, opt_state)
-            loss = loss.item()
-            loss_tracker.append(loss)
-
-            loss_dict = {"loss": loss}
-            iterator.set_postfix(**loss_dict)
-
-
-
-    
-
-
-    # training
-    seeds = config.seeds
-    
-    dt = sample_bin * 1000 # ms
-    start_t = first_all_spiked
-    filter_length = 100
-
-    timestamps = np.arange(tsteps - start_t) * dt
-
-
-    observations = spktrain[:, start_t-filter_length:]
-    covariates = np.stack([
-        x_t, 
-        y_t, 
-        s_t, 
-        hd_t, 
-        theta_t, 
-    ], axis=-1)[start_t:, ...]
-    ISIs = lagged_ISIs[start_t:, ...].transpose(1, 0, 2)
-
-
-
     # fitting
+    seeds = config.seeds
     for seed in seeds:
-        config.seed"] = seed
         print("seed: {}".format(seed))
 
         # seed everything
-        seed = config.seed"]
         np.random.seed(seed)
+        prng_state = jr.PRNGKey(seed)
 
+        # create and initialize model
+        inp_model = setup_latents()
         obs_dims = len(input_data)
-        covariates_kernel_dicts, covariates_induc_list = observed_kernel_dict_induc_list()
-        setup_observations(model_dict, covariates_kernel_dicts, covariates_induc_list)
+        obs_kernel_dicts, obs_induc_list = observed_kernel_dict_induc_list()
+        
+        obs_model = setup_observations(config, obs_kernel_dicts, obs_induc_list)
+        model = gplvm(inp_model, obs_model)
+
+        # initialize optimizers
+        opt_state = optim.init(model)
+        loss_tracker = []
 
         try:  # attempt to fit model
-            full_model = setup_model(fitdata, model_dict, enc_used)
-            full_model.to(dev)
+            iterator = tqdm(range(epochs))  # graph iterations/epochs
+            for ep in iterator:
 
-            sch = lambda o: optim.lr_scheduler.MultiplicativeLR(
-                o, lambda e: config.scheduler_factor
-            )
-            opt_tuple = (optim.Adam, config.scheduler_interval, sch)
-            opt_lr_dict = {"default": config.lr}
-            if z_mode == "T1":
-                opt_lr_dict["mapping.kernel.kern1._lengthscale"] = config.lr_2
-            for z_dim in full_model.input_group.latent_dims:
-                opt_lr_dict[
-                    "input_group.input_{}.variational.finv_std".format(z_dim)
-                ] = config.lr_2
+                for b in range(dataloader.batches):
+                    batch_data = dataloader.load(b)
+ 
+                    prng_state, _ = jr.split(prng_state)
 
-            full_model.set_optimizers(opt_tuple, opt_lr_dict)
+                    loss, model, opt_state = make_step(model, batch_data, opt_state)
+                    loss = loss.item()
+                    loss_tracker.append(loss)
 
-            annealing = lambda x: 1.0
-            losses = full_model.fit(
-                config.max_epochs,
-                loss_margin=config.loss_margin,
-                margin_epochs=config.margin_epochs,
-                kl_anneal_func=annealing,
-                cov_samples=config.cov_MC,
-                ll_samples=config.ll_MC,
-                ll_mode=config.integral_mode,
-            )
+                    loss_dict = {"loss": loss}
+                    iterator.set_postfix(**loss_dict)
 
             # save and progress
+            savefile = config.checkpoint_dir + save_name
+            
             if os.path.exists(
-                checkpoint_dir + model_name + "_result.p"
+                savefile + "_result.p"
             ):  # check previous best losses
-                with open(checkpoint_dir + model_name + "_result.p", "rb") as f:
+                with open(savefile + "_result.p", "rb") as f:
                     results = pickle.load(f)
                     lowest_loss = results["training_loss"][-1]
             else:
                 lowest_loss = np.inf  # nonconvex optimization, pick the best
 
             if losses[-1] < lowest_loss:
-
-                ### save ###
                 if not os.path.exists(config.checkpoint_dir):
                     os.makedirs(config.checkpoint_dir)
 
-                savefile = config.checkpoint_dir + save_name
-                savedata = {
-                    "model": model,
-                    "training_loss": loss_tracker,
-                    "config": args,
-                }
-                pickle.dump(savedata, open(savefile, "wb"), pickle.HIGHEST_PROTOCOL)
-                
                 # save model
-                torch.save(
-                    {
-                        "input_model": ,
-                        "observation_model": obs_model, 
-                        "training_loss": losses,
-                        "seed": seed,
-                        "config": config,
-                    }, 
-                    checkpoint_dir + model_name + ".pt",
-                )
+                pickle.dump(model, open(savefile + ".p", "wb"), pickle.HIGHEST_PROTOCOL)
+                
+                # save results
+                savedata = {
+                    "training_loss": losses,
+                    "best_seed": seed,
+                    "config": config,
+                }
+                pickle.dump(savedata, open(savefile + ".p", "wb"), pickle.HIGHEST_PROTOCOL)
 
         except (ValueError, RuntimeError) as e:
             print(e)

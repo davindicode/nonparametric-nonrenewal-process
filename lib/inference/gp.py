@@ -28,15 +28,17 @@ class ModulatedFactorized(FilterObservations):
     """
 
     gp: SparseGP
+    gp_mean: Union[jnp.ndarray, None]  # constant mean (obs_dims,), i.e. bias if not None
     likelihood: FactorizedLikelihood
 
-    def __init__(self, gp, likelihood, spikefilter=None):
+    def __init__(self, gp, gp_mean, likelihood, spikefilter=None):
         # checks
         assert likelihood.array_type == gp.array_type
         assert likelihood.f_dims == gp.kernel.out_dims
 
         super().__init__(spikefilter, gp.array_type)
         self.gp = gp
+        self.gp_mean = self._to_jax(gp_mean) if gp_mean is not None else None
         self.likelihood = likelihood
         
     def apply_constraints(self):
@@ -90,6 +92,7 @@ class ModulatedFactorized(FilterObservations):
                 h, _ = self.spikefilter.apply_filter(prng_keys[-1], past_Y, compute_KL=False)
                 f = f.at[:, ::self.likelihood.num_f_per_obs].add(h[..., 0])
 
+                f = f + self.gp_mean[None] if self.gp_mean is not None else f
                 y = vmap(self.likelihood.sample_Y)(prng_keys[:-1], f)  # vmap over MC
                 past_Y = jnp.concatenate((past_Y[..., 1:], y[..., None]), axis=-1)
 
@@ -102,6 +105,7 @@ class ModulatedFactorized(FilterObservations):
         
         else:
             prng_states = jr.split(prng_state, ts*num_samps).reshape(num_samps, ts, -1)
+            f_samples = f_samples + self.gp_mean[None] if self.gp_mean is not None else f_samples
             Y = vmap(vmap(self.likelihood.sample_Y), (1, 2), 2)(prng_states, f_samples)
             return Y, f_samples
 
@@ -126,10 +130,11 @@ class ModulatedFactorized(FilterObservations):
         if self.spikefilter is not None:
             y_filtered, KL_y = self.spikefilter.apply_filter(prng_state, y_filt, compute_KL=True)
             prng_state, _ = jr.split(prng_state)
-            f_mu = f_mean + y_filtered
+            f_mean += y_filtered
         
+        f_mean = f_mean + self.gp_mean[None] if self.gp_mean is not None else f_mean
         Ell = self.likelihood.variational_expectation(
-            prng_state, jitter, y, f_mu, f_cov
+            prng_state, jitter, y, f_mean, f_cov
         )
 
         ELBO = Ell - KL_x - KL_f - KL_y
@@ -188,15 +193,17 @@ class RateRescaledRenewal(FilterObservations):
     """
 
     gp: SparseGP
+    gp_mean: jnp.ndarray  # constant mean (obs_dims,), i.e. bias if not None
     renewal: RenewalLikelihood
 
-    def __init__(self, gp, renewal, spikefilter=None):
+    def __init__(self, gp, gp_mean, renewal, spikefilter=None):
         # checks
         assert renewal.array_type == gp.array_type
         assert renewal.f_dims == gp.kernel.out_dims
 
         super().__init__(spikefilter, gp.array_type)
         self.gp = gp
+        self.gp_mean = self._to_jax(gp_mean)
         self.renewal = renewal
 
     def _gp_sample(self, prng_state, x_eval, prior, jitter):
@@ -238,6 +245,7 @@ class RateRescaledRenewal(FilterObservations):
                 h, _ = self.spikefilter.apply_filter(prng_state[0], past_spikes, False)
                 f += h[..., 0]
                 
+            f += self.gp_mean[None]
             rate = self.renewal.inverse_link(f)
             log_rate = f if self.renewal.link_type == 'log' else safe_log(rate)
             
@@ -304,6 +312,7 @@ class RateRescaledRenewal(FilterObservations):
             h, _ = self.spikefilter.apply_filter(prng_state[0], y_filt, False)
             pre_rates += h
             
+        pre_rates += self.gp_mean[None]
         rates = self.renewal.inverse_link(pre_rates).transpose(0, 2, 1)
         
         # rate rescaling, rescaled time since last spike
@@ -329,6 +338,8 @@ class RateRescaledRenewal(FilterObservations):
         f_samples = self._gp_sample(
             prng_state, x_cond[..., None, :], prior, jitter
         )  # (num_samps, obs_dims, 1)
+        
+        f_samples += self.gp_mean[None]
         tau_eval = (
             self.renewal.inverse_link(f_samples) * t_eval / self.renewal.shape_scale()[:, None]
         )
@@ -375,9 +386,10 @@ class ModulatedRenewal(FilterObservations):
     """
 
     gp: SparseGP
+    gp_mean: jnp.ndarray
     renewal: RenewalLikelihood
 
-    def __init__(self, gp, renewal, spikefilter=None):
+    def __init__(self, gp, gp_mean, renewal, spikefilter=None):
         # checks
         assert renewal.array_type == gp.array_type
         assert renewal.f_dims == gp.kernel.out_dims
@@ -417,6 +429,7 @@ class ModulatedRenewal(FilterObservations):
         pre_modulator = self._gp_sample(prng_state, x_eval, prior, jitter)
         log_hazard = self.renewal.log_density(tau_eval) - self.renewal.log_survival(tau_eval)
         
+        pre_modulator += self.gp_mean[None]
         log_modulator = pre_modulator if self.renewal.link_type == 'log' else safe_log(
             self.renewal.inverse_link(pre_modulator))
         

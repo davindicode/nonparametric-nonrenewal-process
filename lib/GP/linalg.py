@@ -346,7 +346,6 @@ def mvn_conditional(x, z, fz, kernel_func, mean_only, diag_cov, jitter):
 def evaluate_qsparse_posterior(
     kernel,
     induc_locs,
-    mean,
     x,
     u_mu,
     u_Lcov,
@@ -401,7 +400,7 @@ def evaluate_qsparse_posterior(
 
     W = W.reshape(out_dims, num_induc, num_samps, ts).transpose(2, 0, 3, 1)
     post_means = (
-        W @ v[None, ...].repeat(num_samps, axis=0) + mean[None, :, None, None]
+        W @ v[None, ...].repeat(num_samps, axis=0)
     )  # (num_samps, out_dims, time, 1)
 
     if mean_only is False:
@@ -447,7 +446,6 @@ def evaluate_qsparse_posterior(
 def evaluate_tsparse_posterior(
     kernel,
     induc_locs,
-    mean,
     x,
     lambda_1,
     chol_Lambda_2,
@@ -490,7 +488,6 @@ def evaluate_tsparse_posterior(
 
     post_means = (
         Kxz_Rinv @ lambda_1[None, ...].repeat(num_samps, axis=0)
-        + mean[None, :, None, None]
     )  # (num_samps, out_dims, time, 1)
 
     if mean_only is False or compute_aux:

@@ -3,7 +3,7 @@
 cd ./scripts/
 
   
-
+python3 th1.py --session_name "Mouse28_140313_wake"
   
   
   

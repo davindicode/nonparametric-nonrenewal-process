@@ -25,18 +25,19 @@ class Gaussian(FactorizedLikelihood):
     The Gaussian likelihood:
         p(yₙ|fₙ) = 𝓝(yₙ|fₙ,σ²)
     """
-
-    pre_variance: Union[jnp.ndarray, None]
+    
+    pre_variance: jnp.ndarray
 
     def __init__(self, obs_dims, variance, array_type=jnp.float32):
         """
         :param jnp.ndarray pre_variance: The observation noise variance, σ² (obs_dims,)
         """
         super().__init__(obs_dims, obs_dims, "none", array_type)
-        self.pre_variance = None
         self.pre_variance = softplus_inv(self._to_jax(variance))
 
-    def _log_likelihood(self, f, y, obs_var):
+        self.bias = self._to_jax(bias)  # (obs_dims,)
+
+    def log_likelihood(self, f, y, obs_var):
         """
         Evaluate the log-Gaussian function log 𝓝(yₙ|fₙ,σ²).
         Can be used to evaluate Q approximation/cubature points.
