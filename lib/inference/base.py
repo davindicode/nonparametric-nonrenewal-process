@@ -12,10 +12,18 @@ from ..base import module
 from ..filters.base import Filter
 
 
-
-class FilterObservations(module):
+class Observations(module):
     """
-    Spiketrain filter + GP with optional SSGP latent states
+    GP observation model
+    """
+    
+    def ELBO(self, prng_state, x, t, num_samps):
+        raise NotImplementedError
+        
+
+class FilterObservations(Observations):
+    """
+    Spiketrain filter + GP observation model
     """
 
     spikefilter: Union[Filter, None]
@@ -39,5 +47,4 @@ class FilterObservations(module):
 
         return model
 
-    def ELBO(self, prng_state, x, t, num_samps):
-        raise NotImplementedError
+    

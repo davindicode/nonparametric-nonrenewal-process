@@ -21,12 +21,13 @@ _sqrt_twopi = math.sqrt(2 * math.pi)
 
 
 ### functions ###
-def _scaled_dist_squared_Rn(X, Y, lengthscale, diagonal):
+def _scaled_dist_squared_Euclidean(X, Y, lengthscale, diagonal):
     r"""
     Returns :math:`\|\frac{X-Z}{l}\|^2`
 
-    :param jnp.array X: input of shape (out_dims, num_points, in_dims)
-    :return: distance of shape (out_dims, num_points, num_points)
+    :param jnp.ndarray X: input of shape (out_dims, num_points, in_dims)
+    :return:
+        distance of shape (out_dims, num_points, num_points)
     """
     scaled_X = X / lengthscale[:, None, :]
     scaled_Y = Y / lengthscale[:, None, :]
@@ -41,11 +42,37 @@ def _scaled_dist_squared_Rn(X, Y, lengthscale, diagonal):
     return jnp.maximum(r2, 0.0)  # numerically threshold
 
 
-def _scaled_dist_Rn(X, Y, lengthscale, diagonal):
+def _scaled_dist_Euclidean(X, Y, lengthscale, diagonal):
     r"""
     Returns :math:`\|\frac{X-Z}{l}\|`
     """
-    return safe_sqrt(_scaled_dist_squared_Rn(X, Y, lengthscale, diagonal))
+    return safe_sqrt(_scaled_dist_squared_Euclidean(X, Y, lengthscale, diagonal))
+
+
+
+def _square_scaled_dist_Cosine(X, Y, lengthscale, diagonal):
+    """
+    2 * (1 - cos(d))
+    
+    :param jnp.ndarray X: input of shape (out_dims, num_points, in_dims)
+    :param jnp.ndarray lengthscale: lengths of shape (out_dims, in_dims)
+    :return:
+        distance of shape (out_dims, num_points, num_points) or diagonal (out_dims, num_points, 1)
+    """
+    if diagonal:
+        XY = X - Y  # (out, pts, in)
+        r2 = 2 * ((1 - jnp.cos(XY)) / (lengthscale[:, None, :]) ** 2).sum(-1, keepdims=True)
+    else:
+        XY = X[..., None, :] - Y[..., None, :].permute(0, 2, 1, 3)  # (out, pts, pts, in)
+        r2 = 2 * ((1 - jnp.cos(XY)) / (lengthscale[:, None, None, :]) ** 2).sum(-1)
+    return r2
+
+
+def _scaled_dist_Cosine(X, Y, lengthscale, diagonal):
+    r"""
+    Returns :math:`\|\frac{X-Z}{l}\|`.
+    """
+    return safe_sqrt(_square_scaled_dist_Cosine(X, Y, lengthscale, diagonal))
 
 
 ### base classes ###
@@ -331,10 +358,14 @@ class WienerAcceleration(Kernel):
     
 class DotProduct(Kernel):
     r"""
-    Base class for kernels which are functions of :math:`x \cdot z`.
+    Base class for kernels which are functions of :math:`x \cdot y`.
     """
-    def __init__(self, in_dims, out_dims, array_type=jnp.float32):
+    
+    pre_var: jnp.ndarray
+    
+    def __init__(self, in_dims, out_dims, variance, array_type=jnp.float32):
         super().__init__(in_dims, out_dims, None, array_type)
+        self.pre_var = softplus_inv(self._to_jax(variance))
 
     def _dot_product(self, X, Y, diagonal):
         r"""
@@ -360,8 +391,8 @@ class Linear(DotProduct):
         a :class:`.Sum` with a :class:`.Constant` kernel.
     """
 
-    def __init__(self, in_dims, array_type=jnp.float32):
-        super().__init__(in_dims, array_type)
+    def __init__(self, in_dims, out_dims, array_type=jnp.float32):
+        super().__init__(in_dims, out_dims, array_type)
 
     def K(self, X, Y, diagonal):
         return self._dot_product(X, Y, diagonal)
@@ -380,7 +411,7 @@ class Polynomial(DotProduct):
         :param jnp.ndarray bias: Bias parameter of this kernel. Should be positive.
         :param int degree: Degree :math:`d` of the polynomial.
         """
-        super().__init__(in_dims, array_type)
+        super().__init__(in_dims, out_dims, array_type)
         self.log_bias = jnp.log(self._to_jax(bias)) # N
 
         if degree < 1:
@@ -660,9 +691,16 @@ class SquaredExponential(Lengthscale):
     σ² is the variance parameter
     """
 
-    def __init__(self, out_dims, variance, lengthscale, array_type=jnp.float32):
+    def __init__(self, out_dims, variance, lengthscale, metric_type="Euclidean", array_type=jnp.float32):
+        if metric_type == "Euclidean":
+            metric = _scaled_dist_squared_Euclidean
+        elif metric_type == "Cosine":
+            metric = _scaled_dist_squared_Cosine
+        else:
+            raise ValueError('Invalid metric type')
+            
         super().__init__(
-            out_dims, None, variance, lengthscale, _scaled_dist_squared_Rn, array_type
+            out_dims, None, variance, lengthscale, metric, array_type
         )
 
     def _K_r(self, r2):
@@ -704,10 +742,17 @@ class RationalQuadratic(Lengthscale):
     """
 
     def __init__(
-        self, out_dims, variance, lengthscale, scale_mixture, array_type=jnp.float32
+        self, out_dims, variance, lengthscale, scale_mixture, metric_type="Euclidean", array_type=jnp.float32
     ):
+        if metric_type == "Euclidean":
+            metric = _scaled_dist_squared_Euclidean
+        elif metric_type == "Cosine":
+            metric = _scaled_dist_squared_Cosine
+        else:
+            raise ValueError('Invalid metric type')
+            
         super().__init__(
-            out_dims, None, variance, lengthscale, _scaled_dist_squared_Rn, array_type
+            out_dims, None, variance, lengthscale, metric, array_type
         )
         self.pre_scale_mixture = softplus_inv(self._to_jax(scale_mixture))
 
@@ -735,7 +780,7 @@ class Matern12(Lengthscale):
     def __init__(self, out_dims, variance, lengthscale, array_type=jnp.float32):
         state_dims = out_dims
         super().__init__(
-            out_dims, state_dims, variance, lengthscale, _scaled_dist_Rn, array_type
+            out_dims, state_dims, variance, lengthscale, _scaled_dist_Euclidean, array_type
         )
 
     def _K_r(self, r):
@@ -809,7 +854,7 @@ class Matern32(Lengthscale):
         
         state_dims = 2 * out_dims
         super().__init__(
-            out_dims, state_dims, variance, lengthscale, _scaled_dist_Rn, array_type
+            out_dims, state_dims, variance, lengthscale, _scaled_dist_Euclidean, array_type
         )
 
     def _K_r(self, r):
@@ -892,7 +937,7 @@ class Matern52(Lengthscale):
     def __init__(self, out_dims, variance, lengthscale, array_type=jnp.float32):
         state_dims = 3 * out_dims
         super().__init__(
-            out_dims, state_dims, variance, lengthscale, _scaled_dist_Rn, array_type
+            out_dims, state_dims, variance, lengthscale, _scaled_dist_Euclidean, array_type
         )
 
     def _K_r(self, r):
@@ -1006,7 +1051,7 @@ class Matern72(Lengthscale):
     def __init__(self, out_dims, variance, lengthscale, array_type=jnp.float32):
         state_dims = 4 * out_dims
         super().__init__(
-            out_dims, state_dims, variance, lengthscale, _scaled_dist_Rn, array_type
+            out_dims, state_dims, variance, lengthscale, _scaled_dist_Euclidean, array_type
         )
 
     # kernel

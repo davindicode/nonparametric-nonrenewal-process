@@ -1,4 +1,4 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from . import FIR
+from .FIR import SigmoidRefractory, RaisedCosineBumps, GaussianProcess

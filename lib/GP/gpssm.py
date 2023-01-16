@@ -415,7 +415,7 @@ class DTGPSSM(module):
         else:  # autoregressive sampling using conditionals
             return
 
-        return x_samples, f_samples, KL_f
+        return x_samples, f_samples#, KL_f
 
 
 #     def compute_jac(self, probe_state, probe_input):

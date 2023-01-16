@@ -3,6 +3,10 @@
 cd ./scripts/
 
   
+
+  
+  
+  
 python3 HDC.py --session_id 12-120806 --phase wake --cv_folds 5 --cv 0 1 2 3 4 -1 --likelihood IPPexp --mapping svgp32 --x_mode hd-isi1 --ncvx 2 --lr 1e-3 --margin_epochs 100 --loss_margin -100 --batch_size 250000 --jitter 1e-4 --gpu 0
 
 

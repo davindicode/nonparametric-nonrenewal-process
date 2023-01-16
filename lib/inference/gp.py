@@ -10,13 +10,13 @@ from jax import vmap, lax
 
 import numpy as np
 
-from .base import FilterObservations
+from .base import Observations, FilterObservations
 
 from ..GP.markovian import MultiOutputLTI
 from ..GP.sparse import SparseGP
 from ..GP.spatiotemporal import KroneckerLTI
 from ..likelihoods.base import FactorizedLikelihood, RenewalLikelihood
-from ..likelihoods.factorized import LogCoxProcess
+from ..likelihoods.factorized import PointProcess
 from ..utils.linalg import gauss_legendre
 from ..utils.jax import safe_log, safe_sqrt
 
@@ -86,7 +86,7 @@ class ModulatedFactorized(FilterObservations):
             def step(carry, inputs):
                 prng_keys, f = inputs
                 past_Y = carry  # (mc, obs_dims, ts)
-                print(f.shape)
+                
                 h, _ = self.spikefilter.apply_filter(prng_keys[-1], past_Y, compute_KL=False)
                 f = f.at[:, ::self.likelihood.num_f_per_obs].add(h[..., 0])
 
@@ -112,6 +112,7 @@ class ModulatedFactorized(FilterObservations):
         num_samps, 
         x, 
         y, 
+        y_filt, 
     ):
         """
         Compute ELBO
@@ -123,7 +124,7 @@ class ModulatedFactorized(FilterObservations):
         )  # (evals, samp, f_dim)
 
         if self.spikefilter is not None:
-            y_filtered, KL_y = self.spikefilter.apply_filter(prng_state, y, compute_KL=True)
+            y_filtered, KL_y = self.spikefilter.apply_filter(prng_state, y_filt, compute_KL=True)
             prng_state, _ = jr.split(prng_state)
             f_mu = f_mean + y_filtered
         
@@ -135,7 +136,7 @@ class ModulatedFactorized(FilterObservations):
         return ELBO
     
     ### evaluation ###
-    def evaluate_pre_conditional_rate(self, prng_state, x_eval, y, jitter):
+    def evaluate_pre_conditional_rate(self, prng_state, x_eval, y_filt, jitter):
         """
         evaluate posterior rate
         """
@@ -145,7 +146,7 @@ class ModulatedFactorized(FilterObservations):
         
         if self.spikefilter is not None:
             y_filtered, _ = self.spikefilter.apply_filter(
-                prng_state, y[..., :-1], compute_KL=False)  # leave out last time step (causality)
+                prng_state, y_filt, compute_KL=False)
             pre_rates_mean += y_filtered
         
         return pre_rates_mean, pre_rates_cov  # (num_samps, out_dims, ts)
@@ -263,7 +264,7 @@ class RateRescaledRenewal(FilterObservations):
         return spikes.transpose(1, 2, 0), log_rho_ts.transpose(1, 2, 0)  # (num_samps, obs_dims, ts)
 
     ### inference ###
-    def ELBO(self, prng_state, y, pre_rates, x, neuron, num_ISIs):
+    def ELBO(self, prng_state, y, y_filt, pre_rates, x, neuron, num_ISIs):
         """
         Compute the evidence lower bound
         """
@@ -272,7 +273,7 @@ class RateRescaledRenewal(FilterObservations):
         )  # (evals, samp, f_dim)
 
         if self.spikefilter is not None:
-            y_filtered, KL_y = self.spikefilter.apply_filter(prng_state[0], y, compute_KL)
+            y_filtered, KL_y = self.spikefilter.apply_filter(prng_state[0], y_filt, compute_KL)
         pre_rates = f_samples + y_filtered
         
         Ell = self.renewal.variational_expectation(
@@ -287,22 +288,21 @@ class RateRescaledRenewal(FilterObservations):
         return
 
     ### sample ###
-    def sample_log_conditional_intensity(self, prng_state, x_eval, y, jitter):
+    def sample_log_conditional_intensity(self, prng_state, x_eval, y, y_filt, jitter):
         """
         rho(t) = r(t) p(u) / (1 - int p(u) du)
         
         :param jnp.ndarray x_eval: evaluation locations (num_samps, obs_dims, ts, x_dims)
-        :param jnp.ndarray y: spike train corresponding to segment (neurons, ts)
+        :param jnp.ndarray y: spike train corresponding to segment (neurons, ts), 
+                              y = y_filt[..., filter_length:] + last time step
         """
         pre_rates = self._gp_sample(prng_state, x_eval, False, jitter)  # (num_samps, obs_dims, ts)
-        y = jnp.broadcast_to(y, (pre_rates.shape[0],) + y.shape[1:])
+        num_samps = pre_rates.shape[0]
+        y = jnp.broadcast_to(y, (num_samps,) + y.shape[1:])
         
         if self.spikefilter is not None:
-            h, _ = self.spikefilter.apply_filter(prng_state[0], y[..., :-1], False)
+            h, _ = self.spikefilter.apply_filter(prng_state[0], y_filt, False)
             pre_rates += h
-            
-            filter_length = len(self.spikefilter.filter_time)
-            y = y[..., filter_length:]
             
         rates = self.renewal.inverse_link(pre_rates).transpose(0, 2, 1)
         
@@ -426,13 +426,13 @@ class ModulatedRenewal(FilterObservations):
     
 
 
-class NonparametricPointProcess(FilterObservations):
+class NonparametricPointProcess(Observations):
     """
     Bayesian nonparametric modulated point process likelihood
     """
 
     gp: Union[MultiOutputLTI, KroneckerLTI]
-    pp: LogCoxProcess
+    pp: PointProcess
         
     modulated: bool
 
@@ -441,12 +441,12 @@ class NonparametricPointProcess(FilterObservations):
     refract_neg: float
     mean_bias: jnp.ndarray
 
-    def __init__(self, gp, warp_tau, refract_tau, refract_neg, mean_bias, dt, spikefilter=None):
+    def __init__(self, gp, warp_tau, refract_tau, refract_neg, mean_bias, dt):
         """
         :param jnp.ndarray warp_tau: time transform timescales of shape (out_dims,)
         :param jnp.ndarray tau: refractory mean timescales of shape (out_dims,)
         """
-        super().__init__(spikefilter, gp.array_type)
+        super().__init__(gp.array_type)
         self.gp = gp
         self.pp = LogCoxProcess(gp.kernel.out_dims, dt, self.array_type)
 
@@ -567,11 +567,11 @@ class NonparametricPointProcess(FilterObservations):
         log_rho_tau_mean = f_mean[..., 0] + m_eval
         return log_rho_tau_mean, f_cov[..., 0], KL
     
-    def _sample_spikes(self, prng_state, timesteps, ini_spikes, ini_t_since, past_ISIs, x_eval, jitter):
+    def _sample_spikes(self, prng_state, timesteps, ini_t_since, past_ISIs, x_eval, jitter):
         """
         Sample the spike train autoregressively
         
-        :param jnp.dnarray ini_spikes: initial spike train (num_samps, obs_dims, filter_length)
+        # :param jnp.dnarray ini_spikes: initial spike train (num_samps, obs_dims, filter_length)
         :param jnp.ndarray ini_t: initial tau values at start (num_samps, obs_dims)
         :param jnp.ndarray past_ISI: past ISIs (num_samps, obs_dims, order)
         :param jnp.ndarray x_eval: covariates (num_samps, obs_dims, ts, x_dims)
@@ -587,7 +587,7 @@ class NonparametricPointProcess(FilterObservations):
             
         def step(carry, inputs):
             prng_state, x = inputs  # (num_samps, obs_dims, x_dims)
-            t_since, past_ISI, past_spikes, spikes = carry
+            t_since, past_ISI, spikes = carry
             
             t_since += self.pp.dt
                 
@@ -599,9 +599,9 @@ class NonparametricPointProcess(FilterObservations):
                 prng_gp, 1, tau_since[..., None], past_ISI, x, False, jitter)[..., 0]
             log_rho_t = log_rho_tau + log_dtau_dt  # (num_samps, out_dims)
             
-            if self.spikefilter is not None:
-                h, _ = self.spikefilter.apply_filter(prng_state[0], past_spikes, False)
-                log_rho_t += h
+#             if self.spikefilter is not None:
+#                 h, _ = self.spikefilter.apply_filter(prng_state[0], past_spikes, False)
+#                 log_rho_t += h
 
             p_spike = jnp.maximum(jnp.exp(log_rho_t) * self.pp.dt, 1.)  # approximate by discrete Bernoulli
             spikes = jr.bernoulli(prng_state[-1], p_spike).astype(self.array_type)  # (num_samps, obs_dims)
@@ -613,10 +613,10 @@ class NonparametricPointProcess(FilterObservations):
                 past_ISI = jnp.where(spike_cond[..., None], shift_ISIs, past_ISI[..., 0, :])[..., None, :]
             t_since = jnp.where(spike_cond, 0.0, t_since)
             
-            if self.spikefilter is not None:
-                past_spikes = jnp.concatenate((past_spikes[..., 1:], spikes[..., None]), axis=-1)
+#             if self.spikefilter is not None:
+#                 past_spikes = jnp.concatenate((past_spikes[..., 1:], spikes[..., None]), axis=-1)
             
-            return (t_since, past_ISI, past_spikes, spikes), (spikes, log_rho_t)
+            return (t_since, past_ISI, spikes), (spikes, log_rho_t)
 
         # add dummy time dimension
         if x_eval is not None:
@@ -624,7 +624,7 @@ class NonparametricPointProcess(FilterObservations):
         if past_ISIs is not None:
             past_ISIs = past_ISIs[..., None, :]
         
-        init = (ini_t_since, past_ISIs, ini_spikes, jnp.zeros_like(ini_t_since))
+        init = (ini_t_since, past_ISIs, jnp.zeros_like(ini_t_since))
         xs = (prng_states, x_eval)
         _, (spikes, log_rho_ts) = lax.scan(step, init, xs)
         return spikes.transpose(1, 2, 0), log_rho_ts.transpose(1, 2, 0)  # (num_samps, obs_dims, ts)
@@ -633,13 +633,18 @@ class NonparametricPointProcess(FilterObservations):
     ### inference ###
     def ELBO(self, prng_state, x_samples):
         log_rho_tau, KL = self._log_rho_from_gp_post()
+        
+#         if self.spikefilter is not None:
+#             h, _ = self.spikefilter.apply_filter(prng_state[0], y_filt, False)
+#             log_rho_t_mean += h
+            
         Ell = self.likelihood.variational_expectation(log_rho_tau)
 
         ELBO = Ell - KL
         return ELBO
     
     ### evaluation ###
-    def evaluate_log_conditional_intensity(self, prng_state, num_samps, t_eval, isi_eval, x_eval, y, jitter):
+    def evaluate_log_conditional_intensity(self, prng_state, num_samps, t_eval, isi_eval, x_eval, jitter):
         """
         Evaluate the conditional intensity along an input path
         """
@@ -651,9 +656,9 @@ class NonparametricPointProcess(FilterObservations):
         log_rho_t_mean = log_rho_tau_mean + log_dtau_dt_eval  # (num_samps, out_dims, ts)
         log_rho_t_cov = log_rho_tau_cov  # additive transform in log space
         
-        if self.spikefilter is not None:
-            h, _ = self.spikefilter.apply_filter(prng_state[0], y, False)
-            log_rho_t_mean += h
+#         if self.spikefilter is not None:
+#             h, _ = self.spikefilter.apply_filter(prng_state[0], y_filt, False)
+#             log_rho_t_mean += h
         return log_rho_t_mean, log_rho_t_cov
 
     def evaluate_metric(self):
@@ -739,7 +744,6 @@ class NonparametricPointProcess(FilterObservations):
         num_samps: int, 
         timesteps: int, 
         x_samples: Union[None, jnp.ndarray], 
-        ini_spikes: Union[None, jnp.ndarray], 
         ini_t_since: jnp.ndarray, 
         past_ISIs: Union[None, jnp.ndarray], 
         jitter: float, 
@@ -753,7 +757,7 @@ class NonparametricPointProcess(FilterObservations):
         prng_states = jr.split(prng_state, 2)
         
         y_samples, log_rho_ts = self._sample_spikes(
-            prng_states[1], timesteps, ini_spikes, ini_t_since, past_ISIs, x_samples, jitter)
+            prng_states[1], timesteps, ini_t_since, past_ISIs, x_samples, jitter)
         return y_samples, log_rho_ts
 
     def sample_posterior(
@@ -762,7 +766,6 @@ class NonparametricPointProcess(FilterObservations):
         num_samps: int, 
         timesteps: int, 
         x_samples: Union[None, jnp.ndarray], 
-        ini_spikes: Union[None, jnp.ndarray], 
         ini_t_since: jnp.ndarray, 
         past_ISIs: Union[None, jnp.ndarray], 
         jitter: float, 
@@ -773,5 +776,5 @@ class NonparametricPointProcess(FilterObservations):
         prng_states = jr.split(prng_state, 2)
         
         y_samples, log_rho_ts = self._sample_spikes(
-            prng_states[1], timesteps, ini_spikes, ini_t_since, past_ISIs, x_samples, jitter)
+            prng_states[1], timesteps, ini_t_since, past_ISIs, x_samples, jitter)
         return y_samples, log_rho_ts

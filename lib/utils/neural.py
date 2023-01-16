@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.signal as signal
 
 import jax
 from jax import lax
@@ -240,6 +241,12 @@ def compute_ISI_LV(sample_bin, spiketimes):
     .. math::
             LV = 3 \langle \left( \frac{\Delta_{k-1} - \Delta_{k}}{\Delta_{k-1} + \Delta_{k}} \right)^2 \rangle
 
+    local coefficient of variation LV classification:
+        regular spiking for LV ∈ [0, 0.5], irregular
+        for LV ∈ [0.5, 1], and bursty spiking for LV > 1.
+        S. Shinomoto, K. Shima, and J. Tanji. Differences in spiking patterns
+        among cortical neurons. Neural Computation, 15(12):2823–2842, 2003.
+        
     References:
 
     [1] `A measure of local variation of inter-spike intervals',
@@ -258,6 +265,219 @@ def compute_ISI_LV(sample_bin, spiketimes):
         ISI.append(ISI_)
 
     return ISI, LV
+
+
+
+# histograms
+def occupancy_normalized_histogram(
+    sample_bin, time_thres, covariates, cov_bins, activities=None, spiketimes=None
+):
+    """
+    Compute the occupancy-normalized activity histogram for neural data, corresponding to maximum
+    likelihood estimation of the rate in an inhomogeneous Poisson process.
+
+    :param float sample_bin: binning time
+    :param float time_thres: only count bins with total occupancy time above time_thres
+    :param list covariates: list of time series that describe animal behaviour
+    :param tuple cov_bins: tuple of arrays describing bin boundary locations
+    :param list spiketimes: list of arrays containing spike times of neurons
+    :param bool divide: return the histogram divisions (rate and histogram probability in region)
+                        or the activity and time histograms
+    """
+    if spiketimes is not None:
+        units = len(spiketimes)
+        sg_c = [() for u in range(units)]
+    else:
+        units = activities.shape[0]
+
+    c_bins = ()
+    tg_c = ()
+    for k, cov in enumerate(covariates):
+        c_bins += (len(cov_bins[k]) - 1,)
+        tg_c += (np.digitize(cov, cov_bins[k]) - 1,)
+        if spiketimes is not None:
+            for u in range(units):
+                sg_c[u] += (np.digitize(cov[spiketimes[u]], cov_bins[k]) - 1,)
+
+    # get time spent in each bin
+    occupancy_time = np.zeros(tuple(len(bins) - 1 for bins in cov_bins))
+    np.add.at(occupancy_time, tg_c, sample_bin)
+
+    # get activity of each bin per neuron
+    tot_activity = np.zeros((units,) + tuple(len(bins) - 1 for bins in cov_bins))
+    if spiketimes is not None:
+        for u in range(units):
+            np.add.at(tot_activity[u], sg_c[u], 1)
+    else:
+        for u in range(units):
+            np.add.at(tot_activity[u], tg_c, activities[u, :])
+
+    avg_activity = np.zeros((units,) + tuple(len(bins) - 1 for bins in cov_bins))
+    occupancy_time[occupancy_time <= time_thres] = -1.0  # avoid division by zero
+    for u in range(units):
+        tot_activity[u][occupancy_time < time_thres] = 0.0
+        avg_activity[u] = tot_activity[u] / occupancy_time
+    occupancy_time[
+        occupancy_time < time_thres
+    ] = 0.0  # take care of unvisited/uncounted bins
+
+    return avg_activity, occupancy_time, tot_activity
+
+
+def spike_var_MI(rate, prob):
+    """
+    Mutual information analysis for inhomogeneous Poisson process rate variable.
+
+    .. math::
+            I(x;\text{spike}) = \int p(x) \, \lambda(x) \, \log{\frac{\lambda(x)}{\langle \lambda \rangle}} \, \mathrm{d}x,
+
+    :param np.array rate: rate variables of shape (neurons, covariate_dims...)
+    :param np.array prob: occupancy values for each bin of shape (covariate_dims...)
+    """
+    units = rate.shape[0]
+
+    MI = np.empty(units)
+    logterm = rate / (
+        (rate * prob[np.newaxis, :]).sum(
+            axis=tuple(k for k in range(1, len(rate.shape))), keepdims=True
+        )
+        + 1e-12
+    )
+    logterm[logterm == 0] = 1.0  # goes to zero in log terms
+    for u in range(units):  # MI in bits
+        MI[u] = (prob * rate[u] * np.log2(logterm[u])).sum()
+
+    return MI
+
+
+
+def smooth_hist(rate_binned, sm_filter, bound):
+    r"""
+    Neurons is the batch dimension, parallelize the convolution for 1D, 2D or 3D
+    bound indicates the padding mode ('periodic', 'repeat', 'zeros')
+    sm_filter should had odd sizes for its shape
+
+    :param np.array rate_binned: input histogram array of shape (units, ndim_1, ndim_2, ...)
+    :param np.array sm_filter: input filter array of shape (ndim_1, ndim_2, ...)
+    :param list bound: list of strings (per dimension) to indicate convolution boundary conditions
+    :returns: smoothened histograms
+    :rtype: np.array
+    """
+    for s in sm_filter.shape:
+        assert s % 2 == 1  # odd shape sizes
+    units = rate_binned.shape[0]
+    dim = len(rate_binned.shape) - 1
+    assert dim > 0
+    step_sm = np.array(sm_filter.shape) // 2
+
+    for d in range(dim):
+        if d > 0:
+            rate_binned = np.swapaxes(rate_binned, 1, d + 1)
+        if bound[d] == "repeat":
+            rate_binned = np.concatenate(
+                (
+                    np.repeat(rate_binned[:, :1, ...], step_sm[d], axis=1),
+                    rate_binned,
+                    np.repeat(rate_binned[:, -1:, ...], step_sm[d], axis=1),
+                ),
+                axis=1,
+            )
+        elif bound[d] == "periodic":
+            rate_binned = np.concatenate(
+                (
+                    rate_binned[:, -step_sm[d] :, ...],
+                    rate_binned,
+                    rate_binned[:, : step_sm[d], ...],
+                ),
+                axis=1,
+            )
+        elif bound[d] == "zeros":
+            zz = np.zeros_like(rate_binned[:, : step_sm[d], ...])
+            rate_binned = np.concatenate((zz, rate_binned, zz), axis=1)
+        else:
+            raise NotImplementedError
+
+        if d > 0:
+            rate_binned = np.swapaxes(rate_binned, 1, d + 1)
+
+    smth_rate = []
+    for u in range(units):
+        smth_rate.append(signal.convolve(rate_binned[u], sm_filter, mode="valid"))
+    smth_rate = np.array(smth_rate)
+
+    return smth_rate
+
+
+def KDE_behaviour(bins_tuple, covariates, sm_size, L, smooth_modes):
+    """
+    Kernel density estimation of the covariates, with Gaussian kernels.
+    """
+    dim = len(bins_tuple)
+    assert (
+        (dim == len(covariates))
+        and (dim == len(sm_size))
+        and (dim == len(smooth_modes))
+    )
+    time_samples = covariates[0].shape[0]
+    c_bins = ()
+    tg_c = ()
+    for k, cov in enumerate(covariates):
+        c_bins += (len(bins_tuple[k]) - 1,)
+        tg_c += (np.digitize(cov, bins_tuple[k]) - 1,)
+
+    # get time spent in each bin
+    bin_time = np.zeros(tuple(len(bins) - 1 for bins in bins_tuple))
+    np.add.at(bin_time, tg_c, 1)
+    bin_time /= bin_time.sum()  # normalize
+
+    sm_centre = np.array(sm_size) // 2
+    sm_filter = np.ones(tuple(sm_size))
+    ones_arr = np.ones_like(sm_filter)
+    for d in range(dim):
+        size = sm_size[d]
+        centre = sm_centre[d]
+        L_ = L[d]
+
+        if d > 0:
+            bin_time = np.swapaxes(bin_time, 0, d)
+            ones_arr = np.swapaxes(ones_arr, 0, d)
+            sm_filter = np.swapaxes(sm_filter, 0, d)
+
+        for k in range(size):
+            sm_filter[k, ...] *= (
+                np.exp(-0.5 * (((k - centre) / L_) ** 2)) * ones_arr[k, ...]
+            )
+
+        if d > 0:
+            bin_time = np.swapaxes(bin_time, 0, d)
+            ones_arr = np.swapaxes(ones_arr, 0, d)
+            sm_filter = np.swapaxes(sm_filter, 0, d)
+
+    smth_time = smooth_hist(bin_time[None, ...], sm_filter, smooth_modes)
+    smth_time /= smth_time.sum()  # normalize
+    return smth_time[0, ...], bin_time
+
+
+def geometric_tuning(ori_rate, smth_rate, prob):
+    r"""
+    Compute coherence and sparsity related to the geometric properties of tuning curves.
+    """
+    # Pearson r correlation
+    units = ori_rate.shape[0]
+    coherence = np.empty(units)
+    for u in range(units):
+        x_1 = ori_rate[u].flatten()
+        x_2 = smth_rate[u].flatten()
+        stds = np.maximum(1e-10, x_1.std() * x_2.std())
+        coherence[u] = np.dot(x_1 - x_1.mean(), x_2 - x_2.mean()) / len(x_1) / stds
+
+    # Computes the sparsity of the tuning
+    sparsity = np.empty(units)
+    for u in range(units):
+        pr_squared = np.maximum(1e-10, (prob * ori_rate[u] ** 2).sum())
+        sparsity[u] = 1 - (prob * ori_rate[u]).sum() ** 2 / pr_squared
+
+    return coherence, sparsity
 
 
 ### sampling ###

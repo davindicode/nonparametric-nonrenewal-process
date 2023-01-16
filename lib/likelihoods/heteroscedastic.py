@@ -206,7 +206,7 @@ class UniversalCount(CountLikelihood):
     W: jnp.ndarray
     b: jnp.ndarray
 
-    def __init__(self, obs_dims, C, K, tbin, array_type=jnp.float32):
+    def __init__(self, obs_dims, C, K, basis_mode, W, b, tbin, array_type=jnp.float32):
         """
         :param int K: max spike count
         :param jnp.ndarray W: mapping matrix of shape (obs_dims, K, C)
@@ -215,23 +215,58 @@ class UniversalCount(CountLikelihood):
         super().__init__(obs_dims, C * obs_dims, tbin, array_type)
         self.K = K
         self.C = C
+        self.basis = self.get_basis(basis_mode)
+        expand_C = torch.cat(
+            [f_(jnp.ones(1, self.C)) for f_ in self.basis], dim=-1
+        ).shape[-1]  # size of expanded vector
+        
+        assert W.shape == (K, expand_C)
+        self.W = self._to_jax(W)  # maps from NxC_expand to NxK
+        self.b = self._to_jax(b)
+        
+    def get_basis(basis_mode="el"):
 
-        self.W = W  # maps from NxC to NxK
-        self.b = b
+        if basis_mode == "id":
+            basis = (lambda x: x,)
 
-    def check_Y(self, spikes, batch_info):
-        """
-        Get all the activity into batches useable format for fast log-likelihood evaluation.
-        Batched spikes will be a list of tensors of shape (trials, neurons, time) with trials
-        set to 1 if input has no trial dimension (e.g. continuous recording).
+        elif basis_mode == "el":  # element-wise exp-linear
+            basis = (lambda x: x, lambda x: jnp.exp(x))
 
-        :param np.ndarray spikes: becomes a list of [neuron_dim, batch_dim]
-        :param int/list batch_size:
-        :param int filter_len: history length of the GLM couplings (1 indicates no history coupling)
-        """
-        if self.K < spikes.max():
-            raise ValueError("Maximum count is exceeded in the spike count data")
-        super().set_Y(spikes, batch_info)
+        elif basis_mode == "eq":  # element-wise exp-quadratic
+            basis = (lambda x: x, lambda x: x**2, lambda x: jnp.exp(x))
+
+        elif basis_mode == "ec":  # element-wise exp-cubic
+            basis = (
+                lambda x: x,
+                lambda x: x**2,
+                lambda x: x**3,
+                lambda x: jnp.exp(x),
+            )
+
+        elif basis_mode == "qd":  # exp and full quadratic
+
+            def mix(x):
+                C = x.shape[-1]
+                out = jnp.empty((*x.shape[:-1], C * (C - 1) // 2), dtype=x.dtype)
+                k = 0
+                for c in range(1, C):
+                    for c_ in range(c):
+                        out[..., k] = x[..., c] * x[..., c_]
+                        k += 1
+
+                return out  # shape (..., C*(C-1)/2)
+
+            basis = (
+                lambda x: x,
+                lambda x: x**2,
+                lambda x: jnp.exp(x),
+                lambda x: mix(x),
+            )
+
+        else:
+            raise ValueError("Invalid basis expansion")
+
+        return basis
 
     def count_logits(self, f):
         """
@@ -240,7 +275,12 @@ class UniversalCount(CountLikelihood):
         :param jnp.ndarray f: input variables of shape (f_dims,)
         """
         f_vecs = f.reshape(-1, self.C)
-        a = self.W @ f_vecs + self.b  # logits (obs_dims, K+1)
+        inps = F_mu.permute(0, 2, 1).reshape(samples * T, -1)  # (samplesxtime, in_dimsxchannels)
+        inps = inps.view(inps.shape[0], -1, self.C)
+        f_expand = torch.cat([f_(inps) for f_ in self.basis], dim=-1)
+        # = self.mapping_net(inps, neuron).view(out.shape[0], -1)  # # samplesxtime, NxK
+        
+        a = self.W @ f_expand + self.b  # logits (obs_dims, K+1)
         return a
 
     def log_likelihood(self, f, y):
@@ -256,7 +296,7 @@ class UniversalCount(CountLikelihood):
         ll = jnp.take(log_p_cnts, inds, axis=1)
         return ll
 
-    def sample_Y(self, prng_state):
+    def sample_Y(self, prng_state, f):
         """
         Sample from the categorical distribution.
 

@@ -12,6 +12,7 @@ class Filter(module):
 
     cross_coupling: bool
     filter_time: jnp.ndarray
+    filter_length: int
 
     def __init__(self, cross_coupling, filter_length, array_type):
         """
@@ -22,6 +23,7 @@ class Filter(module):
         super().__init__(array_type)
         self.cross_coupling = cross_coupling
         self.filter_time = jnp.arange(filter_length, dtype=array_type)
+        self.filter_length = filter_length
 
     def compute_filter(self, prng_state, compute_KL):
         """

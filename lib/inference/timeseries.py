@@ -22,7 +22,7 @@ class BatchedTimeSeries:
         :param np.ndarray timestamps: (ts,)
         :param np.ndarray covariates: (ts, x_dims)
         :param np.ndarray ISIs: (out_dims, ts, order)
-        :param np.ndarray observations: (out_dims, ts)
+        :param np.ndarray observations: includes filter history (out_dims, ts + filter_length)
         """
         pts = len(timestamps)
         
@@ -43,13 +43,22 @@ class BatchedTimeSeries:
         
     def load_batch(self, batch_index):
         t_inds = slice(batch_index*self.batch_size, (batch_index + 1)*self.batch_size)
-        y_inds = slice(batch_index*self.batch_size, (batch_index + 1)*self.batch_size + self.filter_length)
+        y_inds = slice(batch_index*self.batch_size + self.filter_length, 
+                       (batch_index + 1)*self.batch_size + self.filter_length)
         
         ts = self.timestamps[t_inds]
         xs = self.covariates[t_inds]
         deltas = self.ISIs[:, t_inds]
-        ys = self.observations[:, t_inds]
-        return ts, xs, deltas, ys
+        
+        ys = self.observations[:, y_inds]
+        if self.filter_length > 0:
+            filt_inds = slice(batch_index*self.batch_size, 
+                              (batch_index + 1)*self.batch_size + self.filter_length - 1)
+            ys_filt = self.observations[:, filt_inds]  # leave out last time step (causality)
+        else:
+            ys_filt = None
+            
+        return ts, xs, deltas, ys, ys_filt
     
     
     

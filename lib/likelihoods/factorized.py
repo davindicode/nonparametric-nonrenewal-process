@@ -124,7 +124,7 @@ class Gaussian(FactorizedLikelihood):
 #             dlambda_1, dlambda_2 = None, None
 
 
-class LogCoxProcess(FactorizedLikelihood):
+class PointProcess(FactorizedLikelihood):
     """
     The continuous-time point process with log intensity given by stochastic process
 
@@ -137,9 +137,11 @@ class LogCoxProcess(FactorizedLikelihood):
         self,
         neurons,
         dt,
+        link_type="log", 
         array_type=jnp.float32,
     ):
-        super().__init__(neurons, neurons, "none", array_type)
+        assert link_type in ["log", "softplus"]
+        super().__init__(neurons, neurons, link_type, array_type)
         self.dt = dt
 
     def log_likelihood(self, f, y):
@@ -149,6 +151,9 @@ class LogCoxProcess(FactorizedLikelihood):
         :return:
             log p(yₙ|fₙ), p(yₙ|fₙ) = Pʸ(1-P)⁽¹⁻ʸ⁾
         """
+        if self.link_type == "softplus":
+            f = safe_log(softplus(f))
+            
         return y * f - jnp.exp(f) * self.dt
 
     def sample_Y(self, prng_state, f):
@@ -159,7 +164,12 @@ class LogCoxProcess(FactorizedLikelihood):
         :returns:
             spike train of shape (obs_dims,)
         """
-        rate = jnp.maximum(jnp.exp(f) * self.dt, 1.)
+        if self.link_type == "softplus":
+            rho = softplus(f)
+        else:  # log
+            rho = jnp.exp(f)
+            
+        rate = jnp.maximum(rho * self.dt, 1.)
         return jr.bernoulli(prng_state, rate).astype(self.array_type)
 
 
