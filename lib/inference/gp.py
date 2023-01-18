@@ -283,11 +283,8 @@ class ModulatedRenewal(SparseGPFilterObservations):
                 
             log_modulator = f if self.renewal.link_type == 'log' else safe_log(
                 self.renewal.inverse_link(f))
-
-            log_renewal_density = self.renewal.log_density(t_since)
-            log_survival = self.renewal.log_survival(t_since)
-
-            log_rho_t = log_modulator + log_renewal_density - log_survival
+            log_hazard = self.renewal.log_hazard(t_since)
+            log_rho_t = log_modulator + log_hazard
             
             # generate spikes
             p_spike = jnp.minimum(jnp.exp(log_rho_t) * self.renewal.dt, 1.)  # approximate by discrete Bernoulli
@@ -329,11 +326,7 @@ class ModulatedRenewal(SparseGPFilterObservations):
                 t_since + self.renewal.dt, 
             )  # (num_samps, obs_dims)
 
-            # log hazard
-            log_renewal_density = self.renewal.log_density(t_since)
-            log_survival = self.renewal.log_survival(t_since)
-            log_hazard = log_renewal_density - log_survival
-            
+            log_hazard = self.renewal.log_hazard(t_since)
             return t_since, log_hazard
         
         init = ini_t_since
@@ -514,11 +507,8 @@ class RateRescaledRenewal(SparseGPFilterObservations):
                 
             rate = self.renewal.inverse_link(f)  # (num_samps, obs_dims)
             log_rate = f if self.renewal.link_type == 'log' else safe_log(rate)
-            
-            log_renewal_density = self.renewal.log_density(tau_since)
-            log_survival = self.renewal.log_survival(tau_since)
-
-            log_rho_t = log_rate + log_renewal_density - log_survival
+            log_hazard = self.renewal.log_hazard(tau_since)
+            log_rho_t = log_rate + log_hazard
             
             # generate spikes
             p_spike = jnp.minimum(jnp.exp(log_rho_t) * self.renewal.dt, 1.)  # approximate by discrete Bernoulli
@@ -617,11 +607,9 @@ class RateRescaledRenewal(SparseGPFilterObservations):
         _, tau_since_spike = vmap(self._rate_rescale, (0, 0, 0, None, None), (None, 0))(
             spikes, rates, ini_tau, False, True)  # (num_samps, ts, obs_dims)
         
-        log_renewal_density = self.renewal.log_density(tau_since_spike)
-        log_survival = self.renewal.log_survival(tau_since_spike)
-        
+        log_hazard = self.renewal.log_hazard(tau_since_spike)
         log_rates = pre_rates if self.renewal.link_type == 'log' else safe_log(rates)
-        log_rho_t = log_rates + (log_renewal_density - log_survival).transpose(0, 2, 1)
+        log_rho_t = log_rates + log_hazard.transpose(0, 2, 1)
         return log_rho_t  # (num_samps, out_dims, ts)
     
     

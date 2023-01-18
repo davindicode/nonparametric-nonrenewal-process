@@ -180,7 +180,7 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
 
 
 
-def observed_kernel_dict_induc_list(observations, num_induc, out_dims, covariates):
+def observed_kernel_dict_induc_list(rng, obs_covs, num_induc, out_dims, covariates):
     """
     Get kernel dictionary and inducing point locations for dataset covariates
     """
@@ -189,50 +189,50 @@ def observed_kernel_dict_induc_list(observations, num_induc, out_dims, covariate
     
     ones = np.ones(out_dims)
 
-    observations_comps = observations.split("-")
-    for comp in observations_comps:
+    obs_covs_comps = obs_covs.split("-")
+    for comp in obs_covs_comps:
         if comp == "":  # empty
             continue
 
         if comp == "hd":
-            induc_list += [np.linspace(0, 2 * np.pi, num_induc + 1)[:-1]]
+            induc_list += [np.linspace(0, 2 * np.pi, num_induc + 1)[None, :-1, None].repeat(out_dims, axis=0)]
             kernel_dicts += [
-                {"type": "circSE", "var": ones, "len": 5.0 * np.ones((out_dims, 1))}]
+                {"type": "circSE", "in_dims": 1, "var": ones, "len": 5.0 * np.ones((out_dims, 1))}]
             
         elif comp == "omega":
             scale = covariates["omega"].std()
-            induc_list += [scale * np.random.randn(num_induc)]
+            induc_list += [scale * rng.normal(size=(out_dims, num_induc, 1))]
             ls = scale * np.ones(out_dims)
             kernel_dicts += [
-                {"type": "SE", "var": ones, "len": 10.0 * np.ones((out_dims, 1))}]
+                {"type": "SE", "in_dims": 1, "var": ones, "len": 10.0 * np.ones((out_dims, 1))}]
             
         elif comp == "speed":
             scale = covariates["speed"].std()
-            induc_list += [np.random.uniform(0, scale, size=(num_induc,))]
+            induc_list += [rng.uniform(0, scale, size=(out_dims, num_induc, 1))]
             kernel_dicts += [
-                {"type": "SE", "var": ones, "len": scale * np.ones((out_dims, 1))}]
+                {"type": "SE", "in_dims": 1, "var": ones, "len": scale * np.ones((out_dims, 1))}]
             
         elif comp == "x":
             left_x = covariates["x"].min()
             right_x = covariates["x"].max()
-            induc_list += [np.random.uniform(left_x, right_x, size=(num_induc,))]
+            induc_list += [rng.uniform(left_x, right_x, size=(out_dims, num_induc, 1))]
             ls = (right_x - left_x) / 10.0
             kernel_dicts += [
-                {"type": "SE", "var": ones, "len": ls * np.ones((out_dims, 1))}]
+                {"type": "SE", "in_dims": 1, "var": ones, "len": ls * np.ones((out_dims, 1))}]
             
         elif comp == "y":
             bottom_y = covariates["y"].min()
             top_y = covariates["y"].max()
-            induc_list += [np.random.uniform(bottom_y, top_y, size=(num_induc,))]
+            induc_list += [rng.uniform(bottom_y, top_y, size=(out_dims, num_induc, 1))]
             ls = (top_y - bottom_y) / 10.0
             kernel_dicts += [
-                {"type": "SE", "var": ones, "len": ls * np.ones((out_dims, 1))}]
+                {"type": "SE", "in_dims": 1, "var": ones, "len": ls * np.ones((out_dims, 1))}]
             
         elif comp == "time":
             scale = covariates["time"].max()
-            induc_list += [np.linspace(0, scale, num_induc)]
+            induc_list += [np.linspace(0, scale, num_induc)[None, :, None].repeat(out_dims, axis=0)]
             kernel_dicts += [
-                {"type": "SE", "var": ones, "len": scale / 2.0 * np.ones((out_dims, 1))}]
+                {"type": "SE", "in_dims": 1, "var": ones, "len": scale / 2.0 * np.ones((out_dims, 1))}]
             
         else:
             raise ValueError("Invalid covariate type")

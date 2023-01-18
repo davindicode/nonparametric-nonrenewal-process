@@ -50,7 +50,7 @@ def _scaled_dist_Euclidean(X, Y, lengthscale, diagonal):
 
 
 
-def _square_scaled_dist_Cosine(X, Y, lengthscale, diagonal):
+def _scaled_dist_squared_Cosine(X, Y, lengthscale, diagonal):
     """
     2 * (1 - cos(d))
     
@@ -1285,9 +1285,11 @@ class Product(Kernel):
         assert len(dims_list) == len(kernels)
         in_dims = max([max(dl) for dl in dims_list]) + 1
         out_dims = kernels[0].out_dims
+        array_type = kernels[0].array_type
         for k in kernels[1:]:
             assert k.out_dims == out_dims
-        super().__init__(in_dims, out_dims)
+            assert k.array_type == array_type
+        super().__init__(in_dims, out_dims, array_type)
         self.kernels = kernels
         self.dims_list = dims_list
 

@@ -1,334 +1,281 @@
-import pickle
-
-import sys
+import argparse
 
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
 
-sys.path.append("../../neuroppl/")
-sys.path.append("../lib/")
+import gplvm_template
 
+import sys
+sys.path.append("..")
 
 import lib
-import neuroppl as nppl
-from neuroppl import utils
-
-from synthetic_data import max_Horder
 
 
-### data
-def get_dataset(datatype):
-    bin_size = 1
+def counts_dataset(session_name, bin_size, path, select_fracs=None):
+    filename = session_name + ".npz"
+    data = np.load(path + filename)
 
-    if datatype == 0:  # single neuron
-        dataname = "SN"
-
-    elif datatype == 1:  # head direction cell
-        dataname = "HDC"
-
-        data = np.load("../data/HDC_gamma.npz")
-        spktrain = data["spktrain"]
-        cov = data["cov"]
-        tbin = 0.001
-
-        units_used = spktrain.shape[0]
-        resamples = cov.shape[0]
-        cov_tuple = tuple(np.transpose(cov, (1, 2, 0))[..., None])
-
-        max_count = int(spktrain.max())
-        model_name = "syn{}_".format(dataname)
-        metainfo = ()
-
-    elif datatype == 2:  # place cells
-        dataname = "CA"
-
+    # select units
+    if data_type == "th1":
+        sel_unit = data["hdc_unit"]
     else:
-        raise ValueError
+        sel_unit = ~data["hdc_unit"]
+    neuron_regions = data["neuron_regions"][sel_unit]  # 1 is ANT, 0 is PoS
+    
+    # spike counts
+    spktrain = data["spktrain"][sel_unit, :]
+    sample_bin = data["tbin"]  # s
+    #sample_bin = 0.001
+    track_samples = spktrain.shape[1]
+            
+    # cut out section
+    if select_fracs is None:
+        select_fracs = [0., 1.]
+    t_ind = start_time
+    
+    # covariates
+    x_t = data["x_t"]
+    y_t = data["y_t"]
+    hd_t = data["hd_t"]
 
-    return (
-        cov_tuple,
-        units_used,
-        tbin,
-        resamples,
-        spktrain,
-        max_count,
+    tbin, resamples, rc_t, (rhd_t, rx_t, ry_t) = utils.neural.bin_data(
         bin_size,
-        metainfo,
-        model_name,
+        sample_bin,
+        spktrain,
+        track_samples,
+        (np.unwrap(hd_t), x_t, y_t),
+        average_behav=True,
+        binned=True,
     )
 
+    # recompute velocities
+    rw_t = (rhd_t[1:] - rhd_t[:-1]) / tbin
+    rw_t = np.concatenate((rw_t, rw_t[-1:]))
 
-### model
-def inputs_used_(datatype, x_mode, z_mode, cov_tuple, batch_info, tensor_type):
+    rvx_t = (rx_t[1:] - rx_t[:-1]) / tbin
+    rvy_t = (ry_t[1:] - ry_t[:-1]) / tbin
+    rs_t = np.sqrt(rvx_t**2 + rvy_t**2)
+    rs_t = np.concatenate((rs_t, rs_t[-1:]))
+    
+    timestamps = np.arange(resamples) * tbin
+
+    rcov = {
+        "hd": rhd_t % (2 * np.pi),
+        "omega": rw_t,
+        "speed": rs_t,
+        "x": rx_t,
+        "y": ry_t,
+        "time": timestamps,
+    }
+
+    metainfo = {
+        "neuron_regions": neuron_regions,
+    }
+    name = data_type
+    units_used = rc_t.shape[0]
+    max_count = int(rc_t.max())
+
+    # export
+    props = {
+        "max_count": max_count,
+        "tbin": tbin,
+        "name": name,
+        "neurons": units_used,
+        "metainfo": metainfo,
+    }
+    
+    dataset_dict = {
+        "covariates": rcov,
+        "ISIs": ISIs, 
+        "spiketrains": rc_t,
+        "timestamps": timestamps,
+        "properties": props, 
+    }
+    return dataset_dict
+
+
+def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
     """
-    Create the used covariates list.
+    :param int max_ISI_order: selecting the starting time based on the 
+                              given ISI lag for which it is defined by data
+    :param List select_fracs: boundaries for data subselection based on covariates timesteps
     """
-    timesamples = cov_tuple[0].shape[0]
-    b = [torch.from_numpy(b) for b in cov_tuple]
-    if datatype == 0:
-        I_t, isi = b
-    elif datatype == 1:
-        hd_t, isi1, isi2, isi3, isi4, isi5 = b
-    elif datatype == 2:
-        x_t, y_t, th_t, isi = b
+    assert len(select_fracs) == 2
+    filename = session_name + ".npz"
+    data = np.load(path + filename)
+    
+    # spikes
+    spktrain = data["spktrain"]
+    spktrain[spktrain > 1.0] = 1.0  # ensure binary train
+    tbin = data["tbin"]  # seconds
+    track_samples = spktrain.shape[1]
+    
+    # ISIs
+    ISIs = data["ISIs"][..., :max_ISI_order]  # (ts, neurons, order)
+    order_computed_at = np.empty_like(ISIs[0, :, 0]).astype(int)
+    for n in range(order_computed_at.shape[0]):
+        order_computed_at[n] = np.where(
+            ISIs[:, n, max_ISI_order-1] == ISIs[:, n, max_ISI_order-1])[0][0]
+            
+    # cut out start of covariates based on ISIs, leave spike trains
+    start_ind_covariates = max(order_computed_at)
+    valid_samples = track_samples - start_ind_covariates
+    start = start_ind_covariates + int(valid_samples * select_fracs[0])
+    end = start_ind_covariates + int(valid_samples * select_fracs[1])
+    cov_timesamples = end - start
+    subselect = slice(start, end)
+    
+    # covariates
+    x_t = data["x_t"][subselect]
+    y_t = data["y_t"][subselect]
+    theta_t = data["theta_t"][subselect]
 
-    # x
-    if x_mode[:-1] == "hd-isi":
-        H_isi = int(x_mode[-1])
-        input_data = [hd_t]
-        for h in range(-max_Horder, -max_Horder + H_isi):
-            input_data += [b[h]]
+    # compute velocities
+    vx_t = (x_t[1:] - x_t[:-1]) / tbin
+    vy_t = (y_t[1:] - y_t[:-1]) / tbin
+    s_t = np.sqrt(vx_t**2 + vy_t**2)
+    s_t = np.concatenate((s_t, s_t[-1:]))
+    
+    timestamps = np.arange(start, end) * tbin
 
-    elif x_mode == "hd":
-        input_data = [hd_t]
+    rcov = {
+        "theta": theta_t % (2 * np.pi),
+        "speed": s_t,
+        "x": x_t,
+        "y": y_t,
+        "time": timestamps,
+    }
 
-    elif x_mode[:-1] == "th-pos-isi":
-        H_isi = int(x_mode[-1])
-        input_data = [th_t, x_t, y_t]
-        for h in range(-max_Horder, -max_Horder + H_isi):
-            input_data += [b[h]]
+    metainfo = {}
+    name = session_name + "ISI{}".format(max_ISI_order) + "sel{}to{}".format(*select_fracs)
+    units_used = spktrain.shape[0]
+    
+    # export
+    props = {
+        "tbin": tbin,
+        "name": name,
+        "neurons": units_used,
+        "metainfo": metainfo,
+    }
+    
+    dataset_dict = {
+        "covariates": rcov,
+        "ISIs": ISIs, 
+        "spiketrains": spktrain,
+        "timestamps": timestamps,
+        "align_start_ind": start, 
+        "properties": props, 
+    }
+    return dataset_dict
 
-    elif x_mode == "I":
-        input_data = [nppl.inference.filtered_input()]
-
-    elif x_mode == "":
-        input_data = []
-
-    else:
-        raise ValueError
-
-    d_x = len(input_data)
-
-    latents, d_z = lib.helper.latent_objects(z_mode, d_x, timesamples, tensor_type)
-    input_data += latents
-    return input_data, d_x, d_z
 
 
-def enc_used_(
-    datatype,
-    map_mode,
-    ll_mode,
-    x_mode,
-    z_mode,
-    cov_tuple,
-    in_dims,
-    inner_dims,
-    jitter,
-    tensor_type,
-):
-    """ """
 
-    def get_angle_dims(x_mode, z_mode):
-        angle_dims = []
-        if x_mode[:-1] == "hd-isi":
-            angle_dims += [0]
-        return angle_dims
+def observed_kernel_dict_induc_list(rng, observations, num_induc, out_dims, covariates):
+    """
+    Get kernel dictionary and inducing point locations for dataset covariates
+    """
+    induc_list = []
+    kernel_dicts = []
+    
+    ones = np.ones(out_dims)
 
-    def kernel_used_(
-        datatype, x_mode, z_mode, cov_tuple, num_induc, out_dims, var, tensor_type
-    ):
-        """
-        Get kernel and inducing points
-        """
-        if datatype == 0:
-            I_t, isi = cov_tuple
+    observations_comps = observations.split("-")
+    for comp in observations_comps:
+        if comp == "":  # empty
+            continue
 
-        elif datatype == 1:
-            hd_t, isi1, isi2, isi3, isi4, isi5 = cov_tuple
-
-            l_ang = 3.0 * np.ones(out_dims)
-
-        elif datatype == 2:
-            x_t, y_t, th_t, isi = cov_tuple
-
-            left_x = x_t.min()
-            right_x = x_t.max()
-            bottom_y = y_t.min()
-            top_y = y_t.max()
-
-        v = var * torch.ones(out_dims)
-
-        l_ISI = 2.0 * np.ones(out_dims)
-        tau_0 = 5.0 * np.ones((out_dims, max_Horder))
-        # tau_0 = np.empty((out_dims, max_Horder))
-        # for k in range(1, max_Horder+1):
-        # tau_0[:, -k] = cov_tuple[-k].mean(1)[:, 0]
-
-        # x
-        if x_mode[:-1] == "hd-isi":
-            H_isi = int(x_mode[-1])
-            ind_list = [np.linspace(0, 2 * np.pi, num_induc + 1)[:-1]]
-            for h in range(H_isi):
-                ind_list += [
-                    np.random.uniform(0.0, tau_0[:, h].mean(), size=(num_induc,))
-                ]
-
-            kernel_tuples = [
-                ("variance", v),
-                ("RBF", "torus", torch.tensor([l_ang])),
-                ("tRBF", "euclid", torch.tensor([l_ISI] * H_isi), tau_0[:, :H_isi].T),
-            ]
-
-        elif x_mode == "hd":
-            ind_list = [np.linspace(0, 2 * np.pi, num_induc + 1)[:-1]]
-
-            kernel_tuples = [("variance", v), ("RBF", "torus", torch.tensor([l_ang]))]
-
-        elif x_mode[:-1] == "th-pos-isi":
-            H_isi = int(x_mode[-1])
-
-            ind_list = [
-                np.linspace(0, 2 * np.pi, num_induc + 1)[:-1],
-                np.random.uniform(left_x, right_x, size=(num_induc,)),
-                np.random.uniform(bottom_y, top_y, size=(num_induc,)),
-            ]
-            for h in range(H_isi):
-                ind_list += [
-                    np.random.uniform(0.0, tau_0[:, h].mean(), size=(num_induc,))
-                ]
-
-            kernel_tuples = [
-                ("variance", v),
-                ("RBF", "torus", torch.tensor([l_ang])),
-                ("RBF", "euclid", torch.tensor([l, l])),
-                ("RBF", "euclid", torch.tensor([l_ISI] * H_isi)),
-            ]
-
-        elif x_mode == "":  # for GP filters
-            ind_list = []
-            kernel_tuples = [("variance", v)]
-
+        if comp == "theta":
+            induc_list += [np.linspace(0, 2 * np.pi, num_induc + 1)[None, :-1, None].repeat(out_dims, axis=0)]
+            kernel_dicts += [
+                {"type": "circSE", "in_dims": 1, "var": ones, "len": 5.0 * np.ones((out_dims, 1))}]
+            
+        elif comp == "speed":
+            scale = covariates["speed"].std()
+            induc_list += [rng.uniform(0, scale, size=(out_dims, num_induc, 1))]
+            kernel_dicts += [
+                {"type": "SE", "in_dims": 1, "var": ones, "len": scale * np.ones((out_dims, 1))}]
+            
+        elif comp == "x":
+            left_x = covariates["x"].min()
+            right_x = covariates["x"].max()
+            induc_list += [rng.uniform(left_x, right_x, size=(out_dims, num_induc, 1))]
+            ls = (right_x - left_x) / 10.0
+            kernel_dicts += [
+                {"type": "SE", "in_dims": 1, "var": ones, "len": ls * np.ones((out_dims, 1))}]
+            
+        elif comp == "y":
+            bottom_y = covariates["y"].min()
+            top_y = covariates["y"].max()
+            induc_list += [rng.uniform(bottom_y, top_y, size=(out_dims, num_induc, 1))]
+            ls = (top_y - bottom_y) / 10.0
+            kernel_dicts += [
+                {"type": "SE", "in_dims": 1, "var": ones, "len": ls * np.ones((out_dims, 1))}]
+            
+        elif comp == "time":
+            scale = covariates["time"].max()
+            induc_list += [np.linspace(0, scale, num_induc)[None, :, None].repeat(out_dims, axis=0)]
+            kernel_dicts += [
+                {"type": "SE", "in_dims": 1, "var": ones, "len": scale / 2.0 * np.ones((out_dims, 1))}]
+            
         else:
-            raise ValueError
+            raise ValueError("Invalid covariate type")
 
-        # z
-        latent_k, latent_u = lib.helper.latent_kernel(z_mode)
-        kernel_tuples += latent_k
-        ind_list += latent_u
-
-        # objects
-        kernelobj, constraints = lib.helper.create_kernel(
-            kernel_tuples, "exp", tensor_type
-        )
-
-        Xu = torch.tensor(ind_list).T[None, ...].repeat(out_dims, 1, 1)
-        inpd = Xu.shape[-1]
-        inducing_points = nppl.kernels.kernel.inducing_points(
-            out_dims, Xu, constraints, tensor_type=tensor_type
-        )
-
-        return kernelobj, inducing_points
-
-    if map_mode[:4] == "svgp":
-        num_induc = int(map_mode[4:])
-
-        mean = (
-            0 if ll_mode == "U" else torch.zeros((inner_dims))
-        )  # not learnable vs learnable
-        learn_mean = ll_mode != "U"
-
-        var = 1.0  # initial kernel variance
-        kernelobj, inducing_points = kernel_used_(
-            datatype, x_mode, z_mode, cov_tuple, num_induc, inner_dims, var, tensor_type
-        )
-
-        mapping = nppl.mappings.SVGP(
-            in_dims,
-            inner_dims,
-            kernelobj,
-            inducing_points=inducing_points,
-            jitter=jitter,
-            whiten=True,
-            mean=mean,
-            learn_mean=learn_mean,
-            tensor_type=tensor_type,
-        )
-
-        # heteroscedastic likelihoods
-        if ll_mode[0] == "h":
-            kernelobj, inducing_points = kernel_used_(
-                datatype,
-                x_mode,
-                z_mode,
-                cov_tuple,
-                num_induc,
-                inner_dims,
-                var,
-                tensor_type,
-            )
-
-            hgp = nppl.mappings.SVGP(
-                in_dims,
-                inner_dims,
-                kernelobj,
-                inducing_points=inducing_points,
-                jitter=jitter,
-                whiten=True,
-                mean=torch.zeros((inner_dims)),
-                learn_mean=True,
-                tensor_type=tensor_type,
-            )
-
-        else:
-            hgp = None
-
-    elif map_mode == "ffnn":
-        enc = lib.rnn.enc_model(layers, angle_dims, hist_len, in_dims, neurons, nonlin)
-        ffnn = nppl.mappings.FFNN(
-            input_dim,
-            out_dims,
-            mu_ANN,
-            sigma_ANN=None,
-            tensor_type=torch.float,
-            active_dims=None,
-        )
-        mapping = lib.helper.ANN(enc, ffnn)
-
-        if ll_mode[0] == "h":  # heteroscedastic likelihoods
-            enc = lib.rnn.enc_model(
-                layers, angle_dims, hist_len, in_dims, neurons, nonlin
-            )
-            ffnn = nppl.mappings.FFNN(
-                input_dim,
-                out_dims,
-                mu_ANN,
-                sigma_ANN=None,
-                tensor_type=torch.float,
-                active_dims=None,
-            )
-            hgp = lib.helper.ANN(enc, ffnn)
-
-        else:
-            hgp = None
-
-    elif map_mode == "rnn":
-        encoder = lib.rnn.enc_used()
-        mapping = lib.rnn.cumul_RNN()
-
-    else:
-        raise ValueError
-
-    return mapping, hgp
+    return kernel_dicts, induc_list
 
 
-### main
+
+def gen_name(parser_args, dataset_dict):
+
+    name = dataset_dict["properties"]["name"] + "_{}_{}_{}_X[{}]_Z[{}]".format(
+        parser_args.likelihood,
+        parser_args.filter_type,
+        parser_args.observations,
+        parser_args.observed_covs,
+        parser_args.latent_covs,
+        #parser_args.bin_size,
+    )
+    return name
+
+
+
 def main():
-    parser = lib.models.standard_parser(
-        "%(prog)s [OPTION] [FILE]...", "Fit model to data."
-    )
-    parser.add_argument("--datatype", type=int)
+    parser = argparse.ArgumentParser("%(prog)s [options]", "Fit model to data")
+    subparsers = parser.add_subparsers(dest="datatype")
+    
+    parser_counts = subparsers.add_parser("counts", help="Fit model to count data.")
+    parser_spikes = subparsers.add_parser("spikes", help="Fit model to spikes data.")
+    
+    parser_counts = gplvm_template.standard_parser(parser_counts)
+    parser_spikes = gplvm_template.standard_parser(parser_spikes)
+    
+    parser_counts.add_argument("--data_path", action="store", type=str)
+    parser_counts.add_argument("--session_name", action="store", type=str)
+    parser_counts.add_argument("--select_fracs", default=[0., 1.], nargs="+", type=float)
+    parser_counts.add_argument("--bin_size", default=10, type=int)
+
+    parser_spikes.add_argument("--data_path", action="store", type=str)
+    parser_spikes.add_argument("--session_name", action="store", type=str)
+    parser_spikes.add_argument("--select_fracs", default=[0., 1.], nargs="+", type=float)
+    parser_spikes.add_argument("--max_ISI_order", default=3, type=int)
+    
     args = parser.parse_args()
 
-    dev = utils.pytorch.get_device(gpu=args.gpu)
-
-    datatype = args.datatype
-    dataset_tuple = get_dataset(datatype)
-    inputs_used = lambda *args: inputs_used_(datatype, *args)
-    enc_used = lambda *args: enc_used_(datatype, *args)
-
-    lib.models.training(dev, args, dataset_tuple, inputs_used, enc_used)
+    print("Loading data...")
+    if args.datatype == 'counts':
+        assert args.observations.split("-")[0] == 'factorized_gp'
+        dataset_dict = counts_dataset(
+            args.session_name, args.data_path, args.bin_size, args.select_fracs
+        )
+    elif args.datatype == 'spikes':
+        dataset_dict = spikes_dataset(
+            args.session_name, args.data_path, args.max_ISI_order, args.select_fracs
+        )
+    else:
+        raise ValueError
+    
+    print("Setting up model...")
+    save_name = gen_name(args, dataset_dict)
+    gplvm_template.fit(args, dataset_dict, observed_kernel_dict_induc_list, save_name)
 
 
 if __name__ == "__main__":

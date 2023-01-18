@@ -180,7 +180,7 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
 
 
 
-def observed_kernel_dict_induc_list(observations, num_induc, out_dims, covariates):
+def observed_kernel_dict_induc_list(obs_covs, num_induc, out_dims, covariates):
     """
     Get kernel dictionary and inducing point locations for dataset covariates
     """
@@ -189,8 +189,8 @@ def observed_kernel_dict_induc_list(observations, num_induc, out_dims, covariate
     
     ones = np.ones(out_dims)
 
-    observations_comps = observations.split("-")
-    for comp in observations_comps:
+    obs_covs_comps = obs_covs.split("-")
+    for comp in obs_covs_comps:
         if comp == "":  # empty
             continue
 
@@ -199,12 +199,10 @@ def observed_kernel_dict_induc_list(observations, num_induc, out_dims, covariate
             kernel_dicts += [
                 {"type": "circSE", "var": ones, "len": 5.0 * np.ones((out_dims, 1))}]
             
-        elif comp == "omega":
-            scale = covariates["omega"].std()
-            induc_list += [scale * np.random.randn(num_induc)]
-            ls = scale * np.ones(out_dims)
+        elif comp == "theta":
+            induc_list += [np.linspace(0, 2 * np.pi, num_induc + 1)[:-1]]
             kernel_dicts += [
-                {"type": "SE", "var": ones, "len": 10.0 * np.ones((out_dims, 1))}]
+                {"type": "circSE", "var": ones, "len": 5.0 * np.ones((out_dims, 1))}]
             
         elif comp == "speed":
             scale = covariates["speed"].std()

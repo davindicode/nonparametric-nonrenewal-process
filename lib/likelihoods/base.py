@@ -322,6 +322,9 @@ class RenewalLikelihood(Likelihood):
 
     def log_survival(self, ISI):
         return safe_log(1.0 - self.cum_density(ISI))
+    
+    def log_hazard(self, ISI):
+        return self.log_density(ISI) - self.log_survival(ISI)
 
     def shape_scale(self):
         raise NotImplementedError

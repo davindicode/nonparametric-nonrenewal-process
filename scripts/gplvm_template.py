@@ -101,7 +101,7 @@ def select_inputs(dataset_dict, observed_covs, likelihood):
 
 
 ### kernel ###
-def covariate_kernel(kernel_dicts, array_type):
+def covariate_kernel(kernel_dicts, f_dims, array_type):
     """
     Helper function for creating kernel triplet tuple
     """
@@ -113,7 +113,7 @@ def covariate_kernel(kernel_dicts, array_type):
         var_f = k_dict["var"]  # kernel variance (f_dims,)
         
         act = []
-        for _ in lengthscales:
+        for _ in range(k_dict["in_dims"]):
             act += [track_dims]
             track_dims += 1
         dims_list.append(act)
@@ -135,11 +135,11 @@ def covariate_kernel(kernel_dicts, array_type):
             len_fx = k_dict["len"]  # kernel lengthscale (f_dims, x_dims)
             
             if kernel_type == "SE":
-                kern = lib.GP.kernels.SquaredExponential(
+                krn = lib.GP.kernels.SquaredExponential(
                     f_dims, var_f, len_fx, metric_type='Euclidean', array_type=array_type)
 
             elif kernel_type == "circSE":
-                kern = lib.GP.kernels.SquaredExponential(
+                krn = lib.GP.kernels.SquaredExponential(
                     f_dims, var_f, len_fx, metric_type='Cosine', array_type=array_type)
 
             elif kernel_type == "RQ":
@@ -171,7 +171,7 @@ def covariate_kernel(kernel_dicts, array_type):
 
 
 
-def ISI_kernel_dict_induc_list(isi_order, num_induc, out_dims):
+def ISI_kernel_dict_induc_list(rng, isi_order, num_induc, out_dims):
     """
     Kernel for time since spike and ISI dimensions
     
@@ -183,28 +183,29 @@ def ISI_kernel_dict_induc_list(isi_order, num_induc, out_dims):
     ones = np.ones(out_dims)
 
     for _ in range(isi_order - 1):  # first time to spike handled by SSGP
-        induc_list += [np.random.randn(num_induc)]
+        induc_list += [rng.normal(size=(out_dims, num_induc, 1))]
         kernel_tuples += [
-            {"type": "SE", "var": ones, "len": np.ones((out_dims, 1))}]
+            {"type": "SE", "in_dims": 1, "var": ones, "len": np.ones((out_dims, 1))}]
 
     return kernel_dicts, induc_list
 
 
-def latent_kernel_dict_induc_list(latent_covs, num_induc, out_dims):
+def latent_kernel_dict_induc_list(rng, latent_covs, num_induc, out_dims):
     """
     Construct kernel tuples for latent space
     """
     latent_covs_comps = latent_covs.split("-")
-
+    
     induc_list = []
     kernel_dicts = []
 
-    for zc in latent_covs_comps:
-        d_z = int(zc.split("d")[-1])
-        induc_list += [np.random.randn(num_induc)] * d_z
-        ls = np.ones((out_dims, d_z))
-        var = np.ones(d_z)
-        kernel_dicts += [{"type": "SE", "var": var, "len": ls}]
+    if latent_covs_comps[0] != "":
+        for zc in latent_covs_comps:
+            d_z = int(zc.split("d")[-1])
+            induc_list += [rng.normal(size=(out_dims, num_induc, d_z))]
+            ls = np.ones((out_dims, d_z))
+            var = np.ones(d_z)
+            kernel_dicts += [{"type": "SE", "in_dims": d_z, "var": var, "len": ls}]
 
     return kernel_dicts, induc_list
 
@@ -218,9 +219,13 @@ def compactify_kernel_dicts(kernel_dicts, concat_params):
     for kd in kernel_dicts[1:]:
         if kd["type"] == compact_kernel_dicts[-1]["type"]:
             for name in concat_params:
-                compact_kernel_dicts[-1][names] = np.concatenate(
-                    [compact_kernel_dicts[-1][name], kd[name]], axis=-1
+                recent_dict = compact_kernel_dicts[-1]
+                recent_dict[name] = np.concatenate(
+                    [recent_dict[name], kd[name]], axis=-1
                 )
+                
+            recent_dict["in_dims"] += kd["in_dims"]
+            
         else:
             compact_kernel_dicts += [kd]
     
@@ -228,7 +233,7 @@ def compactify_kernel_dicts(kernel_dicts, concat_params):
 
 
 
-def build_kernel(observations, f_dims, isi_order, gen_obs_kernel_induc_func):
+def build_kernel(rng, observations, observed_covs, latent_covs, f_dims, isi_order, gen_obs_kernel_induc_func, array_type):
     """
     Assemble the kernel components
     """
@@ -238,31 +243,31 @@ def build_kernel(observations, f_dims, isi_order, gen_obs_kernel_induc_func):
     kernel_dicts, induc_list = [], []
 
     if observations_comps[0] == "nonparam_pp_gp":  # ISIs
-        kernel_dicts_isi, induc_list_isi = ISI_kernel_dict_induc_list(isi_order, num_induc, f_dims)
+        kernel_dicts_isi, induc_list_isi = ISI_kernel_dict_induc_list(rng, isi_order, num_induc, f_dims)
         kernel_dicts += kernel_dicts_isi
         induc_list += induc_list_isi
 
     # observations
-    obs_kernel_dicts, obs_induc_list = gen_obs_kernel_induc_func(observations, num_induc, f_dims)
+    obs_kernel_dicts, obs_induc_list = gen_obs_kernel_induc_func(rng, observed_covs, num_induc, f_dims)
     kernel_dicts += obs_kernel_dicts
     induc_list += obs_induc_list
 
     # latent
-    kernel_dicts_lat, induc_list_lat = latent_kernel(latent_covs, num_induc, f_dims)
+    kernel_dicts_lat, induc_list_lat = latent_kernel_dict_induc_list(rng, latent_covs, num_induc, f_dims)
     kernel_dicts += kernel_dicts_lat
     induc_list += induc_list_lat
 
     # product kernel
     kernel_dicts = compactify_kernel_dicts(kernel_dicts, ["len"])
-    kernel_list, dims_list = covariates_kernel_list(kernel_dicts, array_type)
+    kernel_list, dims_list = covariate_kernel(kernel_dicts, f_dims, array_type)
     cov_kernel = lib.GP.kernels.Product(kernel_list, dims_list)
-    induc_locs = np.array(induc_list)  # (f_dims, num_induc, x_dims)
+    induc_locs = np.concatenate(induc_list, axis=-1)  # (f_dims, num_induc, x_dims)
     return cov_kernel, induc_locs
 
 
 
 ### observation models ###
-def build_spikefilters(filter_type):                   
+def build_spikefilters(rng, filter_type):                   
     """
     Create the spike coupling object.
     
@@ -348,15 +353,15 @@ def build_spikefilters(filter_type):
         ini_var = 1.
         if filter_type[:4] == 'full':
             phi_h = np.linspace(0., L, B)[:, None, None].repeat(1, neurons, neurons)
-            w_h = np.sqrt(ini_var) * np.random.randn(B, neurons, neurons)
+            w_h = np.sqrt(ini_var) * rng.normal(size=(B, neurons, neurons))
 
         elif filter_type[:4] == 'self':
             phi_h = np.linspace(0., L, B)[:, None].repeat(1, neurons)
-            w_h = np.sqrt(ini_var) * np.random.randn(B, neurons)
+            w_h = np.sqrt(ini_var) * rng.normal(size=(B, neurons))
             
         a = np.ones((2, neurons, neurons))
         c = np.ones((2, neurons, neurons))
-        w_h = np.random.randn(2, neurons, neurons)
+        w_h = rng.normal(size=(2, neurons, neurons))
         phi_h = np.ones((2, neurons, neurons))
 
         flt = lib.filters.FIR.RaisedCosineBumps(
@@ -366,8 +371,6 @@ def build_spikefilters(filter_type):
             phi_h, 
             filter_length,
         )
-        flt = lib.filters.RaisedCosineBumps(a=a, c=c, phi=phi_h, w=w_h, timesteps=hist_len+1, 
-                                                                   learnable=[False, False, False, True], tensor_type=tensor_type)
         
     else:
         raise ValueError
@@ -376,7 +379,8 @@ def build_spikefilters(filter_type):
 
 
 
-def build_factorized_gp(gen_obs_kernel_induc_func, observations, likelihood, tbin, obs_dims, obs_filter, jitter, array_type):
+def build_factorized_gp(rng, gen_obs_kernel_induc_func, observed_covs, latent_covs, 
+                        observations, likelihood, tbin, obs_dims, obs_filter, jitter, array_type):
     """
     Build models with likelihoods that factorize over time steps
     """
@@ -450,19 +454,20 @@ def build_factorized_gp(gen_obs_kernel_induc_func, observations, likelihood, tbi
     
     # kernel
     f_dims = likelihood.f_dims
-    kernel, induc_locs = build_kernel(observations, f_dims, 0, gen_obs_kernel_induc_func)
+    kernel, induc_locs = build_kernel(
+        rng, observations, observed_covs, latent_covs, f_dims, 0, gen_obs_kernel_induc_func, array_type)
     x_dims = kernel.in_dims
     f_dims = kernel.out_dims
     
     # SVGP
     RFF_num_feats = int(observations.split("-")[2])
     num_induc = induc_locs.shape[1]
-    u_mu = 1. + 0.*np.random.randn(prng_state, shape=(f_dims, num_induc, 1))
+    u_mu = 1. + 0.*rng.normal(size=(f_dims, num_induc, 1))
     u_Lcov = 0.01*np.eye(num_induc)[None, ...].repeat(f_dims, axis=0)
     
     gp_mean = np.zeros(f_dims)
     svgp = lib.GP.sparse.qSVGP(kernel, induc_locs, u_mu, u_Lcov, 
-                               RFF_num_feats=RFF_num_feats, array_type=array_type)
+                               RFF_num_feats=RFF_num_feats)
 
     # model
     model = lib.inference.gp.ModulatedFactorized(svgp, gp_mean, likelihood, spikefilter=obs_filter)
@@ -470,7 +475,8 @@ def build_factorized_gp(gen_obs_kernel_induc_func, observations, likelihood, tbi
 
 
 
-def build_renewal_gp(gen_obs_kernel_induc_func, observations, renewal_type, dt, obs_dims, obs_filter, 
+def build_renewal_gp(rng, gen_obs_kernel_induc_func, observed_covs, latent_covs, 
+                     observations, renewal_type, dt, obs_dims, obs_filter, 
                      model_type, jitter, array_type):
     """
     Build models based on renewal densities
@@ -504,19 +510,20 @@ def build_renewal_gp(gen_obs_kernel_induc_func, observations, renewal_type, dt, 
         raise ValueError('Invalid renewal likelihood')
         
     # kernel
-    kernel, induc_locs = build_kernel(observations, obs_dims, 0, gen_obs_kernel_induc_func)
+    kernel, induc_locs = build_kernel(
+        rng, observed_covs, latent_covs, obs_dims, 0, gen_obs_kernel_induc_func, array_type)
     x_dims = kernel.in_dims
     f_dims = kernel.out_dims
     
     # SVGP
     RFF_num_feats = int(observations.split("-")[2])
     num_induc = induc_locs.shape[1]
-    u_mu = 1. + 0.*np.random.randn(prng_state, shape=(f_dims, num_induc, 1))
+    u_mu = 1. + 0.*rng.normal(size=(f_dims, num_induc, 1))
     u_Lcov = 0.01*np.eye(num_induc)[None, ...].repeat(f_dims, axis=0)
     
     gp_mean = np.zeros(f_dims)
     svgp = lib.GP.sparse.qSVGP(kernel, induc_locs, u_mu, u_Lcov, 
-                               RFF_num_feats=RFF_num_feats, array_type=array_type)
+                               RFF_num_feats=RFF_num_feats)
 
     Kzz = svgp.kernel.K(svgp.induc_locs, None, False)
     lambda_1, chol_Lambda_2 = lib.GP.sparse.t_from_q_svgp_moments(Kzz, u_mu, u_Lcov)
@@ -535,7 +542,8 @@ def build_renewal_gp(gen_obs_kernel_induc_func, observations, renewal_type, dt, 
 
 
 
-def build_nonparametric(gen_obs_kernel_induc_func, observations, likelihood, dt, obs_dims, 
+def build_nonparametric(rng, gen_obs_kernel_induc_func, observed_covs, latent_covs, 
+                        observations, likelihood, dt, obs_dims, 
                         ss_kernel, spatial_MF, fixed_grid_locs, 
                         jitter, array_type):
     """
@@ -545,18 +553,6 @@ def build_nonparametric(gen_obs_kernel_induc_func, observations, likelihood, dt,
     :param float dt: time bin size for spike train data
     """
     x_dims = ss_kernel.out_dims
-#     if len(kernel_list) == 0:  # not modulated
-#         Tsteps = 1000
-
-#         site_locs = np.linspace(0., 1., Tsteps)[None, :].repeat(x_dims, axis=0)  # s
-#         site_obs = 0. * np.ones([x_dims, Tsteps, 1]) + 0*np.random.randn(x_dims, Tsteps, 1)
-#         site_Lcov = 1. * np.ones([x_dims, Tsteps, 1]) + 0*np.random.randn(x_dims, Tsteps, 1)
-
-          # SSGP
-#         gp = lib.GP.markovian.MultiOutputLTI(
-#             ss_kernel, site_locs, site_obs, site_Lcov, fixed_grid_locs=True)
-    
-#     else:
 
     # kernels
     observations_comps = observations.split("-")
@@ -581,7 +577,8 @@ def build_nonparametric(gen_obs_kernel_induc_func, observations, likelihood, dt,
         raise ValueError
     
     isi_order = int(likelihood[3:])
-    kernel, induc_locs = build_kernel(observations, obs_dims, isi_order, gen_obs_kernel_induc_func)
+    kernel, induc_locs = build_kernel(
+        rng, observed_covs, latent_covs, obs_dims, isi_order, gen_obs_kernel_induc_func, array_type)
     assert x_dims == kernel.in_dims
     f_dims = kernel.out_dims
     
@@ -591,7 +588,7 @@ def build_nonparametric(gen_obs_kernel_induc_func, observations, likelihood, dt,
     num_induc = num_induc_sp * num_induc_t
     
     site_locs = np.linspace(0., 1., num_induc_t)[None, :].repeat(f_dims, axis=0)
-    site_obs = 0.1 * np.random.randn(f_dims, num_induc_t, num_induc_sp, 1)
+    site_obs = 0.1 * rng.normal(size=(f_dims, num_induc_t, num_induc_sp, 1))
     site_Lcov = 0.1 * np.eye(num_induc_sp)[None, None, ...].repeat(
         num_induc_t, axis=1).repeat(f_dims, axis=0)
 
@@ -662,7 +659,7 @@ class GPLVM(module):
 
 
 
-def setup_latents(d_x, latent_covs, site_lims, array_type):
+def setup_latents(rng, d_x, latent_covs, site_lims, array_type):
     """
     latent covariates
     """
@@ -706,8 +703,8 @@ def setup_latents(d_x, latent_covs, site_lims, array_type):
 
                 N = np.ones(d_s)[None]
                 R = np.eye(d_s)[None]
-                H = np.random.randn(d_z, d_s)[None] / np.sqrt(d_s)
-                Lam = np.random.randn(d_s, d_s)[None] / np.sqrt(d_s)
+                H = rng.normal(size=(d_z, d_s))[None] / np.sqrt(d_s)
+                Lam = rng.normal(size=(d_s, d_s))[None] / np.sqrt(d_s)
 
                 ss_kernels.append(lib.GP.kernels.LEG(N, R, H, Lam))
 
@@ -723,7 +720,7 @@ def setup_latents(d_x, latent_covs, site_lims, array_type):
 
             # site_init
             Tsteps = len(site_locs)
-            site_obs = 0. * np.ones([Tsteps, tot_d_z, 1]) + 0*np.random.randn(Tsteps, tot_d_z, 1)
+            site_obs = 0. * np.ones([Tsteps, tot_d_z, 1]) + 0*rng.normal(size=(Tsteps, tot_d_z, 1))
             site_Lcov = 1. * np.eye(tot_d_z)[None, ...].repeat(Tsteps, axis=0)
 
             ssgp = lib.GP.markovian.GaussianLTI(
@@ -744,7 +741,7 @@ def setup_latents(d_x, latent_covs, site_lims, array_type):
 
 
 def setup_observations(
-    gen_obs_kernel_induc_func, likelihood, filter_type, observations, 
+    rng, gen_obs_kernel_induc_func, likelihood, filter_type, observations, 
     observed_covs, latent_covs, obs_dims, tbin, jitter, array_type
 ):
     """
@@ -754,30 +751,34 @@ def setup_observations(
         used covariates, inputs model, observation model
     """
     ### GP observation model ###
-    obs_filter = build_spikefilters(filter_type)
+    obs_filter = build_spikefilters(rng, filter_type)
     observations_comps = observations.split("-")
     
     if observations_comps[0] == "factorized_gp":
         obs_model = build_factorized_gp(
-            gen_obs_kernel_induc_func, observations, likelihood, tbin, obs_dims, obs_filter, 
+            rng, gen_obs_kernel_induc_func, observed_covs, latent_covs, 
+            observations, likelihood, tbin, obs_dims, obs_filter, 
             jitter, array_type, 
         )
 
     elif observations_comps[0] == "rate_renewal_gp":
         obs_model = build_renewal_gp(
-            gen_obs_kernel_induc_func, observations, renewal_type, tbin, obs_dims, obs_filter, 
+            rng, gen_obs_kernel_induc_func, observed_covs, latent_covs, 
+            observations, renewal_type, tbin, obs_dims, obs_filter, 
             "rescaled", jitter, array_type, 
         )
         
     elif observations_comps[0] == "mod_renewal_gp":
         obs_model = build_renewal_gp(
-            gen_obs_kernel_induc_func, observations, renewal_type, tbin, obs_dims, obs_filter, 
+            rng, gen_obs_kernel_induc_func, observed_covs, latent_covs, 
+            observations, renewal_type, tbin, obs_dims, obs_filter, 
             "modulated", jitter, array_type, 
         )
         
     elif observations_comps[0] == "nonparam_pp_gp":
         obs_model = build_nonparametric(
-            gen_obs_kernel_induc_func, observations, likelihood, tbin, obs_dims, 
+            rng, gen_obs_kernel_induc_func, observed_covs, latent_covs, 
+            observations, likelihood, tbin, obs_dims, 
             ss_kernel, site_locs, spatial_MF, fixed_grid_locs, 
             jitter, array_type, 
         )
@@ -823,8 +824,8 @@ def fit(parser_args, dataset_dict, observed_kernel_dict_induc_list, save_name):
     dataloader = lib.inference.timeseries.BatchedTimeSeries(
         timestamps, covariates, ISIs, observations, config.batch_size, filter_length)
     
-    gen_kernel_induc_func = lambda observations, num_induc, out_dims: observed_kernel_dict_induc_list(
-            observations, num_induc, out_dims, dataset_dict["covariates"])
+    gen_kernel_induc_func = lambda rng, observations, num_induc, out_dims: observed_kernel_dict_induc_list(
+            rng, observations, num_induc, out_dims, dataset_dict["covariates"])
     
     # optimizer
     learning_rate_schedule = optax.exponential_decay(
@@ -843,21 +844,21 @@ def fit(parser_args, dataset_dict, observed_kernel_dict_induc_list, save_name):
         print("seed: {}".format(seed))
 
         # seed everything
-        np.random.seed(seed)
+        rng = np.random.default_rng(seed)
         prng_state = jr.PRNGKey(seed)
 
         # create and initialize model
         obs_covs_dims = covariates.shape[-1]
         inp_model = setup_latents(
-            obs_covs_dims, config.latent_covs, [timestamps[0], timestamps[-1]], array_type)
+            rng, obs_covs_dims, config.latent_covs, [timestamps[0], timestamps[-1]], array_type)
         
         obs_model = setup_observations(
-            gen_kernel_induc_func, 
+            rng, gen_kernel_induc_func, 
             config.likelihood, config.filter_type, 
             config.observations, config.observed_covs, 
             config.latent_covs, obs_dims, tbin, config.jitter, array_type, 
         )
-        model = gplvm(inp_model, obs_model)
+        model = GPLVM(inp_model, obs_model)
 
         # freeze parameters
         select_fixed_params = lambda tree: [
@@ -866,9 +867,9 @@ def fit(parser_args, dataset_dict, observed_kernel_dict_induc_list, save_name):
 
         filter_spec = jax.tree_map(lambda _: True, model)
         filter_spec = eqx.tree_at(
-            select_learnable_params,
+            select_fixed_params,
             filter_spec,
-            replace=(False,) * len(fix_param_names),
+            replace=(False,) * len(config.fix_param_names),
         )
         
         # loss
