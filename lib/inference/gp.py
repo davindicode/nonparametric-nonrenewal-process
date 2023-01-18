@@ -22,13 +22,42 @@ from ..utils.jax import safe_log, safe_sqrt
 
 
 
+
+class SparseGPFilterObservations(FilterObservations):
+    """
+    Uses SVGP to model modulation
+    
+    Option to learn mean
+    """
+    
+    gp: SparseGP
+    gp_mean: Union[jnp.ndarray, None]  # constant mean (obs_dims,), i.e. bias if not None
+        
+    def _gp_sample(self, prng_state, x_eval, prior, jitter):
+        """
+        Obtain the log conditional intensity given input path along which to evaluate
+
+        :param jnp.ndarray x_eval: evaluation locs (num_samps, out_dims, eval_locs, in_dims)
+        """
+        if prior:
+            f_samples = self.gp.sample_prior(
+                prng_state, x_eval, jitter
+            )  # (evals, samp, f_dim)
+
+        else:
+            f_samples, _ = self.gp.sample_posterior(
+                prng_state, x_eval, jitter, compute_KL=False
+            )  # (evals, samp, f_dim)
+
+        return pre_rates
+
+
+
 class ModulatedFactorized(FilterObservations):
     """
     Factorization across time points allows one to rely on latent marginals
     """
-
-    gp: SparseGP
-    gp_mean: Union[jnp.ndarray, None]  # constant mean (obs_dims,), i.e. bias if not None
+    
     likelihood: FactorizedLikelihood
 
     def __init__(self, gp, gp_mean, likelihood, spikefilter=None):
@@ -53,24 +82,6 @@ class ModulatedFactorized(FilterObservations):
         )
 
         return model
-
-    def _gp_sample(self, prng_state, x_eval, prior, jitter):
-        """
-        Obtain the log conditional intensity given input path along which to evaluate
-
-        :param jnp.ndarray x_eval: evaluation locs (num_samps, out_dims, eval_locs, in_dims)
-        """
-        if prior:
-            pre_rates = self.gp.sample_prior(
-                prng_state, x_eval, jitter
-            )  # (evals, samp, f_dim)
-
-        else:
-            pre_rates, _ = self.gp.sample_posterior(
-                prng_state, x_eval, jitter, compute_KL=False
-            )  # (evals, samp, f_dim)
-
-        return pre_rates
     
     def _sample_Y(self, prng_state, ini_Y, f_samples):
         """
@@ -208,30 +219,30 @@ class RateRescaledRenewal(FilterObservations):
 
     def _gp_sample(self, prng_state, x_eval, prior, jitter):
         """
-        Obtain the log conditional intensity given input path along which to evaluate
+        Sample from Gaussian process with mean function
 
         :param jnp.ndarray x_eval: evaluation locs (num_samps, out_dims, eval_locs, in_dims)
         """
         if prior:
-            pre_rates = self.gp.sample_prior(
+            f_samples = self.gp.sample_prior(
                 prng_state, x_eval, jitter
             )  # (samp, f_dim, evals)
 
         else:
-            pre_rates, _ = self.gp.sample_posterior(
+            f_samples, _ = self.gp.sample_posterior(
                 prng_state, x_eval, jitter, compute_KL=False
             )  # (samp, f_dim, evals)
 
-        return pre_rates
+        return f_samples + self.gp_mean[None]
     
-    def _sample_spikes(self, prng_state, ini_spikes, tau_start, pre_rates):
+    def _sample_spikes(self, prng_state, ini_spikes, tau_start, f_samples):
         """
         Sample the spike train autoregressively
         
         :param jnp.dnarray ini_spikes: initial spike train (num_samps, obs_dims, filter_length)
         :param jnp.ndarray tau_start: initial tau values at start (num_samps, obs_dims)
         """
-        num_samps, obs_dims, ts = pre_rates.shape
+        num_samps, obs_dims, ts = f_samples.shape
         if self.spikefilter is not None:
             prng_states = jr.split(prng_state, ts*2).reshape(ts, 2, -1)
         else:
@@ -245,20 +256,21 @@ class RateRescaledRenewal(FilterObservations):
                 h, _ = self.spikefilter.apply_filter(prng_state[0], past_spikes, False)
                 f += h[..., 0]
                 
-            f += self.gp_mean[None]
+            
             rate = self.renewal.inverse_link(f)
             log_rate = f if self.renewal.link_type == 'log' else safe_log(rate)
             
-            cond = (spikes > 0)  # (num_samps, obs_dims)
-            true_arr = (tau_since + rate * self.renewal.dt)
-            false_arr = (rate * self.renewal.dt)
-            tau_since = lax.select(cond, true_arr, false_arr)
+            tau_since = jnp.where(
+                (spikes > 0),  # previous spikes
+                rate * self.renewal.dt, 
+                tau_since + rate * self.renewal.dt, 
+            )  # (num_samps, obs_dims)
             
             log_renewal_density = self.renewal.log_density(tau_since)
             log_survival = self.renewal.log_survival(tau_since)
 
             log_rho_t = log_rate + log_renewal_density - log_survival
-            p_spike = jnp.maximum(jnp.exp(log_rho_t) * self.renewal.dt, 1.)  # approximate by discrete Bernoulli
+            p_spike = jnp.minimum(jnp.exp(log_rho_t) * self.renewal.dt, 1.)  # approximate by discrete Bernoulli
             spikes = jr.bernoulli(prng_state[-1], p_spike).astype(self.array_type)  # (num_samps, obs_dims)
             
             if self.spikefilter is not None:
@@ -267,10 +279,50 @@ class RateRescaledRenewal(FilterObservations):
             return (tau_since, past_spikes, spikes), (spikes, log_rho_t)
 
         init = (tau_start, ini_spikes, jnp.zeros((num_samps, obs_dims)))
-        xs = (prng_states, pre_rates.transpose(2, 0, 1))
+        xs = (prng_states, f_samples.transpose(2, 0, 1))
         _, (spikes, log_rho_ts) = lax.scan(step, init, xs)
         return spikes.transpose(1, 2, 0), log_rho_ts.transpose(1, 2, 0)  # (num_samps, obs_dims, ts)
 
+    def _rate_rescale(self, spikes, rates, compute_ll, return_tau):
+        """
+        rate rescaling, computes the log density on the way
+        
+        :param jnp.ndarray spikes: (ts, obs_dims)
+        :param jnp.ndarray rates: (ts, obs_dims)
+        """
+        rate_scale = self.renewal.dt / self.renewal.shape_scale()
+        
+        def step(carry, inputs):
+            tau, ll = carry
+            rate, spike = inputs
+
+            tau += rate_scale * rate
+            if compute_ll:
+                ll += self.renewal.log_density(tau)
+            
+            tau_ = jnp.where(spike, 0., tau)
+            return (tau_, ll), tau if return_tau else None
+
+        init = (jnp.zeros(self.renewal.obs_dims), jnp.zeros(self.renewal.obs_dims))
+        (_, log_renewals), taus = lax.scan(step, init=init, xs=(rates, spikes))
+        return log_renewals, taus
+    
+    def _log_density(
+        self, y, pre_rates, 
+    ):
+        """
+        Pre rates includes spike coupling/history effects
+        """
+        rates = self.renewal.inverse_link(pre_rates)
+        log_rates = pre_rates if self.renewal.link_type == "log" else safe_log(rates)
+        spikes = (y.T > 0)
+        
+        log_renewals, _ = self._rate_rescale(
+            spikes, rates.T, compute_ll=True, return_tau=False)
+        
+        ll = log_rates + log_renewals  # (obs_dims, ts)
+        return ll
+    
     ### inference ###
     def ELBO(self, prng_state, y, y_filt, pre_rates, x, neuron, num_ISIs):
         """
@@ -280,11 +332,12 @@ class RateRescaledRenewal(FilterObservations):
             prng_state, x_samples, jitter, compute_KL=True
         )  # (evals, samp, f_dim)
 
+        pre_rates = f_samples + self.gp_mean[None]
         if self.spikefilter is not None:
             y_filtered, KL_y = self.spikefilter.apply_filter(prng_state[0], y_filt, compute_KL)
         pre_rates = f_samples + y_filtered
         
-        Ell = self.renewal.variational_expectation(
+        Ell = self._log_density(
             y, pre_rates, 
         )
 
@@ -304,20 +357,20 @@ class RateRescaledRenewal(FilterObservations):
         :param jnp.ndarray y: spike train corresponding to segment (neurons, ts), 
                               y = y_filt[..., filter_length:] + last time step
         """
-        pre_rates = self._gp_sample(prng_state, x_eval, False, jitter)  # (num_samps, obs_dims, ts)
+        f_samples = self._gp_sample(prng_state, x_eval, False, jitter)  # (num_samps, obs_dims, ts)
         num_samps = pre_rates.shape[0]
         y = jnp.broadcast_to(y, (num_samps,) + y.shape[1:])
         
+        pre_rates = f_samples + self.gp_mean[None]
         if self.spikefilter is not None:
             h, _ = self.spikefilter.apply_filter(prng_state[0], y_filt, False)
             pre_rates += h
             
-        pre_rates += self.gp_mean[None]
         rates = self.renewal.inverse_link(pre_rates).transpose(0, 2, 1)
         
         # rate rescaling, rescaled time since last spike
         spikes = (y > 0).transpose(0, 2, 1)
-        _, tau_since_spike = vmap(self.renewal._rate_rescale, (0, 0, None, None), (None, 0))(
+        _, tau_since_spike = vmap(self._rate_rescale, (0, 0, None, None), (None, 0))(
             spikes, rates, False, True)  # (num_samps, ts, obs_dims)
         
         log_renewal_density = self.renewal.log_density(tau_since_spike)
@@ -405,16 +458,16 @@ class ModulatedRenewal(FilterObservations):
         :param jnp.ndarray x_eval: evaluation locs (num_samps, out_dims, eval_locs, in_dims)
         """
         if prior:
-            pre_rates = self.gp.sample_prior(
+            f_samples = self.gp.sample_prior(
                 prng_state, x_eval, jitter
             )  # (samp, f_dim, evals)
 
         else:
-            pre_rates, _ = self.gp.sample_posterior(
+            f_samples, _ = self.gp.sample_posterior(
                 prng_state, x_eval, jitter, compute_KL=False
             )  # (samp, f_dim, evals)
 
-        return pre_rates
+        return f_samples
     
     def _log_rho_from_gp_sample(self, prng_state, num_samps, tau_eval, x_eval, prior, jitter):
         """
@@ -435,6 +488,226 @@ class ModulatedRenewal(FilterObservations):
         
         log_rho_t = log_modulator + log_hazard
         return log_rho_t
+    
+    def _log_rho_from_gp_post(self, prng_state, num_samps, tau_eval, isi_eval, x_eval, mean_only, compute_KL, jitter):
+        """
+        Obtain the log conditional intensity given input path along which to evaluate
+        
+        :param jnp.ndarray tau_eval: evaluation time locs (out_dims, locs)
+        :param jnp.ndarray isi_eval: higher order ISIs (out_dims, locs, order)
+        :param jnp.ndarray x_eval: external covariates (out_dims, locs, x_dims)
+        :return:
+            log intensity in rescaled time tau (num_samps, out_dims, locs)
+        """
+        if self.modulated:
+            cov_eval = self._combine_input(isi_eval, x_eval)
+            
+            f_mean, f_cov, KL = self.gp.evaluate_posterior(
+                tau_eval, cov_eval, mean_only=False, compute_KL=False, jitter=jitter
+            )  # (out_dims, time, 1)
+
+        else:
+            f_mean, f_cov, KL = self.gp.evaluate_posterior(
+                tau_eval, mean_only=False, compute_KL=False, jitter=jitter
+            )  # (out_dims, time, 1)
+
+        m_eval = vmap(self._refractory_mean, 1, 1)(tau_eval)  # (out_dims, locs)
+        log_rho_tau_mean = f_mean[..., 0] + m_eval
+        return log_rho_tau_mean, f_cov[..., 0], KL
+    
+    def _sample_spikes(self, prng_state, ini_spikes, t_since, f_samples):
+        """
+        Sample the spike train autoregressively
+        
+        :param jnp.dnarray ini_spikes: initial spike train (num_samps, obs_dims, filter_length)
+        :param jnp.ndarray t_since: initial tau values at start (num_samps, obs_dims)
+        """
+        num_samps, obs_dims, ts = f_samples.shape
+        if self.spikefilter is not None:
+            prng_states = jr.split(prng_state, ts*2).reshape(ts, 2, -1)
+        else:
+            prng_states = jr.split(prng_state, ts).reshape(ts, 1, -1)
+
+        def step(carry, inputs):
+            prng_state, f = inputs  # (num_samps, obs_dims)
+            t_since, past_spikes, spikes = carry
+            
+            if self.spikefilter is not None:
+                h, _ = self.spikefilter.apply_filter(prng_state[0], past_spikes, False)
+                f += h[..., 0]
+                
+            f += self.gp_mean[None]
+            log_modulator = f if self.renewal.link_type == 'log' else safe_log(
+                self.renewal.inverse_link(f))
+
+            t_since = jnp.where(
+                (spikes > 0),  # spikes
+                self.renewal.dt, 
+                t_since + self.renewal.dt, 
+            )  # (num_samps, obs_dims)
+            
+            log_renewal_density = self.renewal.log_density(t_since)
+            log_survival = self.renewal.log_survival(t_since)
+
+            log_rho_t = log_modulator + log_renewal_density - log_survival
+            p_spike = jnp.minimum(jnp.exp(log_rho_t) * self.renewal.dt, 1.)  # approximate by discrete Bernoulli
+            spikes = jr.bernoulli(prng_state[-1], p_spike).astype(self.array_type)  # (num_samps, obs_dims)
+            
+            if self.spikefilter is not None:
+                past_spikes = jnp.concatenate((past_spikes[..., 1:], spikes[..., None]), axis=-1)
+            
+            return (t_since, past_spikes, spikes), (spikes, log_rho_t)
+
+        init = (t_since, ini_spikes, jnp.zeros((num_samps, obs_dims)))
+        xs = (prng_states, f_samples.transpose(2, 0, 1))
+        _, (spikes, log_rho_ts) = lax.scan(step, init, xs)
+        return spikes.transpose(1, 2, 0), log_rho_ts.transpose(1, 2, 0)  # (num_samps, obs_dims, ts)
+
+    def _log_hazard(
+        self, y, pre_rates, 
+    ):
+        """
+        Time since spike component
+
+        :param jnp.ndarray y: binary spike train (obs_dims, ts)
+        :param jnp.ndarray pre_rates: pre-link rates (obs_dims, ts)
+        :param List spiketimes: list of spike time indices arrays per neuron
+        :param jnp.ndarray covariates: covariates time series (mc, obs_dims, ts, in_dims)
+        """
+        rates = self.renewal.inverse_link(pre_rates)
+        log_rates = pre_rates if self.renewal.link_type == "log" else safe_log(rates)
+        spikes = (y.T > 0)
+        
+        def step(carry, inputs):
+            prng_state, f = inputs  # (num_samps, obs_dims)
+            t_since, past_spikes, spikes = carry
+            
+            f += self.gp_mean[None]
+            log_modulator = f if self.renewal.link_type == 'log' else safe_log(
+                self.renewal.inverse_link(f))
+
+            t_since = jnp.where(
+                (spikes > 0),  # spikes
+                self.renewal.dt, 
+                t_since + self.renewal.dt, 
+            )  # (num_samps, obs_dims)
+            
+            log_renewal_density = self.renewal.log_density(t_since)
+            log_survival = self.renewal.log_survival(t_since)
+
+            log_rho_t = log_modulator + log_renewal_density - log_survival
+            
+            
+            return (t_since, past_spikes, spikes), (spikes, log_rho_t)
+        
+        ll = log_rates + log_renewals  # (obs_dims, ts)
+        return ll
+    
+    ### inference ###
+    def ELBO(self, prng_state, y, y_filt, pre_rates, x, neuron, num_ISIs):
+        """
+        Compute the evidence lower bound
+        """
+        log_rho_tau, KL = self._log_rho_from_gp_post()
+        
+        Ell = self.pp.variational_expectation(
+            prng_state,
+            y,
+            log_rho_tau_mean,
+            log_rho_tau_cov,
+            jitter,
+            approx_int_method,
+        )
+
+        ELBO = Ell - KL_f - KL_y
+        return ELBO
+    
+    ### evaluation ###
+    def evaluate_metric(self):
+        return
+    
+    ### sample ###
+    def sample_log_conditional_intensity(self, prng_state, x_eval, y, y_filt, jitter):
+        """
+        rho(t) = r(t) p(u) / (1 - int p(u) du)
+        
+        :param jnp.ndarray x_eval: evaluation locations (num_samps, obs_dims, ts, x_dims)
+        :param jnp.ndarray y: spike train corresponding to segment (neurons, ts), 
+                              y = y_filt[..., filter_length:] + last time step
+        """
+        pre_rates = self._gp_sample(prng_state, x_eval, False, jitter)  # (num_samps, obs_dims, ts)
+        num_samps = pre_rates.shape[0]
+        y = jnp.broadcast_to(y, (num_samps,) + y.shape[1:])
+        
+        if self.spikefilter is not None:
+            h, _ = self.spikefilter.apply_filter(prng_state[0], y_filt, False)
+            pre_rates += h
+            
+        pre_rates += self.gp_mean[None]
+        rates = self.renewal.inverse_link(pre_rates).transpose(0, 2, 1)
+        
+        # rate rescaling, rescaled time since last spike
+        spikes = (y > 0).transpose(0, 2, 1)
+        _, tau_since_spike = vmap(self._rate_rescale, (0, 0, None, None), (None, 0))(
+            spikes, rates, False, True)  # (num_samps, ts, obs_dims)
+        
+        log_renewal_density = self.renewal.log_density(tau_since_spike)
+        log_survival = self.renewal.log_survival(tau_since_spike)
+        
+        log_rates = pre_rates if self.renewal.link_type == 'log' else safe_log(rates)
+        log_rho_t = log_rates + (log_renewal_density - log_survival).transpose(0, 2, 1)
+        return log_rho_t  # (num_samps, out_dims, ts)
+    
+    
+    def sample_instantaneous_renewal(
+        self, prng_state, t_eval, x_cond, jitter, num_samps=20, prior=True
+    ):
+        """
+        :param jnp.ndarray t_eval: evaluation times since last spike, i.e. ISI (ts,)
+        :param jnp.ndarray x_cond: evaluation locations (num_samps, obs_dims, x_dims)
+        """
+        f_samples = self._gp_sample(
+            prng_state, x_cond[..., None, :], prior, jitter
+        )  # (num_samps, obs_dims, 1)
+        
+        f_samples += self.gp_mean[None]
+        tau_eval = (
+            self.renewal.inverse_link(f_samples) * t_eval / self.renewal.shape_scale()[:, None]
+        )
+        
+        log_dens = vmap(vmap(self.renewal.log_density), 2, 2)(tau_eval)
+        return jnp.exp(log_dens)  # (num_samps, obs_dims, ts)
+    
+    def sample_prior(self, prng_state, num_samps, x_samples, ini_spikes, ini_tau, jitter):
+        """
+        Sample from the generative model
+        Sample spike trains from the modulated renewal process.
+        :return:
+            pike train of shape (trials, neuron, timesteps)
+        """
+        prng_states = jr.split(prng_state, 2)
+        
+        f_samples = self._gp_sample(
+            prng_states[0], x_samples, True, jitter
+        )  # (num_samps, obs_dims, 1)
+
+        y_samples, log_rho_ts = self._sample_spikes(
+            prng_states[1], ini_spikes, ini_tau, f_samples)
+        return y_samples, log_rho_ts
+
+    def sample_posterior(self, prng_state, num_samps, x_samples, ini_spikes, ini_tau, jitter):
+        """
+        Sample from posterior predictive
+        """
+        prng_states = jr.split(prng_state, 2)
+        
+        f_samples = self._gp_sample(
+            prng_states[0], x_samples, False, jitter
+        )  # (num_samps, obs_dims, 1)
+
+        y_samples, log_rho_ts = self._sample_spikes(
+            prng_states[1], ini_spikes, ini_tau, f_samples)
+        return y_samples, log_rho_ts
 
     
 
@@ -612,11 +885,7 @@ class NonparametricPointProcess(Observations):
                 prng_gp, 1, tau_since[..., None], past_ISI, x, False, jitter)[..., 0]
             log_rho_t = log_rho_tau + log_dtau_dt  # (num_samps, out_dims)
             
-#             if self.spikefilter is not None:
-#                 h, _ = self.spikefilter.apply_filter(prng_state[0], past_spikes, False)
-#                 log_rho_t += h
-
-            p_spike = jnp.maximum(jnp.exp(log_rho_t) * self.pp.dt, 1.)  # approximate by discrete Bernoulli
+            p_spike = jnp.minimum(jnp.exp(log_rho_t) * self.pp.dt, 1.)  # approximate by discrete Bernoulli
             spikes = jr.bernoulli(prng_state[-1], p_spike).astype(self.array_type)  # (num_samps, obs_dims)
             
             # spike reset
@@ -625,10 +894,7 @@ class NonparametricPointProcess(Observations):
                 shift_ISIs = jnp.concatenate((t_since[..., None], past_ISI[..., 0, :-1]), axis=-1)
                 past_ISI = jnp.where(spike_cond[..., None], shift_ISIs, past_ISI[..., 0, :])[..., None, :]
             t_since = jnp.where(spike_cond, 0.0, t_since)
-            
-#             if self.spikefilter is not None:
-#                 past_spikes = jnp.concatenate((past_spikes[..., 1:], spikes[..., None]), axis=-1)
-            
+
             return (t_since, past_ISI, spikes), (spikes, log_rho_t)
 
         # add dummy time dimension
@@ -644,14 +910,17 @@ class NonparametricPointProcess(Observations):
     
 
     ### inference ###
-    def ELBO(self, prng_state, x_samples):
-        log_rho_tau, KL = self._log_rho_from_gp_post()
+    def ELBO(self, prng_state, x_samples, jitter, approx_int_method):
+        log_rho_tau_mean, log_rho_tau_cov, KL = self._log_rho_from_gp_post()
         
-#         if self.spikefilter is not None:
-#             h, _ = self.spikefilter.apply_filter(prng_state[0], y_filt, False)
-#             log_rho_t_mean += h
-            
-        Ell = self.likelihood.variational_expectation(log_rho_tau)
+        Ell = self.pp.variational_expectation(
+            prng_state,
+            y,
+            log_rho_tau_mean,
+            log_rho_tau_cov,
+            jitter,
+            approx_int_method,
+        )
 
         ELBO = Ell - KL
         return ELBO
@@ -669,16 +938,24 @@ class NonparametricPointProcess(Observations):
         log_rho_t_mean = log_rho_tau_mean + log_dtau_dt_eval  # (num_samps, out_dims, ts)
         log_rho_t_cov = log_rho_tau_cov  # additive transform in log space
         
-#         if self.spikefilter is not None:
-#             h, _ = self.spikefilter.apply_filter(prng_state[0], y_filt, False)
-#             log_rho_t_mean += h
         return log_rho_t_mean, log_rho_t_cov
 
     def evaluate_metric(self):
         return
+    
+    def evaluate_conditional_renewal_expectation(
+        self, 
+        func_of_t, 
+        isi_cond, 
+        x_cond,
+        int_eval_pts=1000,
+        num_quad_pts=100,
+        jitter=1e-6,
+    ):
+        return
 
     ### sample ###
-    def sample_instantaneous_renewal(
+    def sample_conditional_renewal(
         self,
         prng_state, 
         num_samps,

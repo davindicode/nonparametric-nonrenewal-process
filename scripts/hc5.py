@@ -2,6 +2,8 @@ import argparse
 
 import numpy as np
 
+import gplvm_template
+
 import sys
 sys.path.append("..")
 
@@ -207,8 +209,22 @@ def dataset_specifics(model_dict, covariates, learn_mean):
 
 
 
+def gen_name(parser_args, dataset_dict):
+
+    name = dataset_dict["properties"]["name"] + "_{}_{}_{}_X[{}]_Z[{}]".format(
+        parser_args.likelihood,
+        parser_args.filter_type,
+        parser_args.observations,
+        parser_args.observed_covs,
+        parser_args.latent_covs,
+        #parser_args.bin_size,
+    )
+    return name
+
+
+
 def main():
-    parser = template.standard_parser("%(prog)s [OPTION] [FILE]...", "Fit model to data.")
+    parser = template.standard_parser("%(prog)s [options]", "Fit model to data.")
     parser.add_argument("--data_path", action="store", type=str)
     parser.add_argument("--data_type", action="store", type=str)
 

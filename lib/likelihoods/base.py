@@ -96,7 +96,6 @@ class FactorizedLikelihood(Likelihood):
         f_cov,
         jitter,
         approx_int_method,
-        num_approx_pts,
     ):
         """
         E[log p(yₙ|fₙ)] = ∫ log p(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ and its derivatives
@@ -110,10 +109,10 @@ class FactorizedLikelihood(Likelihood):
         """
         cubature_dim = self.num_f_per_obs
 
-        if approx_int_method == "GH":  # Gauss-Hermite
-            f, w = gauss_hermite(cubature_dim, num_approx_pts)
-        elif approx_int_method == "MC":  # sample unit Gaussian
-            f, w = mc_sample(cubature_dim, prng_state, num_approx_pts)
+        if approx_int_method["type"] == "GH":  # Gauss-Hermite
+            f, w = gauss_hermite(cubature_dim, approx_int_method["approx_pts"])
+        elif approx_int_method["type"] == "MC":  # sample unit Gaussian
+            f, w = mc_sample(cubature_dim, prng_state, approx_int_method["approx_pts"])
         else:
             raise NotImplementedError("Approximate integration method not recognised")
 
@@ -314,55 +313,6 @@ class RenewalLikelihood(Likelihood):
     ):
         super().__init__(obs_dims, obs_dims, link_type, array_type)
         self.dt = dt
-
-    def _rate_rescale(self, spikes, rates, compute_ll, return_tau):
-        """
-        rate rescaling, computes the log density on the way
-        
-        :param jnp.ndarray spikes: (ts, obs_dims)
-        :param jnp.ndarray rates: (ts, obs_dims)
-        """
-        rate_scale = self.dt / self.shape_scale()
-        
-        def step(carry, inputs):
-            tau, ll = carry
-            rate, spike = inputs
-
-            tau += rate_scale * rate
-            if compute_ll:
-                ll += self.log_density(tau)
-            
-            tau_ = jnp.where(spike, 0., tau)
-            return (tau_, ll), tau if return_tau else None
-
-        init = (jnp.zeros(self.obs_dims), jnp.zeros(self.obs_dims))
-        (_, log_renewals), taus = lax.scan(step, init=init, xs=(rates, spikes))
-        return log_renewals, taus
-        
-    def variational_expectation(
-        self, y, pre_rates, 
-    ):
-        """
-        Ignore the end points of the spike train
-        
-        To benefit from JIT compilation, instead of passing lists of ISIs and 
-        performing rate-rescaling on them we scan temporally through the binary 
-        spike train and accumulate the log density values
-
-        :param jnp.ndarray y: binary spike train (obs_dims, ts)
-        :param jnp.ndarray pre_rates: pre-link rates (obs_dims, ts)
-        :param List spiketimes: list of spike time indices arrays per neuron
-        :param jnp.ndarray covariates: covariates time series (mc, obs_dims, ts, in_dims)
-        """
-        rates = self.inverse_link(pre_rates)
-        log_rates = pre_rates if self.link_type == "log" else safe_log(rates)
-        spikes = (y.T > 0)
-        
-        log_renewals, _ = self._rate_rescale(
-            spikes, rates.T, compute_ll=True, return_tau=False)
-        
-        ll = log_rates + log_renewals  # (obs_dims, ts)
-        return ll
 
     def log_density(self, ISI):
         raise NotImplementedError

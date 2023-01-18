@@ -62,7 +62,6 @@ class Gaussian(FactorizedLikelihood):
         f_cov,
         jitter,
         approx_int_method,
-        num_approx_pts,
     ):
         """
         Exact integration, overwrite approximate integration
@@ -257,7 +256,6 @@ class Poisson(CountLikelihood):
         f_cov,
         jitter,
         approx_int_method,
-        num_approx_pts,
     ):
         """
         Closed form of the expected log likelihood for exponential link function
@@ -284,7 +282,6 @@ class Poisson(CountLikelihood):
                 f_cov,
                 jitter,
                 approx_int_method,
-                num_approx_pts,
             )
 
     def sample_Y(self, prng_state, f):
