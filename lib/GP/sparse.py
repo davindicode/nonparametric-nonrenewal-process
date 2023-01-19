@@ -1,10 +1,10 @@
 import math
 from functools import partial
 
+import equinox as eqx
+from jax import vmap
 import jax.numpy as jnp
 import jax.random as jr
-
-from jax import vmap
 from jax.numpy.linalg import cholesky
 from jax.scipy.linalg import cho_solve, solve_triangular
 
@@ -182,8 +182,8 @@ class qSVGP(SparseGP):
         """
         :param jnp.array x: input of shape (num_samps, out_dims or 1, time, in_dims)
         :returns:
-            means of shape (out_dims, num_samps, time, 1)
-            covariances of shape (out_dims, num_samps, time, time)
+            means of shape (num_samps, out_dims, time, 1)
+            covariances of shape (num_samps, out_dims, time, time)
         """
         post_means, post_covs, KL, aux = evaluate_qsparse_posterior(
             self.kernel,

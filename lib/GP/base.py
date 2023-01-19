@@ -2,14 +2,15 @@ import math
 from functools import partial
 from typing import Union
 
+import equinox as eqx
+import jax
+from jax import lax, vmap
 import jax.numpy as jnp
 import jax.random as jr
-
-from jax import lax, vmap
 from jax.numpy.linalg import cholesky
 from jax.scipy.linalg import solve_triangular
 
-from ..base import module
+from ..base import module, ArrayTypes_
 
 from .kernels import Kernel, MarkovianKernel
 from .linalg import mvn_conditional
@@ -24,7 +25,7 @@ class GP(module):
     RFF_num_feats: int
 
     def __init__(self, kernel, RFF_num_feats):
-        super().__init__(kernel.array_type)
+        super().__init__(ArrayTypes_[kernel.array_type])
         self.kernel = kernel
         self.RFF_num_feats = RFF_num_feats  # use random Fourier features
 
@@ -32,13 +33,11 @@ class GP(module):
         """
         PSD constraint
         """
-        kernel = self.kernel.apply_constraints(self.kernel)
-
         model = jax.tree_map(lambda p: p, self)  # copy
         model = eqx.tree_at(
             lambda tree: tree.kernel,
             model,
-            replace_fn=lambda _: kernel,
+            replace_fn=lambda obj: obj.apply_constraints(),
         )
 
         return model
@@ -134,7 +133,7 @@ class SSM(module):
         :param jnp.ndarray site_obs: observations of shape (time, x_dims, 1)
         :param jnp.ndarray site_Lcov: covariances of shape (time, x_dims, x_dims)
         """
-        super().__init__(array_type)
+        super().__init__(ArrayTypes_[array_type])
         self.site_locs = self._to_jax(site_locs) if site_locs is not None else None
         self.site_obs = self._to_jax(site_obs)
         self.site_Lcov = self._to_jax(site_Lcov)

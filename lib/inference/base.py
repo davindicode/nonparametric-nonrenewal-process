@@ -8,7 +8,7 @@ import jax.random as jr
 
 import numpy as np
 
-from ..base import module
+from ..base import module, ArrayTypes
 from ..filters.base import Filter
 
 
@@ -30,7 +30,7 @@ class FilterObservations(Observations):
 
     def __init__(self, spikefilter, array_type):
         if spikefilter is not None:  # checks
-            assert spikefilter.array_type == array_type
+            assert spikefilter.array_type == ArrayTypes[array_type]
         super().__init__(array_type)
         self.spikefilter = spikefilter
 
@@ -39,11 +39,12 @@ class FilterObservations(Observations):
         Constrain parameters in optimization
         """
         model = jax.tree_map(lambda p: p, self)  # copy
-        model = eqx.tree_at(
-            lambda tree: tree.spikefilter,
-            model,
-            replace_fn=lambda obj: obj.apply_constraints(),
-        )
+        if model.spikefilter is not None:
+            model = eqx.tree_at(
+                lambda tree: tree.spikefilter,
+                model,
+                replace_fn=lambda obj: obj.apply_constraints(),
+            )
 
         return model
 

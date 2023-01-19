@@ -3,7 +3,7 @@
 cd ./scripts/
 
 
-python3 th1.py spikes --data_path ../data/th1/ --session_name Mouse28_140313_wake --select_frac 0.0 0.1 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -100 --batch_size 5000 --observed_covs hd --observations factorized_gp-32-100 --likelihood PP-log --device 0
+python3 th1.py spikes --data_path ../data/th1/ --session_name Mouse28_140313_wake --select_frac 0.0 0.1 --array_type float32 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -100 --batch_size 5000 --observed_covs hd --observations factorized_gp-32-100 --likelihood PP-log --device 0
   
 --latent_covs matern32d2-100-diagonal-fixed_grid
   
@@ -15,7 +15,6 @@ mod_renewal_gp
 
 
 
-python3 synthetic.py spikes --data_path ../data/synthetic/ --session_name syn_data_seed123 --select_frac 0.0 0.1 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -100 --batch_size 5000 --observed_covs x-y-theta --observations factorized_gp-32-100 --likelihood PP-log --device 0
 
   
   

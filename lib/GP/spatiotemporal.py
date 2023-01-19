@@ -1,4 +1,5 @@
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 from jax import lax, vmap
@@ -7,7 +8,7 @@ from jax.numpy.linalg import cholesky
 from .base import SSM
 from .kernels import MarkovSparseKronecker
 
-from .linalg import evaluate_LGSSM_posterior
+from .linalg import evaluate_LGSSM_posterior, LTI_process_noise
 from .markovian import interpolation_times, order_times, vmap_outdims_LGSSM_posterior
 
 from ..utils.jax import constrain_diagonal
@@ -52,7 +53,8 @@ def vmap_spatial_LGSSM_posterior(
 class KroneckerLTI(SSM):
     """
     Factorized spatial and temporal GP kernel with temporal markov kernel
-
+    Independent outputs (posterior is factorized across output dimensions)
+    
     We use the Kronecker kernel, with out_dims of the temporal kernel
     equal to out_dims of process
     """
@@ -61,6 +63,7 @@ class KroneckerLTI(SSM):
 
     spatial_MF: bool
     fixed_grid_locs: bool
+    RFF_num_feats: int
 
     def __init__(
         self,
@@ -68,6 +71,7 @@ class KroneckerLTI(SSM):
         site_locs,
         site_obs,
         site_Lcov,
+        RFF_num_feats=0, 
         spatial_MF=True,
         fixed_grid_locs=False,
     ):
@@ -87,6 +91,7 @@ class KroneckerLTI(SSM):
         self.kernel = spatiotemporal_kernel
         self.spatial_MF = spatial_MF
         self.fixed_grid_locs = fixed_grid_locs
+        self.RFF_num_feats = RFF_num_feats
 
     def apply_constraints(self):
         """
@@ -95,22 +100,20 @@ class KroneckerLTI(SSM):
         model = jax.tree_map(lambda p: p, self)  # copy
 
         def update(Lcov):
-            epdfunc = lambda x: constrain_diagonal(x, lower_lim=1e-2)
-            Lcov = vmap(epdfunc)(jnp.tril(Lcov))
+            Lcov = constrain_diagonal(jnp.tril(Lcov), lower_lim=1e-2)
             Lcov = jnp.triu(Lcov) if self.spatial_MF else Lcov
             return Lcov
 
         model = eqx.tree_at(
             lambda tree: tree.site_Lcov,
             model,
-            replace_fn=update,
+            replace_fn=vmap(vmap(update)),
         )
-
-        kernel = self.kernel.apply_constraints(self.kernel)
+        
         model = eqx.tree_at(
             lambda tree: tree.kernel,
             model,
-            replace_fn=lambda _: kernel,
+            replace_fn=lambda obj: obj.apply_constraints(),
         )
 
         return model
@@ -150,58 +153,61 @@ class KroneckerLTI(SSM):
         ind_eval, dt_fwd, dt_bwd = vmap(interpolation_times, (0, 0), (1, 1, 1))(
             t_eval, site_locs
         )  # vmap over out_dims
-        stack_dt = jnp.concatenate([dt_fwd, dt_bwd], axis=0)  # (2*num_evals, out_dims)
-
+        dt_fwd_bwd = jnp.concatenate([dt_fwd, dt_bwd], axis=0)  # (2*num_evals, out_dims)
+        
         if self.spatial_MF:  # vmap over temporal kernel out_dims = spatial_locs
-            stack_A = vmap(self.kernel.markov_factor._state_transition)(
-                stack_dt
-            )  # vmap over num_evals, (eval_inds, out_dims, sd, sd)
-
             # compute LDS matrices
             H, Pinf, As, Qs = self.kernel._get_LDS(
                 site_dlocs, site_locs.shape[1]
-            )
-            # (ts, out_dims, sd, sd)
-
+            )  # (ts, out_dims, sd, sd)
+            
+            A_fwd_bwd = vmap(self.kernel._state_transition)(
+                dt_fwd_bwd
+            )  # vmap over num_evals, (eval_inds, out_dims, sd, sd)
+            Q_fwd_bwd = vmap(vmap(LTI_process_noise, (0, 0), 0), (0, None), 0)(A_fwd_bwd, Pinf)
+            
             # vmap over spatial points
             post_means, post_covs, KL = vmap_spatial_LGSSM_posterior(
                 H,
+                Pinf,
                 Pinf,
                 As,
                 Qs,
                 self.site_obs[..., None],
                 self.site_Lcov[..., None],
-                interp_sites,
+                ind_eval,
+                A_fwd_bwd,
+                Q_fwd_bwd,
                 mean_only,
                 compute_KL,
                 jitter,
             )  # (spatial_locs, out_dims, timesteps, 1)
 
-            post_means = post_means.transpose(1, 2, 0, 3)
-            post_covs = post_covs.transpose(1, 2, 0, 3)
+            post_means_ = post_means[..., 0].transpose(1, 2, 0, 3)
+            post_covs_ = post_covs[..., 0].transpose(1, 2, 0, 3)
 
         else:
-            stack_A = vmap(self.kernel.state_transition)(
-                stack_dt
-            )  # vmap over num_evals
-            A_fwd, A_bwd = stack_A[:num_evals], stack_A[-num_evals:]
-            # (eval_inds, out_dims, spatial_pts*sd, spatial_pts*sd)
-
             H, Pinf, As, Qs = self.kernel.get_LDS(
                 site_dlocs, site_locs.shape[1]
-            )
-            # (ts, out_dims, spatial_pts*sd, spatial_pts*sd)
+            )  # (ts, out_dims, spatial_pts*sd, spatial_pts*sd)
+            
+            A_fwd_bwd = vmap(self.kernel.state_transition)(
+                dt_fwd_bwd
+            )  # vmap over num_evals, (eval_inds, osd, sd)
+            Q_fwd_bwd = vmap(vmap(LTI_process_noise, (0, 0), 0), (0, None), 0)(A_fwd_bwd, Pinf)
+            # (eval_inds, out_dims, spatial_pts*sd, spatial_pts*sd)
 
-            post_means_, post_covs_, KL = vmap_outdims(
+            post_means_, post_covs_, KL = vmap_outdims_LGSSM_posterior(
                 H,
+                Pinf,
                 Pinf,
                 As,
                 Qs,
                 self.site_obs,
                 self.site_Lcov,
                 ind_eval,
-                A_fwd,
-                A_bwd,
+                A_fwd_bwd,
+                Q_fwd_bwd,
                 mean_only,
                 compute_KL,
                 jitter,

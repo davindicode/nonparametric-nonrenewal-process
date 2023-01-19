@@ -29,7 +29,7 @@ class SigmoidRefractory(Filter):
         beta,
         tau,
         filter_length,
-        array_type=jnp.float32,
+        array_type='float32',
     ):
         """
         :param jnp.ndarray a: parameter a of shape (post, pre)
@@ -60,7 +60,7 @@ class RaisedCosineBumps(Filter):
     """
     Raised cosine basis [1], takes the form of
 
-    .. math:: f(t;a,c) =
+    .. math:: f(t;a,c) = 1/2 * cos( min(max(a * log(t + c) - phi, -pi), pi) + 1 )
 
     References:
 
@@ -81,7 +81,7 @@ class RaisedCosineBumps(Filter):
         w,
         phi,
         filter_length,
-        array_type=jnp.float32,
+        array_type='float32',
     ):
         """
         Raised cosine basis as used in the literature.
@@ -114,8 +114,8 @@ class RaisedCosineBumps(Filter):
 
     def compute_filter(self, prng_state, compute_KL):
         """
-        :returns: filter of shape (filter_length, post, pre)
-        :rtype: torch.tensor
+        :return:
+            filter of shape (filter_length, post, pre)
         """
         t = self.filter_time[::-1, None, None, None]
         A = jnp.minimum(
@@ -141,7 +141,7 @@ class GaussianProcess(Filter):
         self,
         filter_length,
         tbin,
-        array_type=jnp.float32,
+        array_type='float32',
     ):
         """
         :param int out_dim: the number of output dimensions per input dimension (1 or neurons)

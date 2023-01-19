@@ -1,12 +1,16 @@
 from typing import List, Union
 
 import numpy as np
+
+import equinox as eqx
 import jax.numpy as jnp
+import jax.random as jr
 
 from ..base import module
 from ..GP.markovian import GaussianLTI
 from ..GP.switching import SwitchingLTI
 from ..GP.gpssm import DTGPSSM
+from ..utils.jax import safe_sqrt
 
 
 
@@ -27,7 +31,8 @@ class BatchedTimeSeries:
         pts = len(timestamps)
         
         # checks
-        assert covariates.shape[0] == pts
+        if covariates is not None:
+            assert covariates.shape[0] == pts
         if ISIs is not None:
             assert ISIs.shape[1] == pts
         assert observations.shape[1] == pts + filter_length
@@ -47,13 +52,13 @@ class BatchedTimeSeries:
                        (batch_index + 1)*self.batch_size + self.filter_length)
         
         ts = self.timestamps[t_inds]
-        xs = self.covariates[t_inds]
-        deltas = self.ISIs[:, t_inds]
+        xs = self.covariates[t_inds] if self.covariates is not None else None
+        deltas = self.ISIs[:, t_inds] if self.ISIs is not None else None
         
         ys = self.observations[:, y_inds]
         if self.filter_length > 0:
             filt_inds = slice(batch_index*self.batch_size, 
-                              (batch_index + 1)*self.batch_size + self.filter_length - 1)
+                              batch_index*self.batch_size + self.filter_length + ys.shape[1] - 1)
             ys_filt = self.observations[:, filt_inds]  # leave out last time step (causality)
         else:
             ys_filt = None
@@ -88,8 +93,9 @@ class GaussianLatentObservedSeries(module):
     lat_dims: List[int]
     obs_dims: List[int]
     x_dims: int
+    diagonal_cov: bool
 
-    def __init__(self, ssgp, lat_dims, obs_dims, array_type=jnp.float32):
+    def __init__(self, ssgp, lat_dims, obs_dims, diagonal_cov=False, array_type=jnp.float32):
         if ssgp is not None:  # checks
             assert ssgp.array_type == array_type
             assert len(lat_dims) == ssgp.kernel.out_dims
@@ -99,17 +105,19 @@ class GaussianLatentObservedSeries(module):
         self.lat_dims = lat_dims
         self.obs_dims = obs_dims
         self.x_dims = len(self.lat_dims) + len(self.obs_dims)
+        self.diagonal_cov = diagonal_cov
 
     def apply_constraints(self):
         """
         Constrain parameters in optimization
         """
         model = super().apply_constraints()
-        model = eqx.tree_at(
-            lambda tree: tree.ssgp,
-            model,
-            replace_fn=lambda obj: obj.apply_constraints(),
-        )
+        if model.ssgp is not None:
+            model = eqx.tree_at(
+                lambda tree: tree.ssgp,
+                model,
+                replace_fn=lambda obj: obj.apply_constraints(),
+            )
 
         return model
     
@@ -171,6 +179,12 @@ class GaussianLatentObservedSeries(module):
     def marginal_posterior(self, num_samps, timestamps, x_eval, jitter, compute_KL):
         """
         Combines observed inputs with latent marginal samples
+        
+        :param jnp.ndarray x_eval: observed covariates (ts, obs_dims)
+        :return:
+            x_mean (tr, time, x_dims)
+            x_cov (tr, time, x_dims, 1 or x_dims) depending on diagonal_cov
+            KL divergence (scalar)
         """
         ts = len(timestamps)
         if len(self.obs_dims) > 0:
@@ -178,33 +192,46 @@ class GaussianLatentObservedSeries(module):
         
         if len(self.lat_dims) == 0:
             x_mean, KL = x_eval, 0.
-            x_cov = jnp.zeros_like(x)
+            x_cov = jnp.zeros_like(x_eval)[..., None]
             
         else:
             post_mean, post_cov, KL = self.ssgp.evaluate_posterior(
                 timestamps, False, compute_KL, jitter)
-            post_mean, post_cov = post_mean[..., 0], post_cov[..., 0]  # (tr, time, x_dims)
+            post_mean = post_mean[..., 0]  # (tr, time, x_dims)
             
             if len(self.obs_dims) == 0:
                 x_mean, x_cov = post_mean, post_cov
             
             else:
-                x_mean, x_cov, KL = jnp.empty((num_samps, len(timestamps))), jnp.empty((num_samps, len(timestamps))), 0.
+                x_mean, KL = jnp.empty((num_samps, len(timestamps), self.x_dims), dtype=self.array_dtype()), 0.
                 x_mean = x_mean.at[..., self.obs_dims].set(x_eval)
                 x_mean = x_mean.at[..., self.lat_dims].set(post_mean)
-                x_cov = x_cov.at[..., self.obs_dims].set(jnp.zeros_like(x_eval))
-                x_cov = x_cov.at[..., self.lat_dims].set(post_cov)
+                
+                if self.diagonal_cov:
+                    x_cov = jnp.empty((num_samps, len(timestamps), self.x_dims, 1), dtype=self.array_dtype())
+                    x_cov = x_cov.at[..., self.obs_dims, 0].set(jnp.zeros_like(x_eval))
+                    x_cov = x_cov.at[..., self.lat_dims, 0].set(vmap(vmap(jnp.diag))(post_cov))
+                    
+                else:
+                    x_cov = jnp.zeros((num_samps, len(timestamps), self.x_dims, self.x_dims), dtype=self.array_dtype())
+                    acc = jnp.array(self.lat_dims)[:, None].repeat(len(self.lat_dims), axis=1)
+                    x_cov = x_cov.at[..., acc, acc.T].set(post_cov)
                 
         return x_mean, x_cov, KL
     
     
     def sample_marginal_posterior(self, prng_state, num_samps, timestamps, x_eval, jitter, compute_KL):
         x_mean, x_cov, KL = self.marginal_posterior(
-            prng_state, num_samps, timestamps, x_eval, jitter, compute_KL)  # (num_samps, obs_dims, ts, 1)
+            num_samps, timestamps, x_eval, jitter, compute_KL)
         
         # conditionally independent sampling
-        x_std = safe_sqrt(x_cov)
-        x = x_mean + jr.normal(prng_state, shape=x_mean.shape) * x_std
+        if self.diagonal_cov:
+            x_std = safe_sqrt(x_cov)
+            x = x_mean + x_std[..., 0] * jr.normal(prng_state, shape=x_mean.shape)  # (num_samps, ts, x_dims)
+        else:
+            eps = jitter * jnp.eye(self.x_dims)[None, None]
+            Lcov = cholesky(x_cov + eps)
+            x = x_mean + (Lcov @ jr.normal(prng_state, shape=x_mean.shape))[..., 0]  # (num_samps, ts, x_dims)
         return x, KL
         
         

@@ -152,6 +152,8 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
         "y": y_t,
         "time": timestamps,
     }
+    
+    ISIs = ISIs[subselect]
 
     metainfo = {
         "neuron_regions": neuron_regions,

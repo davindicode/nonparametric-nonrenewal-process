@@ -94,7 +94,7 @@ class IdentityFactorized(FilterObservations):
         """
         f_mean, f_cov, KL_f, _ = self.gp.evaluate_posterior(
             prng_state, x_samples, jitter, compute_KL=True
-        )  # (evals, samp, f_dim)
+        )  # (num_samps, out_dims, ts, 1)
 
         if self.spikefilter is not None:
             y_filtered, KL_y = self.spikefilter.apply_filter(prng_state, y, compute_KL=True)

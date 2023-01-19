@@ -1,6 +1,7 @@
 import math
 import numbers
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 
@@ -31,7 +32,7 @@ class Gamma(RenewalLikelihood):
         dt,
         alpha,
         link_type="log",
-        array_type=jnp.float32,
+        array_type='float32',
     ):
         """
         Renewal parameters shape can be shared for all neurons or independent.
@@ -43,11 +44,11 @@ class Gamma(RenewalLikelihood):
         """
         constrain shape parameter in numerically stable regime
         """
+        model = jax.tree_map(lambda p: p, self)  # copy
 
         def update(alpha):
             return jnp.minimum(jnp.maximum(alpha, 1e-5), 2.5)
 
-        model = jax.tree_map(lambda p: p, self)  # copy
         model = eqx.tree_at(
             lambda tree: tree.alpha,
             model,
@@ -98,7 +99,7 @@ class LogNormal(RenewalLikelihood):
         dt,
         sigma,
         link_type="log",
-        array_type=jnp.float32,
+        array_type='float32',
     ):
         """
         :param np.ndarray sigma: :math:`$sigma$` parameter which is > 0
@@ -110,11 +111,11 @@ class LogNormal(RenewalLikelihood):
         """
         constrain sigma parameter in numerically stable regime
         """
-
+        model = jax.tree_map(lambda p: p, self)  # copy
+        
         def update(sigma):
             return jnp.maximum(sigma, 1e-5)
 
-        model = jax.tree_map(lambda p: p, self)  # copy
         model = eqx.tree_at(
             lambda tree: tree.sigma,
             model,
@@ -167,7 +168,7 @@ class InverseGaussian(RenewalLikelihood):
         dt,
         mu,
         link_type="log",
-        array_type=jnp.float32,
+        array_type='float32',
     ):
         """
         :param np.ndarray mu: :math:`$mu$` parameter which is > 0
@@ -179,11 +180,11 @@ class InverseGaussian(RenewalLikelihood):
         """
         constrain sigma parameter in numerically stable regime
         """
-
+        model = jax.tree_map(lambda p: p, self)  # copy
+        
         def update(mu):
             return jnp.maximum(mu, 1e-5)
 
-        model = jax.tree_map(lambda p: p, self)  # copy
         model = eqx.tree_at(
             lambda tree: tree.mu,
             model,

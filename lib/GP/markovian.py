@@ -370,9 +370,9 @@ def vmap_outdims_LGSSM_posterior(
     )
 
 
-class MultiOutputLTI(SSM):
+class IndependentLTI(SSM):
     """
-    Factorized spatial and temporal GP kernel with temporal markov kernel
+    Multi-output temporal GP with temporal markov kernel
     Independent outputs (posterior is factorized across output dimensions)
 
     We use the Kronecker kernel, with out_dims of the temporal kernel

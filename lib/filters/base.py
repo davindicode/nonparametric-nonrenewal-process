@@ -22,7 +22,7 @@ class Filter(module):
             raise ValueError("Filter length must be bigger than zero")
         super().__init__(array_type)
         self.cross_coupling = cross_coupling
-        self.filter_time = jnp.arange(filter_length, dtype=array_type)
+        self.filter_time = jnp.arange(filter_length, dtype=self.array_dtype())
         self.filter_length = filter_length
 
     def compute_filter(self, prng_state, compute_KL):
@@ -36,11 +36,10 @@ class Filter(module):
         Introduces the spike coupling by convolution with the spike train, no padding and left removal
         for causal convolutions.
 
-        :param jnp.ndarray input: input spiketrain or covariates with shape (trials, neurons, filter_length)
+        :param jnp.ndarray input: input spiketrain or covariates with shape (trials, neurons, ts)
         :returns: filtered input of shape (trials, neurons, filter_length)
         """
-        # num_samps = inputs.shape[0]
-        h, KL = self.compute_filter(prng_state, compute_KL)  # sample one trajectory
+        h, KL = self.compute_filter(prng_state, compute_KL)  # sample one trajectory (filter_len, post, pre)
         
         if self.cross_coupling:
             dn = lax.conv_dimension_numbers(

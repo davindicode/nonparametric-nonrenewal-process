@@ -24,7 +24,7 @@ class HeteroscedasticGaussian(Gaussian):
         p(y|f1,f2) = N(y|f1,link(f2)^2)
     """
 
-    def __init__(self, obs_dims, array_type=jnp.float32):
+    def __init__(self, obs_dims, array_type='float32'):
         """
         :param link: link function, either 'exp' or 'softplus' (note that the link is modified with an offset)
         """
@@ -86,7 +86,7 @@ class HeteroscedasticZeroInflatedPoisson(ZeroInflatedPoisson):
         obs_dims,
         tbin,
         link_type="log",
-        array_type=jnp.float32,
+        array_type='float32',
     ):
         super().__init__(obs_dims, tbin, None, link_type, array_type)
         self.f_dims = 2 * obs_dims  # overwrite
@@ -125,7 +125,7 @@ class HeteroscedasticNegativeBinomial(NegativeBinomial):
         obs_dims,
         tbin,
         link_type="log",
-        array_type=jnp.float32,
+        array_type='float32',
     ):
         super().__init__(obs_dims, tbin, None, link_type, array_type)
         self.f_dims = 2 * obs_dims  # overwrite
@@ -165,7 +165,7 @@ class HeteroscedasticConwayMaxwellPoisson(ConwayMaxwellPoisson):
         tbin,
         J=100,
         link_type="log",
-        array_type=jnp.float32,
+        array_type='float32',
     ):
         super().__init__(obs_dims, tbin, None, J, link_type, array_type)
         self.f_dims = 2 * obs_dims  # overwrite
@@ -206,7 +206,7 @@ class UniversalCount(CountLikelihood):
     W: jnp.ndarray
     b: jnp.ndarray
 
-    def __init__(self, obs_dims, C, K, basis_mode, W, b, tbin, array_type=jnp.float32):
+    def __init__(self, obs_dims, C, K, basis_mode, W, b, tbin, array_type='float32'):
         """
         :param int K: max spike count
         :param jnp.ndarray W: mapping matrix of shape (obs_dims, K, C)
@@ -292,7 +292,7 @@ class UniversalCount(CountLikelihood):
         """
         a = self.count_logits(f)
         log_p_cnts = jax.nn.log_softmax(a, axis=1)
-        inds = y.astype(int)
+        inds = y.astype(jnp.dtype('int32'))
         ll = jnp.take(log_p_cnts, inds, axis=1)
         return ll
 

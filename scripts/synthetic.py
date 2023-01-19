@@ -144,6 +144,8 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
         "y": y_t,
         "time": timestamps,
     }
+    
+    ISIs = ISIs[subselect]
 
     metainfo = {}
     name = session_name + "ISI{}".format(max_ISI_order) + "sel{}to{}".format(*select_fracs)

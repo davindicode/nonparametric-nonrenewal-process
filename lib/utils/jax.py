@@ -58,8 +58,8 @@ def constrain_diagonal(K, lower_lim=1e-6):
 
 
 ### Monte Carlo ###
-def mc_sample(dim, key, approx_points):
-    z = random.normal(key, shape=(dim, approx_points))
+def mc_sample(sample_shape, key, approx_points):
+    z = random.normal(key, shape=(*sample_shape, approx_points))
     w = np.ones((approx_points,)) / approx_points
     return z, w
 

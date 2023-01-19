@@ -10,11 +10,11 @@ from jax.scipy.linalg import block_diag, solve_triangular
 
 from jax.scipy.special import erf, gammaln, logit
 
-from ..utils.jax import expsum, mc_sample, safe_log, softplus, softplus_inv
-from ..utils.linalg import gauss_hermite, get_blocks, inv_PSD
-from ..utils.neural import gen_ZIP, gen_NB, gen_CMP
+from .base import CountLikelihood, FactorizedLikelihood, LinkTypes
 
-from .base import CountLikelihood, FactorizedLikelihood
+from ..utils.jax import mc_sample, safe_log, softplus, softplus_inv
+from ..utils.linalg import gauss_hermite
+from ..utils.neural import gen_ZIP, gen_NB, gen_CMP
 
 _log_twopi = math.log(2 * math.pi)
 
@@ -28,7 +28,7 @@ class Gaussian(FactorizedLikelihood):
     
     pre_variance: jnp.ndarray
 
-    def __init__(self, obs_dims, variance, array_type=jnp.float32):
+    def __init__(self, obs_dims, variance, array_type='float32'):
         """
         :param jnp.ndarray pre_variance: The observation noise variance, σ² (obs_dims,)
         """
@@ -56,11 +56,11 @@ class Gaussian(FactorizedLikelihood):
 
     def variational_expectation(
         self,
-        prng_state,
         y,
         f_mean,
         f_cov,
-        jitter,
+        prng_state,
+        jitter, 
         approx_int_method,
     ):
         """
@@ -74,6 +74,7 @@ class Gaussian(FactorizedLikelihood):
         :param jnp.array f_cov: q(f) mean with shape (f_dims, f_dims)
         """
         obs_var = softplus(self.pre_variance)
+        f_mean = f_mean[:, 0]
         f_var = jnp.diag(f_cov)  # diagonalize
 
         Ell = -0.5 * (
@@ -82,7 +83,7 @@ class Gaussian(FactorizedLikelihood):
             + safe_log(obs_var)
         )  # (obs_dims,)
 
-        Ell = jnp.nansum(logEll_lik)  # sum over obs_dims
+        Ell = jnp.nansum(Ell)  # sum over obs_dims
         return Ell
 
     def sample_Y(self, prng_state, f):
@@ -138,7 +139,7 @@ class PointProcess(FactorizedLikelihood):
         neurons,
         dt,
         link_type="log", 
-        array_type=jnp.float32,
+        array_type='float32',
     ):
         assert link_type in ["log", "softplus"]
         super().__init__(neurons, neurons, link_type, array_type)
@@ -151,10 +152,40 @@ class PointProcess(FactorizedLikelihood):
         :return:
             log p(yₙ|fₙ), p(yₙ|fₙ) = Pʸ(1-P)⁽¹⁻ʸ⁾
         """
-        if self.link_type == "softplus":
-            f = safe_log(softplus(f))
-            
+        f = safe_log(self.inverse_link(f)) 
         return y * f - jnp.exp(f) * self.dt
+    
+    def variational_expectation(
+        self,
+        y,
+        f_mean,
+        f_cov,
+        prng_state,
+        jitter, 
+        approx_int_method,
+    ):
+        """
+        Exact integration, overwrite approximate integration
+
+        log Zₙ = log ∫ 𝓝(yₙ|fₙ,σ²) 𝓝(fₙ|mₙ,vₙ) dfₙ = E[𝓝(yₙ|fₙ,σ²)]
+
+        ∫ log 𝓝(yₙ|fₙ,σ²) 𝓝(fₙ|mₙ,vₙ) dfₙ = E[log 𝓝(yₙ|fₙ,σ²)]
+
+        :param jnp.array y: observations (obs_dims,)
+        :param jnp.array f_mean: q(f) mean with shape (f_dims, 1)
+        :param jnp.array f_cov: q(f) mean with shape (f_dims, f_dims)
+        """
+        if self.link_type == LinkTypes["log"]:  # exact
+            f_mean = f_mean[:, 0]
+            f_var = jnp.diag(f_cov)  # diagonalize
+
+            Ell = y * f_mean - jnp.exp(f_mean + f_var/2.) * self.dt
+            Ell = jnp.nansum(Ell)  # sum over obs_dims
+            return Ell
+        
+        else:
+            return super().variational_expectation(
+                y, f_mean, f_cov, jitter, approx_int_method)
 
     def sample_Y(self, prng_state, f):
         """
@@ -170,7 +201,7 @@ class PointProcess(FactorizedLikelihood):
             rho = jnp.exp(f)
             
         rate = jnp.maximum(rho * self.dt, 1.)
-        return jr.bernoulli(prng_state, rate).astype(self.array_type)
+        return jr.bernoulli(prng_state, rate).astype(self.array_dtype())
 
 
 ### discrete likelihoods ###
@@ -181,9 +212,20 @@ class Bernoulli(FactorizedLikelihood):
 
     The error function likelihood = probit = Bernoulli likelihood with probit link.
     The logistic likelihood = logit = Bernoulli likelihood with logit link.
+    
+    The logit link function:
+        P = E[yₙ=1|fₙ] = 1 / 1 + exp(-fₙ)
+
+        The Probit link function, i.e. the Error Function Likelihood:
+        i.e. the Gaussian (Normal) cumulative density function:
+        P = E[yₙ=1|fₙ] = Φ(fₙ)
+                       = ∫ 𝓝(x|0,1) dx, where the integral is over (-∞, fₙ],
+        The Normal CDF is calulcated using the error function:
+                       = (1 + erf(fₙ / √2)) / 2
+        for erf(z) = (2/√π) ∫ exp(-x²) dx, where the integral is over [0, z]
     """
 
-    def __init__(self, obs_dims, link_type="logit", array_type=jnp.float32):
+    def __init__(self, obs_dims, link_type="logit", array_type='float32'):
         assert link_type in ["logit", "probit"]
         super().__init__(obs_dims, obs_dims, link_type, array_type)
 
@@ -211,7 +253,7 @@ class Bernoulli(FactorizedLikelihood):
             spike train of shape (obs_dims,)
         """
         p_spike = self.inverse_link(f)
-        return jr.bernoulli(prng_state, p_spike).astype(self.array_type)
+        return jr.bernoulli(prng_state, p_spike).astype(self.array_dtype())
 
 
 class Poisson(CountLikelihood):
@@ -222,7 +264,7 @@ class Poisson(CountLikelihood):
     yₙ is non-negative integer count data
     """
 
-    def __init__(self, obs_dims, tbin, link_type="log", array_type=jnp.float32):
+    def __init__(self, obs_dims, tbin, link_type="log", array_type='float32'):
         """
         :param link: link function, either 'exp' or 'logistic'
         """
@@ -250,26 +292,21 @@ class Poisson(CountLikelihood):
 
     def variational_expectation(
         self,
-        prng_state,
         y,
         f_mean,
         f_cov,
+        prng_state,
         jitter,
         approx_int_method,
     ):
         """
         Closed form of the expected log likelihood for exponential link function
         """
-        if self.link_type == "log":  # closed form for E[log p(y|f)]
+        if self.link_type == LinkTypes["log"]:  # closed form for E[log p(y|f)]
+            f_mean = f_mean[:, 0]
             f_var = jnp.diag(f_cov)  # diagonalize
-            mu_mean = self.inverse_link(f_mean)
-            ll = y * safe_log(mu_mean) - mu_mean - gammaln(y + 1.0)
-
-            Ell = -0.5 * (
-                _log_twopi
-                + (f_var + (y - f_mean) ** 2) / (obs_var + 1e-10)
-                + safe_log(obs_var)
-            )  # (obs_dims)
+            int_exp = jnp.exp(-f_mean + f_var / 2.)
+            Ell = y * f_mean - int_exp - gammaln(y + 1.0)
 
             Ell = jnp.nansum(Ell)  # sum over obs_dims
             return Ell
@@ -327,7 +364,7 @@ class ZeroInflatedPoisson(CountLikelihood):
 
     arctanh_alpha: Union[jnp.ndarray, None]
 
-    def __init__(self, obs_dims, tbin, alpha, link_type="log", array_type=jnp.float32):
+    def __init__(self, obs_dims, tbin, alpha, link_type="log", array_type='float32'):
         """
         :param link: link function, either 'exp' or 'logistic'
         """
@@ -406,7 +443,7 @@ class NegativeBinomial(CountLikelihood):
 
     r_inv: Union[jnp.ndarray, None]
 
-    def __init__(self, obs_dims, tbin, r_inv, link_type="log", array_type=jnp.float32):
+    def __init__(self, obs_dims, tbin, r_inv, link_type="log", array_type='float32'):
         """
         :param link: link function, either 'exp' or 'logistic'
         """
@@ -508,7 +545,7 @@ class ConwayMaxwellPoisson(CountLikelihood):
         nu,
         J=100,
         link_type="log",
-        array_type=jnp.float32,
+        array_type='float32',
     ):
         """
         :param int J: number of terms to use for partition function sum
@@ -516,7 +553,7 @@ class ConwayMaxwellPoisson(CountLikelihood):
         super().__init__(obs_dims, obs_dims, tbin, link_type, array_type)
         self.log_nu = jnp.log(self._to_jax(nu)) if nu is not None else None
 
-        self.powers = jnp.arange(J + 1).astype(self.array_type)
+        self.powers = jnp.arange(J + 1).astype(self.array_dtype())
         self.jfact = gammaln(self.powers + 1.0)
 
     def apply_constraints(self):

@@ -3,10 +3,18 @@
 cd ./scripts/
 
   
-python3 synthetic.py --datatype 0 --cv_folds 5 --cv -1 0 1 2 3 4 --likelihood IGexp --filter selfsvgp8 --mapping svgp32 --x_mode hd-isi1 --ncvx 2 --lr 1e-2 --jitter 1e-4 --hist_len 10 --batch_size 200000 --gpu 0
+python3 synthetic.py spikes --data_path ../data/synthetic/ --session_name syn_data_seed123 --select_frac 0.0 0.1 --array_type float32 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -1 --batch_size 5000 --observed_covs x-y-theta --observations factorized_gp-32-100 --likelihood PP-log --filter_type rcb-1-10.-1.-1.-self-H500 --device 0 --force_cpu
+
+python3 synthetic.py spikes --data_path ../data/synthetic/ --session_name syn_data_seed123 --select_frac 0.0 0.1 --array_type float32 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -1 --batch_size 5000 --observed_covs x-y-theta --observations rate_renewal_gp-32-100 --likelihood gamma-log --device 0 --force_cpu
+
+python3 synthetic.py spikes --data_path ../data/synthetic/ --session_name syn_data_seed123 --select_frac 0.0 0.1 --array_type float32 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -1 --batch_size 5000 --observed_covs x-y-theta --observations mod_renewal_gp-32-100 --likelihood gamma-log --device 0 --force_cpu
+
+python3 synthetic.py spikes --data_path ../data/synthetic/ --session_name syn_data_seed123 --select_frac 0.0 0.1 --array_type float32 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -1 --batch_size 5000 --observed_covs x-y-theta --observations nonparam_pp_gp-8-matern32-10-spatial_MF-fixed_grid-100-12. --likelihood isi3 --device 0
 
 
-python3 synthetic.py --datatype 0 --cv_folds 5 --cv -1 0 1 2 3 4 --likelihood IGexp --mapping svgp16 --x_mode hd --ncvx 2 --lr 1e-3 --jitter 1e-4 --batch_size 200000 --gpu 0
 
 
-python3 synthetic.py --datatype 0 --cv_folds 5 --cv -1 0 1 2 3 4 --likelihood IPPexp --mapping svgp32 --x_mode hd-isi1 --ncvx 2 --lr 1e-3 --jitter 1e-4 --batch_size 200000 --gpu 0
+--latent_covs matern32d2-100-diagonal-fixed_grid
+  
+  
+--filter_type rcb-1-10.-1.-1.-selfH500
