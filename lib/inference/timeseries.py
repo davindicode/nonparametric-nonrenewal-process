@@ -3,10 +3,11 @@ from typing import List, Union
 import numpy as np
 
 import equinox as eqx
+from jax import vmap
 import jax.numpy as jnp
 import jax.random as jr
 
-from ..base import module
+from ..base import module, ArrayTypes
 from ..GP.markovian import GaussianLTI
 from ..GP.switching import SwitchingLTI
 from ..GP.gpssm import DTGPSSM
@@ -95,9 +96,9 @@ class GaussianLatentObservedSeries(module):
     x_dims: int
     diagonal_cov: bool
 
-    def __init__(self, ssgp, lat_dims, obs_dims, diagonal_cov=False, array_type=jnp.float32):
+    def __init__(self, ssgp, lat_dims, obs_dims, diagonal_cov=False, array_type="float32"):
         if ssgp is not None:  # checks
-            assert ssgp.array_type == array_type
+            assert ssgp.array_type == ArrayTypes[array_type]
             assert len(lat_dims) == ssgp.kernel.out_dims
             
         super().__init__(array_type)
@@ -197,7 +198,8 @@ class GaussianLatentObservedSeries(module):
         else:
             post_mean, post_cov, KL = self.ssgp.evaluate_posterior(
                 timestamps, False, compute_KL, jitter)
-            post_mean = post_mean[..., 0]  # (tr, time, x_dims)
+            post_mean = post_mean[..., 0]  # (time, lat_dims)
+            post_mean, post_cov = post_mean[None].repeat(num_samps, axis=0), post_cov[None].repeat(num_samps, axis=0)
             
             if len(self.obs_dims) == 0:
                 x_mean, x_cov = post_mean, post_cov

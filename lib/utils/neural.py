@@ -36,7 +36,7 @@ def get_ISIs(timeline, spike_ind, prng_state, minimum=1e-8):
     return container
 
 
-def get_lagged_ISIs(spiketrain, lags):
+def get_lagged_ISIs(spiketrain, lags, dt):
     """
     :param np.ndarray spiketrain: input spike trains of shape (time, neurons)
     :return:
@@ -45,7 +45,7 @@ def get_lagged_ISIs(spiketrain, lags):
     T, N = spiketrain.shape
 
     def step(carry, inputs):
-        carry = carry.at[:, 0].add(1.0)
+        carry = carry.at[:, 0].add(dt)
         out = carry
 
         # spike reset
@@ -61,6 +61,27 @@ def get_lagged_ISIs(spiketrain, lags):
 
     _, lagged_ISIs = lax.scan(step, init, xs)
     return lagged_ISIs
+
+
+def time_rescale(spikes, intensities, dt, max_intervals):
+    """
+    rate rescaling, computes the log density on the way
+
+    :param jnp.ndarray spikes: (ts, obs_dims)
+    :param jnp.ndarray intensities: (ts, obs_dims)
+    :param float dt: time bin size
+    """
+    def step(carry, inputs):
+        t_tilde = carry
+        intensity, spike = inputs
+
+        t_tilde += intensity * dt
+        t_tilde_ = jnp.where(spike, 0., t_tilde)  # reset after spike
+        return (t_tilde_, ll), t_tilde if return_t_tilde else None
+
+    init = jnp.nan*jnp.ones((self.renewal.obs_dims))
+    _, t_tildes = lax.scan(step, init=init, xs=(intensities, spikes))
+    return log_lik, t_tildes
 
 
 def train_to_ind(train, allow_duplicate):

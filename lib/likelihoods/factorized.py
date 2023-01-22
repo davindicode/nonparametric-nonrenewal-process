@@ -62,6 +62,7 @@ class Gaussian(FactorizedLikelihood):
         prng_state,
         jitter, 
         approx_int_method,
+        log_predictive=False,
     ):
         """
         Exact integration, overwrite approximate integration
@@ -73,18 +74,23 @@ class Gaussian(FactorizedLikelihood):
         :param jnp.array f_mean: q(f) mean with shape (f_dims,)
         :param jnp.array f_cov: q(f) mean with shape (f_dims, f_dims)
         """
-        obs_var = softplus(self.pre_variance)
-        f_mean = f_mean[:, 0]
-        f_var = jnp.diag(f_cov)  # diagonalize
+        if log_predictive is False:
+            obs_var = softplus(self.pre_variance)
+            f_mean = f_mean[:, 0]
+            f_var = jnp.diag(f_cov)  # diagonalize
 
-        Ell = -0.5 * (
-            _log_twopi
-            + (f_var + (y - f_mean) ** 2) / (obs_var + 1e-10)
-            + safe_log(obs_var)
-        )  # (obs_dims,)
+            Ell = -0.5 * (
+                _log_twopi
+                + (f_var + (y - f_mean) ** 2) / (obs_var + 1e-10)
+                + safe_log(obs_var)
+            )  # (obs_dims,)
 
-        Ell = jnp.nansum(Ell)  # sum over obs_dims
-        return Ell
+            Ell = jnp.nansum(Ell)  # sum over obs_dims
+            return Ell
+
+        else:
+            return super().variational_expectation(
+                y, f_mean, f_cov, jitter, approx_int_method, log_predictive)
 
     def sample_Y(self, prng_state, f):
         """
@@ -163,6 +169,7 @@ class PointProcess(FactorizedLikelihood):
         prng_state,
         jitter, 
         approx_int_method,
+        log_predictive=False,
     ):
         """
         Exact integration, overwrite approximate integration
@@ -175,7 +182,7 @@ class PointProcess(FactorizedLikelihood):
         :param jnp.array f_mean: q(f) mean with shape (f_dims, 1)
         :param jnp.array f_cov: q(f) mean with shape (f_dims, f_dims)
         """
-        if self.link_type == LinkTypes["log"]:  # exact
+        if log_predictive is False and self.link_type == LinkTypes["log"]:  # exact
             f_mean = f_mean[:, 0]
             f_var = jnp.diag(f_cov)  # diagonalize
 
@@ -185,7 +192,7 @@ class PointProcess(FactorizedLikelihood):
         
         else:
             return super().variational_expectation(
-                y, f_mean, f_cov, jitter, approx_int_method)
+                y, f_mean, f_cov, jitter, approx_int_method, log_predictive)
 
     def sample_Y(self, prng_state, f):
         """
@@ -298,11 +305,12 @@ class Poisson(CountLikelihood):
         prng_state,
         jitter,
         approx_int_method,
+        log_predictive=False, 
     ):
         """
         Closed form of the expected log likelihood for exponential link function
         """
-        if self.link_type == LinkTypes["log"]:  # closed form for E[log p(y|f)]
+        if log_predictive is False and self.link_type == LinkTypes["log"]:  # closed form for E[log p(y|f)]
             f_mean = f_mean[:, 0]
             f_var = jnp.diag(f_cov)  # diagonalize
             int_exp = jnp.exp(-f_mean + f_var / 2.)
@@ -319,6 +327,7 @@ class Poisson(CountLikelihood):
                 f_cov,
                 jitter,
                 approx_int_method,
+                log_predictive, 
             )
 
     def sample_Y(self, prng_state, f):

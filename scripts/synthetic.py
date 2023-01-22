@@ -111,6 +111,7 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
     
     # ISIs
     ISIs = data["ISIs"][..., :max_ISI_order]  # (ts, neurons, order)
+    
     order_computed_at = np.empty_like(ISIs[0, :, 0]).astype(int)
     for n in range(order_computed_at.shape[0]):
         order_computed_at[n] = np.where(
@@ -258,7 +259,7 @@ def main():
     parser_spikes.add_argument("--data_path", action="store", type=str)
     parser_spikes.add_argument("--session_name", action="store", type=str)
     parser_spikes.add_argument("--select_fracs", default=[0., 1.], nargs="+", type=float)
-    parser_spikes.add_argument("--max_ISI_order", default=3, type=int)
+    parser_spikes.add_argument("--max_ISI_order", default=4, type=int)
     
     args = parser.parse_args()
 
@@ -277,7 +278,7 @@ def main():
     
     print("Setting up model...")
     save_name = gen_name(args, dataset_dict)
-    gplvm_template.fit(args, dataset_dict, observed_kernel_dict_induc_list, save_name)
+    gplvm_template.fit_and_save(args, dataset_dict, observed_kernel_dict_induc_list, save_name)
 
 
 if __name__ == "__main__":

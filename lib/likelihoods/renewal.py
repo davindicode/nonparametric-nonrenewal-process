@@ -75,7 +75,7 @@ class Gamma(RenewalLikelihood):
         """
         return gammainc(self.alpha, ISI)
 
-    def shape_scale(self):
+    def mean_scale(self):
         return self.alpha
 
     def sample_ISI(self, num_samps):
@@ -146,7 +146,7 @@ class LogNormal(RenewalLikelihood):
         log_ISI = safe_log(ISI)
         return 0.5 * (1.0 + erf(log_ISI / jnp.sqrt(2.0) / self.sigma))
 
-    def shape_scale(self):
+    def mean_scale(self):
         return jnp.exp(self.sigma**2 / 2.0)
 
     def sample_ISI(self, num_samps):
@@ -213,8 +213,8 @@ class InverseGaussian(RenewalLikelihood):
             -sqrt_ISI / self.mu - 1.0 / sqrt_ISI
         )
 
-    def shape_scale(self):
-        return 1.0 / self.mu
+    def mean_scale(self):
+        return self.mu
 
     def sample_ISI(self, num_samps):
         return scstats.invgauss(mu, scale=self.shape_scale, size=(num_samps,))

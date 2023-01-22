@@ -15,7 +15,7 @@ from ..utils.jax import constrain_diagonal
 
 
 @eqx.filter_vmap(
-    args=(None, None, None, None, None, -3, -3, None, None, None, None, None, None),
+    args=(None, None, None, None, None, 2, 2, None, None, None, None, None, None),
     out=(0, 0, 0),
 )
 def vmap_spatial_LGSSM_posterior(
@@ -183,6 +183,7 @@ class KroneckerLTI(SSM):
                 jitter,
             )  # (spatial_locs, out_dims, timesteps, 1)
 
+            # (out_dims, timesteps, spatial_locs, 1)
             post_means_ = post_means[..., 0].transpose(1, 2, 0, 3)
             post_covs_ = post_covs[..., 0].transpose(1, 2, 0, 3)
 
@@ -211,9 +212,10 @@ class KroneckerLTI(SSM):
                 mean_only,
                 compute_KL,
                 jitter,
-            )  # (out_dims, timesteps, spatial_locs, 1 or spatial_locs)
+            )  # (out_dims, timesteps, spatial_locs, 1 and spatial_locs)
 
-        C_krr, C_nystrom = self.kernel.sparse_conditional(x_eval, jitter)
+        # spatial read-out
+        C_krr, C_nystrom = self.kernel.sparse_conditional(x_eval, jitter)  # (out_dims, ts, spat_locs)
         Kmarkov = self.kernel.markov_factor.K(
             t_eval, None, True
         )  # (out_dims, ts, 1)
@@ -221,16 +223,24 @@ class KroneckerLTI(SSM):
         post_means = (C_krr * post_means_[..., 0]).sum(
             -1, keepdims=True
         )  # (out_dims, timesteps, 1)
-        W = C_krr[..., None, :]  # (out_dims, timesteps, 1, spatial_locs)
-        post_covs = (W @ post_covs_ @ W.transpose(0, 1, 3, 2))[
-            ..., 0
-        ] + Kmarkov * C_nystrom
+        
+        if self.spatial_MF:
+            W = C_krr[..., None]  # (out_dims, timesteps, spatial_locs, 1)
+            post_covs = (W**2 * post_covs_).sum(-2) + Kmarkov * C_nystrom
+            
+        else:
+            W = C_krr[..., None, :]  # (out_dims, timesteps, 1, spatial_locs)
+            post_covs = (W @ post_covs_ @ W.transpose(0, 1, 3, 2))[
+                ..., 0
+            ] + Kmarkov * C_nystrom
+            
         return post_means, post_covs, KL.sum()  # sum over out_dims
 
     ### sample ###
     def sample_prior(self, prng_state, t_eval, x_eval, jitter):
         """
-        Sample from the model prior f~N(0,K) multiple times using a nested loop.
+        Sample from the model prior
+        
         :param num_samps: number of samples to draw
         :param jnp.ndarray tx_eval: input locations at which to sample (out_dims, locs)
         :return:
@@ -287,73 +297,92 @@ class KroneckerLTI(SSM):
         :return:
             f_sample: the prior samples (num_samps, out_dims, locs)
         """
+        prng_keys = jr.split(prng_state, 2)
         state_dims = self.kernel.state_dims
-        # sample independent temporal processes
+        
+        site_locs, site_dlocs = self.get_site_locs()
+        t_eval = jnp.broadcast_to(t_eval, (site_locs.shape[0], t_eval.shape[-1]))
+        
+        ### sample independent temporal processes ###
 
         # RFF part
 
         # sparse kernel part
-        site_locs, site_dlocs = self.get_site_locs()
 
-        # evaluation locations
-        t_all, site_ind, eval_ind = order_times(t_eval, site_locs)
-        interp_sites = interpolation_transitions(
-            t_eval, site_locs, self.kernel.state_transition
-        )
+        
 
         # compute linear dynamical system
-        H, Pinf, As, Qs = self.kernel.get_LDS(site_locs, site_dlocs)
-
-        # sample prior at obs and eval locs
-        prng_keys = jr.split(prng_state, 2)
-        prior_samps = self.sample_prior(
-            prng_keys[0], num_samps, t_all, jitter
-        )  # (time, num_samps, out_dims, 1)
-
+        H, Pinf, As, Qs = self.kernel._get_LDS(
+            site_dlocs, site_locs.shape[1]
+        )  # (ts, out_dims, sd, sd)
+        
+        # evaluation locations
+        t_all, site_ind, eval_ind = vmap(order_times, (0, 0), (0, 0, 0))(
+            t_eval, self.site_locs
+        )  # vmap over out_dims
+        
+        ind_eval, dt_fwd, dt_bwd = vmap(interpolation_times, (0, 0), (1, 1, 1))(
+            t_eval, site_locs
+        )  # vmap over out_dims
+        dt_fwd_bwd = jnp.concatenate([dt_fwd, dt_bwd], axis=0)  # (2*num_evals, out_dims)
+        A_fwd_bwd = vmap(self.kernel._state_transition)(
+            dt_fwd_bwd
+        )  # vmap over num_evals, (eval_inds, out_dims, sd, sd)
+        Q_fwd_bwd = vmap(vmap(LTI_process_noise, (0, 0), 0), (0, None), 0)(A_fwd_bwd, Pinf)
+        
         # posterior mean
-        post_means, _, KL_ss = evaluate_LGSSM_posterior(
+        post_means, _, KL_ss = vmap_outdims_LGSSM_posterior(
             H,
             Pinf,
             Pinf,
             As,
             Qs,
-            self.site_obs,
-            self.site_Lcov,
-            interp_sites,
+            self.site_obs[..., None],
+            self.site_Lcov[..., None],
+            ind_eval, 
+            A_fwd_bwd, 
+            Q_fwd_bwd, 
             mean_only=True,
             compute_KL=compute_KL,
             jitter=jitter,
         )  # (time, out_dims, 1)
 
+        # sample prior at obs and eval locs
+        prior_samps = self.sample_prior(
+            prng_keys[0], num_samps, t_all, jitter
+        )  # (num_samps, out_dims, time, 1)
+        
         # noisy prior samples at eval locs
-        array_indexing = lambda ind, array: array[ind, ...]
-        varray_indexing = vmap(array_indexing, (0, 2), 2)
+        array_indexing = lambda ind, array: array[..., ind, :]
+        varray_indexing = vmap(array_indexing, (0, 1), 1)  # vmap over out_dims
 
-        prior_samps_t = (varray_indexing(site_ind, prior_samps),)
-        prior_samps_eval = (varray_indexing(eval_ind, prior_samps),)
-
-        prior_samps_noisy = prior_samps_t + self.site_Lcov[:, None, ...] @ jr.normal(
+        prior_samps_t = varray_indexing(site_ind, prior_samps)
+        prior_samps_eval = varray_indexing(eval_ind, prior_samps)
+        
+        prior_samps_noisy = prior_samps_t + self.site_Lcov[None, ...] * jr.normal(
             prng_keys[1], shape=prior_samps_t.shape
-        )  # (time, tr, out_dims, 1)
+        )  # (tr, out_dims, time, 1)
 
         # smooth noisy samples
         def smooth_prior_sample(prior_samp_i):
-            smoothed_sample, _, _ = evaluate_LGSSM_posterior(
+            smoothed_sample, _, _ = vmap_outdims_LGSSM_posterior(
                 H,
                 Pinf,
                 Pinf,
                 As,
                 Qs,
                 prior_samp_i,
-                self.site_Lcov,
-                interp_sites,
+                self.site_Lcov[..., None],
+                ind_eval, 
+                A_fwd_bwd, 
+                Q_fwd_bwd, 
                 mean_only=True,
                 compute_KL=False,
                 jitter=jitter,
             )
             return smoothed_sample
 
-        smoothed_samps = vmap(smooth_prior_sample, 1, 1)(prior_samps_noisy)
+        smoothed_samps = vmap(smooth_prior_sample)(prior_samps_noisy)[..., 0]  # vmap over MC
 
         # Matheron's rule pathwise samplig
-        return prior_samps_eval - smoothed_samps + post_means[:, None, ...], KL_ss
+        return prior_samps_eval - smoothed_samps + post_means[None, ..., 0], KL_ss

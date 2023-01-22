@@ -146,6 +146,13 @@ def gauss_legendre(dim, num_quad_pts):
     return sigma_pts, weights
 
 
+def gauss_quad_integrate(a, b, sigma_pts, weights):
+    # transform interval
+    sigma_pts = 0.5 * (sigma_pts + 1) * (b - a) + a
+    weights *= jnp.prod(0.5 * (b - a))
+    return sigma_pts, weights
+
+
 def newton_cotes(f, h, order="trapezoid"):
     """
     Integrate from regularly sampled function points

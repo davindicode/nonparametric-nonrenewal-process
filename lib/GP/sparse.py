@@ -145,7 +145,7 @@ class qSVGP(SparseGP):
     whitened: bool
 
     def __init__(
-        self, kernel, induc_locs, u_mu, u_Lcov, RFF_num_feats=0, whitened=False
+        self, kernel, induc_locs, u_mu, u_Lcov, RFF_num_feats=0, whitened=False, 
     ):
         """
         :param induc_locs: inducing point locations z, array of shape (out_dims, num_induc, in_dims)
@@ -163,15 +163,14 @@ class qSVGP(SparseGP):
         model = super().apply_constraints()
 
         def update(Lcov):
-            epdfunc = lambda x: constrain_diagonal(x, lower_lim=1e-2)
-            Lcov = vmap(epdfunc)(jnp.tril(Lcov))
+            Lcov = constrain_diagonal(jnp.tril(Lcov), lower_lim=1e-8)
             # Lcov = jnp.tril(Lcov) if self.spatial_MF else Lcov
             return Lcov
 
         model = eqx.tree_at(
             lambda tree: tree.u_Lcov,
             model,
-            replace_fn=update,
+            replace_fn=vmap(update),
         )
 
         return model
@@ -238,14 +237,13 @@ class tSVGP(SparseGP):
         model = super().apply_constraints()
 
         def update(Lcov):
-            epdfunc = lambda x: constrain_diagonal(x, lower_lim=1e-2)
-            Lcov = vmap(epdfunc)(jnp.tril(Lcov))
+            Lcov = constrain_diagonal(jnp.tril(Lcov), lower_lim=1e-2)
             return Lcov
 
         model = eqx.tree_at(
             lambda tree: tree.chol_Lambda_2,
             model,
-            replace_fn=update,
+            replace_fn=vmap(update),
         )
 
         return model

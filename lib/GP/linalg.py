@@ -6,6 +6,7 @@ from jax.numpy.linalg import cholesky
 from jax.scipy.linalg import block_diag, cho_solve, solve_triangular
 
 from ..utils.linalg import solve_PSD
+from ..utils.jax import safe_log
 
 _log_twopi = math.log(2 * math.pi)
 
@@ -283,7 +284,7 @@ def evaluate_LGSSM_posterior(
             [P_init[None, ...], smoother_covs, P_end[None, ...]], axis=0
         )
         gain_aug = jnp.concatenate([jnp.zeros_like(gains[:1, ...]), gains], axis=0)
-
+        
         eval_means, eval_covs = predict_between_sites_vmap(
             ind_eval,
             A_fwd,
@@ -427,15 +428,21 @@ def evaluate_qsparse_posterior(
         post_covs = None
 
     if compute_KL:
-        if whitened:
-            log_determinants = -jnp.log(vdiag(u_Lcov)).sum()
-        else:
-            log_determinants = (jnp.log(vdiag(chol_Kzz)) - jnp.log(vdiag(u_Lcov))).sum()
+       # if whitened:
+        log_determinants = -jnp.log(vdiag(L)).sum()
+#         else:
+#             log_determinants = (safe_log(vdiag(chol_Kzz)) - safe_log(vdiag(u_Lcov))).sum()
 
-        trace_term = jnp.trace(L @ L.transpose(0, 2, 1)).sum()
+        trace_term = vmap(jnp.trace)(L @ L.transpose(0, 2, 1)).sum()
         quadratic_form = (v.transpose(0, 2, 1) @ v).sum()
-        KL = 0.5 * (trace_term + quadratic_form - num_induc) + log_determinants
+        KL = 0.5 * (trace_term + quadratic_form - out_dims*num_induc) + log_determinants
 
+        # collision avoidance
+        repulsion_func = lambda x: jnp.maximum(1e-3 - jnp.abs(x).sum(), 0.)
+        dist_uu = vmap(vmap(vmap(repulsion_func)))(induc_locs[..., None, :] - induc_locs[:, None, ...])
+        repulsion = dist_uu.at[:, jnp.arange(num_induc), jnp.arange(num_induc)].set(0.).sum()
+        KL += repulsion
+        
     else:
         KL = 0.0
 
@@ -526,10 +533,11 @@ def evaluate_tsparse_posterior(
         Rinv_lambda_1 = Rinv_stacked[..., :1]  # (out_dims, num_induc, 1)
         Rinv_Kzz = Rinv_stacked[..., 1:]
 
-        trace_term = jnp.trace(Rinv_Kzz).sum()
+        trace_term = vmap(jnp.trace)(Rinv_Kzz).sum()
         quadratic_form = (lambda_1.transpose(0, 2, 1) @ Rinv_Kzz @ Rinv_lambda_1).sum()
-        log_determinants = (jnp.log(vdiag(chol_R)) - jnp.log(vdiag(chol_Kzz))).sum()
-        KL = 0.5 * (trace_term + quadratic_form - num_induc) + log_determinants
+        log_determinants = -jnp.log(vdiag(Rinv_Kzz)).sum()
+        #(safe_log(vdiag(chol_R)) - safe_log(vdiag(chol_Kzz))).sum()
+        KL = 0.5 * (trace_term + quadratic_form - out_dims*num_induc) + log_determinants
     else:
         KL = 0.0
 

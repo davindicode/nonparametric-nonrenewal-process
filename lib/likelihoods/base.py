@@ -96,6 +96,7 @@ class FactorizedLikelihood(Likelihood):
         prng_state, 
         jitter, 
         approx_int_method,
+        log_predictive=False, 
     ):
         """
         E[log p(yₙ|fₙ)] = ∫ log p(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ and its derivatives
@@ -145,11 +146,14 @@ class FactorizedLikelihood(Likelihood):
             f_locs, y, False
         )  # vmap over approx_pts (obs_dims, approx_pts)
 
-        # expected log likelihood
-        weighted_log_lik = jnp.nansum(w * ll, axis=0)  # (approx_pts,)
-        E_log_lik = jnp.sum(weighted_log_lik)  # E_q(f)[log p(y|f)]
+        if log_predictive:  # log predictive density
+            log_w = jnp.log(w)
+            Eq = jax.nn.logsumexp(jnp.nan_to_num(log_w + ll, nan=-jnp.inf), axis=0)
+        else:  # expected log likelihood
+            weighted_log_lik = jnp.nansum(w * ll, axis=0)  # (approx_pts,)
+            Eq = jnp.sum(weighted_log_lik)  # E_q(f)[log p(y|f)]
 
-        return E_log_lik
+        return Eq
 
 
 #         """
@@ -326,5 +330,8 @@ class RenewalLikelihood(Likelihood):
     def log_hazard(self, ISI):
         return self.log_density(ISI) - self.log_survival(ISI)
 
-    def shape_scale(self):
+    def mean_scale(self):
+        """
+        How the distribution mean scales with the shape parameter
+        """
         raise NotImplementedError

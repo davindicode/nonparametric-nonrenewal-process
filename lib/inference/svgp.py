@@ -20,10 +20,8 @@ from ..GP.sparse import SparseGP
 from ..GP.spatiotemporal import KroneckerLTI
 from ..likelihoods.base import FactorizedLikelihood, RenewalLikelihood, LinkTypes
 from ..likelihoods.factorized import PointProcess
-from ..utils.linalg import gauss_legendre
+from ..utils.linalg import gauss_legendre, gauss_quad_integrate
 from ..utils.jax import safe_log, safe_sqrt
-
-
 
 
 class SparseGPFilterObservations(FilterObservations):
@@ -268,12 +266,12 @@ class ModulatedRenewal(SparseGPFilterObservations):
 
         return model
     
-    def _sample_spikes(self, prng_state, ini_spikes, ini_t_since, f_samples):
+    def _sample_spikes(self, prng_state, ini_spikes, ini_tau, f_samples):
         """
         Sample the spike train autoregressively
         
         :param jnp.dnarray ini_spikes: initial spike train (num_samps, obs_dims, filter_length)
-        :param jnp.ndarray t_since: initial tau values at start (num_samps, obs_dims)
+        :param jnp.ndarray tau: initial tau values at start (num_samps, obs_dims)
         """
         num_samps, obs_dims, ts = f_samples.shape
         if self.spikefilter is not None:
@@ -283,13 +281,13 @@ class ModulatedRenewal(SparseGPFilterObservations):
 
         def step(carry, inputs):
             prng_state, f = inputs  # (num_samps, obs_dims)
-            t_since, past_spikes = carry
+            tau, past_spikes = carry
             
-            # compute current t_since
-            t_since = jnp.where(
+            # compute current tau
+            tau = jnp.where(
                 (past_spikes[..., -1] > 0),  # spikes
                 self.renewal.dt, 
-                t_since + self.renewal.dt, 
+                tau + self.renewal.dt, 
             )  # (num_samps, obs_dims)
             
             # compute intensity
@@ -299,7 +297,7 @@ class ModulatedRenewal(SparseGPFilterObservations):
                 
             log_modulator = f if self.renewal.link_type == LinkTypes['log'] else safe_log(
                 self.renewal.inverse_link(f))
-            log_hazard = self.renewal.log_hazard(t_since)
+            log_hazard = self.renewal.log_hazard(tau)
             log_rho_t = log_modulator + log_hazard
             
             # generate spikes
@@ -311,46 +309,46 @@ class ModulatedRenewal(SparseGPFilterObservations):
             else:
                 past_spikes = spikes[..., None]
             
-            return (t_since, past_spikes), (spikes, log_rho_t)
+            return (tau, past_spikes), (spikes, log_rho_t)
 
-        init = (ini_t_since, ini_spikes)
+        init = (ini_tau, ini_spikes)
         xs = (prng_states, f_samples.transpose(2, 0, 1))
         _, (spikes, log_rho_ts) = lax.scan(step, init, xs)
         return spikes.transpose(1, 2, 0), log_rho_ts.transpose(1, 2, 0)  # (num_samps, obs_dims, ts)
     
     def _log_hazard(
-        self, spikes, ini_t_since, 
+        self, spikes, ini_tau, 
     ):
         """
         Time since spike component
         
-        ini_t_since zero means spike occured right before start
+        ini_tau zero means spike occured right before start
 
         :param jnp.ndarray spikes: binary spike train (obs_dims, ts)
-        :param jnp.ndarray ini_t_since: initial times since (obs_dims,)
+        :param jnp.ndarray ini_tau: initial times since (obs_dims,)
         """
         spikes = (y.T > 0)
         
         def step(carry, inputs):
             spikes = inputs  # (obs_dims,)
-            t_since = carry  # (obs_dims,)
+            tau = carry  # (obs_dims,)
             
-            # compute current t_since
-            t_since = jnp.where(
+            # compute current tau
+            tau = jnp.where(
                 (spikes > 0),  # spikes
                 self.renewal.dt, 
-                t_since + self.renewal.dt, 
+                tau + self.renewal.dt, 
             )  # (num_samps, obs_dims)
 
-            log_hazard = self.renewal.log_hazard(t_since)
-            return t_since, log_hazard
+            log_hazard = self.renewal.log_hazard(tau)
+            return tau, log_hazard
         
-        init = ini_t_since
+        init = ini_tau
         _, log_hazards = lax.scan(step, init=init, xs=spikes)
         return log_hazards
     
     ### inference ###
-    def VI(self, prng_state, num_samps, jitter, xs, t_since, ys, ys_filt, lik_int_method):
+    def VI(self, prng_state, num_samps, jitter, xs, taus, ys, ys_filt, lik_int_method):
         """
         Compute variational expectation of likelihood and KL divergence
         """
@@ -369,7 +367,7 @@ class ModulatedRenewal(SparseGPFilterObservations):
         
         log_modulator = f_mean if self.renewal.link_type == LinkTypes['log'] else safe_log(
                 self.renewal.inverse_link(f_mean))
-        log_hazard = vmap(self.renewal.log_hazard)(t_since.T)
+        log_hazard = vmap(self.renewal.log_hazard)(taus.T)
         log_rho_t = log_modulator + log_hazard[None, ..., None]
         
         llf = lambda y, m, c: self.pp.variational_expectation(
@@ -383,7 +381,7 @@ class ModulatedRenewal(SparseGPFilterObservations):
         return
     
     ### sample ###
-    def sample_log_conditional_intensity(self, prng_state, ini_t_since, x_eval, y, y_filt, jitter):
+    def sample_log_conditional_intensity(self, prng_state, ini_tau, x_eval, y, y_filt, jitter):
         """
         lambda(t) = h(tau) * rho(x)
         
@@ -405,7 +403,7 @@ class ModulatedRenewal(SparseGPFilterObservations):
         # hazard
         spikes = (y > 0).transpose(0, 2, 1)
         log_hazards = vmap(self._log_hazard, (0, 0))(
-            spikes, ini_t_since)  # (num_samps, ts, obs_dims)
+            spikes, ini_tau)  # (num_samps, ts, obs_dims)
         
         log_rho_t = log_hazards + log_modulator
         return log_rho_t  # (num_samps, out_dims, ts)
@@ -489,7 +487,7 @@ class RateRescaledRenewal(SparseGPFilterObservations):
 
         return model
     
-    def _sample_spikes(self, prng_state, ini_spikes, ini_tau, f_samples):
+    def _sample_spikes(self, prng_state, ini_spikes, ini_t_tilde, f_samples):
         """
         Sample the spike train autoregressively
         
@@ -497,7 +495,7 @@ class RateRescaledRenewal(SparseGPFilterObservations):
         
         :param jnp.dnarray ini_spikes: initial spike train for history filter (num_samps, obs_dims, filter_length) 
                                        or when no history filter (num_samps, obs_dims, 1)
-        :param jnp.ndarray tau_start: initial tau values at start (num_samps, obs_dims)
+        :param jnp.ndarray t_tilde_start: initial t_tilde values at start (num_samps, obs_dims)
         """
         num_samps, obs_dims, ts = f_samples.shape
         if self.spikefilter is not None:
@@ -507,13 +505,13 @@ class RateRescaledRenewal(SparseGPFilterObservations):
 
         def step(carry, inputs):
             prng_state, f = inputs  # current time step
-            tau_since, past_spikes = carry  # from previous time step
+            tau_tilde, past_spikes = carry  # from previous time step
             
-            # compute current tau
-            tau_since = jnp.where(
+            # compute current t_tilde
+            tau_tilde = jnp.where(
                 (past_spikes[..., -1] > 0),  # previous spikes
                 rate * self.renewal.dt, 
-                tau_since + rate * self.renewal.dt, 
+                tau_tilde + rate * self.renewal.dt, 
             )  # (num_samps, obs_dims)
             
             # compute intensity
@@ -523,7 +521,7 @@ class RateRescaledRenewal(SparseGPFilterObservations):
                 
             rate = self.renewal.inverse_link(f)  # (num_samps, obs_dims)
             log_rate = f if self.renewal.link_type == LinkTypes['log'] else safe_log(rate)
-            log_hazard = self.renewal.log_hazard(tau_since)
+            log_hazard = self.renewal.log_hazard(tau_tilde)
             log_rho_t = log_rate + log_hazard
             
             # generate spikes
@@ -535,44 +533,44 @@ class RateRescaledRenewal(SparseGPFilterObservations):
             else:
                 past_spikes = spikes[..., None]
                 
-            return (tau_since, past_spikes), (spikes, log_rho_t)
+            return (tau_tilde, past_spikes), (spikes, log_rho_t)
 
-        init = (ini_tau, ini_spikes)
+        init = (ini_t_tilde, ini_spikes)
         xs = (prng_states, f_samples.transpose(2, 0, 1))
         _, (spikes, log_rho_ts) = lax.scan(step, init, xs)
         return spikes.transpose(1, 2, 0), log_rho_ts.transpose(1, 2, 0)  # (num_samps, obs_dims, ts)
 
-    def _rate_rescale(self, spikes, pre_rates, ini_tau, compute_ll, return_tau):
+    def _rate_rescale(self, spikes, pre_rates, ini_t_tilde, compute_ll, return_t_tilde):
         """
         rate rescaling, computes the log density on the way
         
         :param jnp.ndarray spikes: (ts, obs_dims)
         :param jnp.ndarray rates: (ts, obs_dims)
         """
-        rate_scale = self.renewal.dt / self.renewal.shape_scale()
+        rate_scale = self.renewal.dt * self.renewal.mean_scale()
         
         def step(carry, inputs):
-            tau, ll = carry
+            t_tilde, ll = carry
             pre_rate, spike = inputs
 
             rate = self.renewal.inverse_link(pre_rate)
-            tau += rate_scale * rate
+            t_tilde += rate_scale * rate
             if compute_ll:
                 ll += jnp.where(
                     spike, 
-                    (pre_rate if self.renewal.link_type == LinkTypes["log"] else safe_log(rate)) + self.renewal.log_density(tau), 
+                    (pre_rate if self.renewal.link_type == LinkTypes["log"] else safe_log(rate)) + self.renewal.log_density(t_tilde), 
                     0.,
                 )
             
-            tau_ = jnp.where(spike, 0., tau)  # reset after spike
-            return (tau_, ll), tau if return_tau else None
+            t_tilde_ = jnp.where(spike, 0., t_tilde)  # reset after spike
+            return (t_tilde_, ll), t_tilde if return_t_tilde else None
 
-        init = (ini_tau, jnp.zeros(self.renewal.obs_dims))
-        (_, log_lik), taus = lax.scan(step, init=init, xs=(pre_rates, spikes))
-        return log_lik, taus
+        init = (ini_t_tilde, jnp.zeros(self.renewal.obs_dims))
+        (_, log_lik), t_tildes = lax.scan(step, init=init, xs=(pre_rates, spikes))
+        return log_lik, t_tildes
     
     ### inference ###
-    def VI(self, prng_state, num_samps, jitter, xs, ys, ys_filt, lik_int_method):
+    def VI(self, prng_state, jitter, xs, ys, ys_filt, lik_int_method):
         """
         Compute variational expectation of likelihood and KL divergence
         """
@@ -587,9 +585,9 @@ class RateRescaledRenewal(SparseGPFilterObservations):
             KL += KL_y
         
         spikes = (ys.T > 0)
-        ini_tau = jnp.zeros(self.renewal.obs_dims)
+        ini_t_tilde = jnp.zeros(self.renewal.obs_dims)
         rrs = lambda f: self._rate_rescale(
-            spikes, f.T, ini_tau, compute_ll=True, return_tau=False)[0]
+            spikes, f.T, ini_t_tilde, compute_ll=True, return_t_tilde=False)[0]
         
         Ell = vmap(rrs)(pre_rates).mean()  # vmap and take mean over num_samps and ts
         return Ell, KL
@@ -599,7 +597,7 @@ class RateRescaledRenewal(SparseGPFilterObservations):
         return
 
     ### sample ###
-    def sample_log_conditional_intensity(self, prng_state, ini_tau, x_eval, y, y_filt, jitter):
+    def sample_log_conditional_intensity(self, prng_state, ini_t_tilde, x_eval, y, y_filt, jitter):
         """
         rho(t) = r(t) p(u) / (1 - int p(u) du)
         
@@ -620,10 +618,10 @@ class RateRescaledRenewal(SparseGPFilterObservations):
         
         # rate rescaling, rescaled time since last spike
         spikes = (y > 0).transpose(0, 2, 1)
-        _, tau_since_spike = vmap(self._rate_rescale, (0, 0, 0, None, None), (None, 0))(
-            spikes, rates, ini_tau, False, True)  # (num_samps, ts, obs_dims)
+        _, tau_tilde = vmap(self._rate_rescale, (0, 0, 0, None, None), (None, 0))(
+            spikes, rates, ini_t_tilde, False, True)  # (num_samps, ts, obs_dims)
         
-        log_hazard = self.renewal.log_hazard(tau_since_spike)
+        log_hazard = self.renewal.log_hazard(tau_tilde)
         log_rates = pre_rates if self.renewal.link_type == LinkTypes['log'] else safe_log(rates)
         log_rho_t = log_rates + log_hazard.transpose(0, 2, 1)
         return log_rho_t  # (num_samps, out_dims, ts)
@@ -641,14 +639,14 @@ class RateRescaledRenewal(SparseGPFilterObservations):
         )  # (num_samps, obs_dims, 1)
         
         rate = self.renewal.inverse_link(f_samples)
-        tau_eval = (
-            rate * t_eval / self.renewal.shape_scale()[:, None]
+        t_tilde_eval = (
+            rate * t_eval * self.renewal.mean_scale()[:, None]
         )
         
-        log_dens = vmap(vmap(self.renewal.log_density), 2, 2)(tau_eval)
+        log_dens = vmap(vmap(self.renewal.log_density), 2, 2)(t_tilde_eval)
         return jnp.exp(log_dens)  # (num_samps, obs_dims, ts)
     
-    def sample_prior(self, prng_state, num_samps, x_samples, ini_spikes, ini_tau, jitter):
+    def sample_prior(self, prng_state, num_samps, x_samples, ini_spikes, ini_t_tilde, jitter):
         """
         Sample from the generative model
         Sample spike trains from the modulated renewal process.
@@ -662,10 +660,10 @@ class RateRescaledRenewal(SparseGPFilterObservations):
         )  # (num_samps, obs_dims, 1)
 
         y_samples, log_rho_ts = self._sample_spikes(
-            prng_states[1], ini_spikes, ini_tau, f_samples)
+            prng_states[1], ini_spikes, ini_t_tilde, f_samples)
         return y_samples, log_rho_ts
 
-    def sample_posterior(self, prng_state, num_samps, x_samples, ini_spikes, ini_tau, jitter):
+    def sample_posterior(self, prng_state, num_samps, x_samples, ini_spikes, ini_t_tilde, jitter):
         """
         Sample from posterior predictive
         """
@@ -676,23 +674,22 @@ class RateRescaledRenewal(SparseGPFilterObservations):
         )  # (num_samps, obs_dims, 1)
 
         y_samples, log_rho_ts = self._sample_spikes(
-            prng_states[1], ini_spikes, ini_tau, f_samples)
+            prng_states[1], ini_spikes, ini_t_tilde, f_samples)
         return y_samples, log_rho_ts
     
-
+    
+    
 
 class NonparametricPointProcess(Observations):
     """
     Bayesian nonparametric modulated point process likelihood
     """
 
-    gp: Union[IndependentLTI, KroneckerLTI]
+    gp: SparseGP
     pp: PointProcess
-        
-    modulated: bool
 
-    warp_tau: jnp.ndarray
-    refract_tau: jnp.ndarray
+    log_warp_tau: jnp.ndarray
+    log_refract_tau: jnp.ndarray
     refract_neg: float
     mean_bias: jnp.ndarray
 
@@ -705,12 +702,10 @@ class NonparametricPointProcess(Observations):
         self.gp = gp
         self.pp = PointProcess(gp.kernel.out_dims, dt, "log", ArrayTypes_[gp.array_type])
 
-        self.warp_tau = self._to_jax(warp_tau)
-        self.refract_tau = self._to_jax(refract_tau)
+        self.log_warp_tau = self._to_jax(np.log(warp_tau))
+        self.log_refract_tau = self._to_jax(np.log(refract_tau))
         self.refract_neg = refract_neg
         self.mean_bias = self._to_jax(mean_bias)
-        
-        self.modulated = False if type(gp) == IndependentLTI else True
 
     def apply_constraints(self):
         """
@@ -730,10 +725,12 @@ class NonparametricPointProcess(Observations):
         """
         Inverse transform is from tau [0, 1] to t in R
         """
+        warp_tau = jnp.exp(self.log_warp_tau)
+        
         if inverse:
-            t_ = -jnp.log(1 - t) * self.warp_tau
+            t_ = -jnp.log(1 - t) * warp_tau
         else:
-            s = jnp.exp(-t / self.warp_tau)
+            s = jnp.exp(-t / warp_tau)
             t_ = 1 - s
             
         return t_
@@ -742,42 +739,47 @@ class NonparametricPointProcess(Observations):
         """
         Inverse transform is from tau [0, 1] to t in R
         """
+        warp_tau = jnp.exp(self.log_warp_tau)
         t_ = self._log_time_transform(t, inverse)
         
         if inverse:
-            log_jac = jnp.log(self.warp_tau) - jnp.log(1 - t)  # warp_tau / (1 - t)
+            log_jac = self.log_warp_tau - jnp.log(1 - t)  # warp_tau / (1 - t)
         else:
-            log_jac = -t / self.warp_tau - jnp.log(self.warp_tau)  # s / warp_tau
+            log_jac = -t / warp_tau - self.log_warp_tau  # s / warp_tau
             
         return t_, log_jac
 
-    def _refractory_mean(self, tau):
+    def _refractory_mean(self, tau_tilde):
         """
         Refractory period implemented by GP mean function
+        The refractory negative value of the mean at tau = 0 is a fixed, chosen a priori
         
         :param jnp.ndarray tau: (out_dims,)
         """
-        return self.refract_neg * (tau + 1.) ** (-self.warp_tau / self.refract_tau) + self.mean_bias
+        div_taus = jnp.exp(self.log_warp_tau - self.log_refract_tau)
+        delta = self.refract_neg - self.mean_bias
+        return delta * (1. - tau_tilde) ** (div_taus) + self.mean_bias
     
-    def _combine_input(self, isi_eval, x_eval):
+    def _combine_input(self, tau_tilde, isi, x):
         """
+        :param jnp.dnarray tau_eval: (out_dims, ts)
         :param jnp.ndarray isi_eval: (out_dims, ts, order)
         :param jnp.ndarray x_eval: (out_dims or 1, ts, x_dims)
         """
-        out_dims = isi_eval.shape[0]
+        out_dims = self.gp.kernel.out_dims
         
-        cov_eval = []
-        if isi_eval is not None:
-            tau_isi_eval = vmap(vmap(self._log_time_transform, (1, None), 1), (1, None), 1)(
-                isi_eval, False)  # (out_dims, ts, order)
-            cov_eval.append(tau_isi_eval)
+        cov_eval = [tau_tilde[..., None]]
+        if isi is not None:
+            isi_tilde = vmap(vmap(self._log_time_transform, (1, None), 1), (1, None), 1)(
+                isi, False)  # (out_dims, ts, order)
+            cov_eval.append(isi_tilde)
 
-        if x_eval is not None:
-            cov_eval.append(jnp.broadcast_to(x_eval, (out_dims, *x_eval.shape[-2:])))
+        if x is not None:
+            cov_eval.append(jnp.broadcast_to(x, (out_dims, *x.shape[-2:])))
 
         return jnp.concatenate(cov_eval, axis=-1)
 
-    def _log_rho_from_gp_sample(self, prng_state, num_samps, tau_eval, isi_eval, x_eval, prior, jitter):
+    def _log_rho_tilde_sample(self, prng_state, tau_tilde, isi, x, prior, jitter):
         """
         Obtain the log conditional intensity given input path along which to evaluate
         
@@ -787,61 +789,43 @@ class NonparametricPointProcess(Observations):
         :return:
             log intensity in rescaled time tau (num_samps, out_dims, locs)
         """
-        if self.modulated:
-            cov_eval = self._combine_input(isi_eval, x_eval)
-            
-            if prior:
-                f_samples = self.gp.sample_prior(
-                    prng_state, num_samps, tau_eval, cov_eval, jitter
-                )
+        covariates = vmap(self._combine_input, (None, None, 0))(tau_tilde, isi, x)
 
-            else:
-                f_samples, _ = self.gp.sample_posterior(
-                    prng_state, num_samps, tau_eval, cov_eval, jitter, False
-                )  # (tr, time, N, 1)
+        if prior:
+            f_samples = self.gp.sample_prior(
+                prng_state, covariates, jitter
+            )  # (samp, f_dim, evals)
 
         else:
-            if prior:
-                f_samples = self.gp.sample_prior(
-                    prng_state, num_samps, tau_eval, jitter
-                )
-
-            else:
-                f_samples, _ = self.gp.sample_posterior(
-                    prng_state, num_samps, tau_eval, jitter, False
-                )  # (tr, time, N, 1)
-
-        m_eval = vmap(self._refractory_mean, 1, 1)(tau_eval)  # (out_dims, locs)
-        log_rho_tau = f_samples[..., 0] + m_eval
-        return log_rho_tau
+            f_samples, _ = self.gp.sample_posterior(
+                prng_state, covariates, jitter, compute_KL=True
+            )  # (samp, f_dim, evals)
+        
+        m_eval = vmap(self._refractory_mean, 1, 1)(tau_tilde)  # (out_dims, locs)
+        log_rho_tilde = f_samples + m_eval[None]
+        return log_rho_tilde
     
-    def _log_rho_from_gp_post(self, prng_state, tau_eval, isi_eval, x_eval, mean_only, compute_KL, jitter):
+    def _log_rho_tilde_post(self, prng_state, tau_tilde, isi, x, mean_only, compute_KL, jitter):
         """
         Obtain the log conditional intensity given input path along which to evaluate
         
         :param jnp.ndarray tau_eval: evaluation time locs (out_dims, locs)
         :param jnp.ndarray isi_eval: higher order ISIs (out_dims, locs, order)
-        :param jnp.ndarray x_eval: external covariates (out_dims or 1, locs, x_dims)
+        :param jnp.ndarray x_eval: external covariates (num_samps, out_dims or 1, locs, x_dims)
         :return:
-            log intensity in rescaled time tau mean and cov (out_dims, locs), KL scalar
+            log intensity in rescaled time tau mean and cov (num_samps, out_dims, locs, 1), KL scalar
         """
-        if self.modulated:
-            cov_eval = self._combine_input(isi_eval, x_eval)
-            
-            f_mean, f_cov, KL = self.gp.evaluate_posterior(
-                tau_eval, cov_eval, mean_only=False, compute_KL=False, jitter=jitter
-            )  # (out_dims, time, 1)
+        covariates = vmap(self._combine_input, (None, None, 0))(tau_tilde, isi, x)
 
-        else:
-            f_mean, f_cov, KL = self.gp.evaluate_posterior(
-                tau_eval, mean_only=False, compute_KL=False, jitter=jitter
-            )  # (out_dims, time, 1)
+        f_mean, f_cov, KL, _ = self.gp.evaluate_posterior(
+            covariates, mean_only, diag_cov=True, compute_KL=compute_KL, compute_aux=False, jitter=jitter
+        )  # (num_samps, out_dims, time, 1)
 
-        m_eval = vmap(self._refractory_mean, 1, 1)(tau_eval)  # (out_dims, locs)
-        log_rho_tau_mean = f_mean[..., 0] + m_eval
-        return log_rho_tau_mean, f_cov[..., 0], KL
+        m_eval = vmap(self._refractory_mean, 1, 1)(tau_tilde)  # (out_dims, locs)
+        log_rho_tilde_mean = f_mean + m_eval[None, ..., None]
+        return log_rho_tilde_mean, f_cov, KL
     
-    def _sample_spikes(self, prng_state, timesteps, ini_t_since, past_ISIs, x_eval, jitter):
+    def _sample_spikes(self, prng_state, timesteps, ini_tau, past_ISIs, x_eval, jitter):
         """
         Sample the spike train autoregressively
         
@@ -850,7 +834,7 @@ class NonparametricPointProcess(Observations):
         :param jnp.ndarray past_ISI: past ISIs (num_samps, obs_dims, order)
         :param jnp.ndarray x_eval: covariates (num_samps, obs_dims, ts, x_dims)
         """
-        num_samps = ini_t_since.shape[0]
+        num_samps = ini_tau.shape[0]
         prng_state = jr.split(prng_state, num_samps+1)
         prng_gp, prng_state = prng_state[:-1], prng_state[-1]
         
@@ -861,19 +845,17 @@ class NonparametricPointProcess(Observations):
             
         def step(carry, inputs):
             prng_state, x = inputs  # (num_samps, obs_dims, x_dims)
-            t_since, past_ISI, spikes = carry
+            tau, past_ISI, spikes = carry
             
-            # compute current t_since and tau
-            t_since += self.pp.dt
-                
-            tau_since, log_dtau_dt = vmap(self._log_time_transform_jac, (0, None), (0, 0))(
-                t_since, False)  # (num_samps, out_dims)
+            # compute current tau and tau_tilde
+            tau += self.pp.dt
+            tau_tilde, log_dtilde_dt = vmap(self._log_time_transform_jac, (0, None), (0, 0))(
+                tau, False)  # (num_samps, out_dims)
 
             # compute intensity
-            log_rho_tau = vmap(self._log_rho_from_gp_sample, 
-                               (0, None, 0, None if past_ISI is None else 0, None if x is None else 0, None, None), 0)(
-                prng_gp, 1, tau_since[..., None], past_ISI, x, False, jitter)[..., 0]
-            log_rho_t = log_rho_tau + log_dtau_dt  # (num_samps, out_dims)
+            log_rho_tilde = self._log_rho_tilde_sample(
+                prng_gp, tau_tilde[..., None], past_ISI, x, False, jitter)[..., 0]
+            log_rho_t = log_rho_tilde + log_dtilde_dt  # (num_samps, out_dims)
             
             p_spike = jnp.minimum(jnp.exp(log_rho_t) * self.pp.dt, 1.)  # approximate by discrete Bernoulli
             spikes = jr.bernoulli(prng_state[-1], p_spike).astype(self.array_dtype())  # (num_samps, obs_dims)
@@ -881,11 +863,11 @@ class NonparametricPointProcess(Observations):
             # spike reset
             spike_cond = (spikes > 0)  # (num_samps, obs_dims)
             if past_ISI is not None:
-                shift_ISIs = jnp.concatenate((t_since[..., None], past_ISI[..., 0, :-1]), axis=-1)
+                shift_ISIs = jnp.concatenate((tau[..., None], past_ISI[..., 0, :-1]), axis=-1)
                 past_ISI = jnp.where(spike_cond[..., None], shift_ISIs, past_ISI[..., 0, :])[..., None, :]
-            t_since = jnp.where(spike_cond, 0.0, t_since)
+            tau = jnp.where(spike_cond, 0.0, tau)
 
-            return (t_since, past_ISI, spikes), (spikes, log_rho_t)
+            return (tau, past_ISI, spikes), (spikes, log_rho_t)
 
         # add dummy time dimension
         if x_eval is not None:
@@ -893,65 +875,152 @@ class NonparametricPointProcess(Observations):
         if past_ISIs is not None:
             past_ISIs = past_ISIs[..., None, :]
         
-        init = (ini_t_since, past_ISIs, jnp.zeros_like(ini_t_since))
+        init = (ini_tau, past_ISIs, jnp.zeros_like(ini_tau))
         xs = (prng_states, x_eval)
         _, (spikes, log_rho_ts) = lax.scan(step, init, xs)
         return spikes.transpose(1, 2, 0), log_rho_ts.transpose(1, 2, 0)  # (num_samps, obs_dims, ts)
     
 
     ### inference ###
-    def VI(self, prng_state, num_samps, jitter, xs, deltas, ys, lik_int_method):
-        tau_eval, isi_eval = deltas[..., 0], deltas[..., 1:]
+    def _get_rho_post(self, jitter, xs, deltas, compute_KL):
+        tau, isi = deltas[..., 0], deltas[..., 1:]
+        tau_tilde, log_dtilde_dt = vmap(self._log_time_transform_jac, (1, None), (1, 1))(
+                tau, False)  # (out_dims, ts)
         
-        lrp = lambda xs: self._log_rho_from_gp_post(
-            prng_state, tau_eval, isi_eval, xs, mean_only=False, compute_KL=True, jitter=jitter)
-        log_rho_tau_mean, log_rho_tau_cov, KL = vmap(lrp)(xs)  # vmap over MC
+        log_rho_tilde_mean, log_rho_t_cov, KL = self._log_rho_tilde_post(
+            prng_state, tau_tilde, isi, xs, mean_only=False, compute_KL=compute_KL, jitter=jitter)
+        log_rho_t_mean = log_rho_tilde_mean + log_dtilde_dt[None, ..., None]  # (num_samps, out_dims, ts)
+        return log_rho_t_mean, log_rho_t_cov, KL
         
-        log_rho_tau_mean = log_rho_tau_mean.transpose(0, 2, 1)[..., None]  # (num_samps, ts, out_dims, 1)
-        log_rho_tau_cov = log_rho_tau_cov.transpose(0, 2, 1)  # (num_samps, ts, out_dims, 1)
-        log_rho_tau_cov = vmap(vmap(jnp.diag))(log_rho_tau_cov)  # (num_samps, ts, out_dims, out_dims)
+    def VI(self, prng_state, jitter, xs, deltas, ys, lik_int_method):
+        log_rho_t_mean, log_rho_t_cov, KL = self._get_rho_post(jitter, xs, deltas, True)
+        
+        log_rho_t_mean = log_rho_t_mean.transpose(0, 2, 1, 3)  # (num_samps, ts, out_dims, 1)
+        log_rho_t_cov = log_rho_t_cov[..., 0].transpose(0, 2, 1)  # (num_samps, ts, out_dims, 1)
+        log_rho_t_cov = vmap(vmap(jnp.diag))(log_rho_t_cov)  # (num_samps, ts, out_dims, out_dims)
         
         llf = lambda m, c: self.pp.variational_expectation(
             ys.T, m, c, prng_state, jitter, lik_int_method)
-        Ell = vmap(vmap(llf))(log_rho_tau_mean, log_rho_tau_cov).mean()  # mean over mc and ts
+        Ell = vmap(vmap(llf))(log_rho_t_mean, log_rho_t_cov).mean()  # mean over mc and ts
         
-        return Ell, KL.mean()
+        return Ell, KL
     
     ### evaluation ###
-    def evaluate_log_conditional_intensity(self, prng_state, num_samps, t_eval, isi_eval, x_eval, jitter):
+    def evaluate_log_conditional_intensity(self, prng_state, tau_eval, isi_eval, x_eval, jitter):
         """
         Evaluate the conditional intensity along an input path
         """
-        tau_eval, log_dtau_dt_eval = vmap(self._log_time_transform_jac, (1, None), (1, 1))(
-            t_eval[None, :], False)  # (out_dims, ts)
+        tau_tilde, log_dtilde_dt = vmap(self._log_time_transform_jac, (1, None), (1, 1))(
+            tau_eval[None, :], False)  # (out_dims, ts)
         
-        log_rho_tau_mean, log_rho_tau_cov, _ = self._log_rho_from_gp_post(
-            prng_state, num_samps, tau_eval, isi_eval, x_eval, False, False, jitter)
-        log_rho_t_mean = log_rho_tau_mean + log_dtau_dt_eval  # (num_samps, out_dims, ts)
-        log_rho_t_cov = log_rho_tau_cov  # additive transform in log space
+        log_rho_tilde_mean, log_rho_t_cov, _ = self._log_rho_tilde_gp_post(
+            prng_state, tau_tilde, isi_eval, x_eval, False, False, jitter)
+        log_rho_t_mean = log_rho_tilde_mean + log_dtilde_dt[None, ..., None]  # (num_samps, out_dims, ts, 1)
+        log_rho_t_cov = log_rho_t_cov  # additive transform in log space
         
         return log_rho_t_mean, log_rho_t_cov
 
     def evaluate_metric(self):
-        return
+        # evaluate log predictive CIF
+        log_rho_t_mean, log_rho_t_cov, _ = self._get_rho_post(jitter, xs, deltas, False)
+        
+        log_rho_t_mean = log_rho_t_mean.transpose(0, 2, 1, 3)  # (num_samps, ts, out_dims, 1)
+        log_rho_t_cov = log_rho_t_cov[..., 0].transpose(0, 2, 1)  # (num_samps, ts, out_dims, 1)
+        log_rho_t_cov = vmap(vmap(jnp.diag))(log_rho_t_cov)  # (num_samps, ts, out_dims, out_dims)
+        
+        llf = lambda m, c: self.pp.variational_expectation(
+            ys.T, m, c, prng_state, jitter, lik_int_method, log_predictive=True)
+        lEl = vmap(vmap(llf))(log_rho_t_mean, log_rho_t_cov).mean()  # mean over mc and ts
+        return lEl
     
-    def evaluate_conditional_ISI_expectation(
-        self, 
-        func_of_t, 
-        isi_cond, 
-        x_cond,
-        int_eval_pts=1000,
-        num_quad_pts=100,
-        jitter=1e-6,
-    ):
-        return
+    def KS_test(self, prng_state, xs, deltas, ys, jitter):
+        """
+        Use the posterior mean to perform the time rescaling
+        """
+        # evaluate CIF
+        log_rho_t_mean, log_rho_t_cov, _ = self._get_rho_post(jitter, xs, deltas, False)
+        log_rho_t_mean, log_rho_t_cov = log_rho_t_mean[..., 0], log_rho_t_cov[..., 0]  # (num_samps, out_dims, ts)
+        post_rho_mean = jnp.exp(log_rho_t_mean + log_rho_t_cov / 2.)
+        
+        # time rescaling
+        rescaled_intervals = time_rescale(post_rho_mean, ys, max_intervals)  # (num_intervals, out_dims)
+        num_intervals = (~jnp.isnan()).sum(0)  # (out_dims,)
+        
+        # intervals should be exponentially distributed
+        cdfs = 1. - jnp.exp(-rescaled_intervals)
+        
+        return cdfs, num_intervals
 
     ### sample ###
+    def _sample_log_rho_tilde(
+        self, 
+        prng_state, 
+        num_samps, 
+        tau_tilde, 
+        isi_cond, 
+        x_cond,
+        sigma_pts, 
+        weights, 
+        int_eval_pts=1000,
+        prior=True,
+        jitter=1e-6,
+    ):
+        """
+        Sample conditional ISI distribution at tau_tilde
+        
+        :param jnp.ndarray tau_tilde: evaluation time points (out_dims, locs)
+        :param jnp.ndarray isi_cond: past ISI values to condition on (out_dims, order)
+        :param jnp.ndarray x_cond: covariate values to condition on (x_dims,)
+        """
+        obs_dims = len(self.log_warp_tau)
+        
+        vvinterp = vmap(vmap(jnp.interp, (None, 0, 0), 0), (None, None, 0), 0)  # vmap mc, then out_dims
+        vvvinterp = vmap(vmap(vmap(
+            jnp.interp, (0, None, None), 0)), (None, None, 0), 0)  # vmap mc, then out_dims, then evals
+        
+        # evaluation locs for integration points
+        vvquad_integrate = vmap(vmap(gauss_quad_integrate, (None, 0, None, None), (0, 0)), 
+                                (None, 0, None, None), (0, 0))  # vmap out_dims and locs
+        locs, ws = vvquad_integrate(
+            0.0, tau_tilde, sigma_pts, weights
+        )  # (out_dims, eval_locs, cub_pts, 1)
+        
+        # integral points for interpolation
+        tau_tilde_pts = jnp.linspace(0.0, 1.0, int_eval_pts)[None, :].repeat(obs_dims, axis=0)
+        
+        # compute cumulative intensity int rho(tau_tilde) dtau_tilde
+        tau_tilde_cat = jnp.concatenate([tau_tilde_pts, tau_tilde], axis=1)
+        cat_pts = tau_tilde_cat.shape[1]
+        isi_cond = isi_cond[:, None].repeat(cat_pts, axis=1) if isi_cond is not None else None
+        x_cond = jnp.broadcast_to(
+            x_cond[None, None, None], 
+            (num_samps, obs_dims, cat_pts, x_cond.shape[0]), 
+        ) if x_cond is not None else None
+        
+        log_rho_tilde_cat = self._log_rho_tilde_sample(
+            prng_state, tau_tilde_cat, isi_cond, x_cond, prior, jitter)
+        log_rho_tilde = log_rho_tilde_cat[..., int_eval_pts:]
+        rho_tilde_pts = jnp.exp(log_rho_tilde_cat[..., :int_eval_pts])
+        
+        # compute integral over rho
+        quad_rho_tau_tilde = vvvinterp(
+            locs[..., 0], tau_tilde_pts, rho_tilde_pts
+        )  # num_samps, out_dims, taus, cub_pts
+        int_rho_tau_tilde = (quad_rho_tau_tilde * ws).sum(-1)
+
+        # normalizer
+        locs, ws = gauss_quad_integrate(0.0, 1.0, sigma_pts, weights)
+        quad_rho = vvinterp(locs[:, 0], tau_tilde_pts, rho_tilde_pts)
+        int_rho = (quad_rho * ws).sum(-1)  # num_samps, out_dims, taus
+        log_normalizer = safe_log(1.0 - jnp.exp(-int_rho))  # (num_samps, out_dims)
+        
+        return log_rho_tilde - (int_rho + log_normalizer)[..., None]
+    
     def sample_conditional_ISI(
         self,
         prng_state, 
         num_samps,
-        t_eval,
+        tau_eval,
         isi_cond, 
         x_cond,
         int_eval_pts=1000,
@@ -964,61 +1033,80 @@ class NonparametricPointProcess(Observations):
         Uses linear interpolation with Gauss-Legendre quadrature for integrals
 
         :param jnp.ndarray t_eval: evaluation time points (eval_locs,)
+        :param jnp.ndarray isi_cond: past ISI values to condition on (out_dims, order)
+        :param jnp.ndarray x_cond: covariate values to condition on (x_dims,)
         """
-
-        def quad_integrate(a, b, sigma_pts, weights):
-            # transform interval
-            sigma_pts = 0.5 * (sigma_pts + 1) * (b - a) + a
-            weights *= jnp.prod(0.5 * (b - a))
-            return sigma_pts, weights
-        
-        vvinterp_ = vmap(vmap(jnp.interp, (None, None, 0), 0), (None, None, 0), 0)  # vmap mc, then out_dims
-        vvinterp = vmap(vmap(jnp.interp, (None, 0, 0), 0), (None, None, 0), 0)  # vmap mc, then out_dims
-        vvvinterp = vmap(vmap(vmap(jnp.interp, (0, None, 0), 0), 
-                              (None, None, 0), 0), 
-                         (1, None, None), 2)  # vmap mc, then out_dims, then cubature
-        vvquad_integrate = vmap(vmap(quad_integrate, (None, 0, None, None), (0, 0)), 
-                                (None, 0, None, None), (0, 0))  # vmap out_dims and locs
-
-        # compute rho(tau) for integral
-        tau_pts = jnp.linspace(0.0, 1.0, int_eval_pts)
-        t_pts, log_dt_dtau_pts = vmap(self._log_time_transform_jac, (1, None), (1, 1))(
-            tau_pts[None, :], True)  # (out_dims, locs)
-
-        log_rho_tau_pts = self._log_rho_from_gp_sample(
-            prng_state, num_samps, tau_pts[None, :], isi_cond, x_cond, prior, jitter)
-        log_rho_t_pts = log_rho_tau_pts - log_dt_dtau_pts  # (num_samps, out_dims, taus)
-
-        # compute rho(tau) and rho(t)
-        rho_tau_pts = jnp.exp(log_rho_tau_pts)
-        rho_t_pts = jnp.exp(log_rho_t_pts)
-
-        # evaluation locs
-        tau_eval = vmap(self._log_time_transform, (1, None), 1)(
-            t_eval[None, :], False)  # (out_dims, locs)
-        rho_t_eval = vvinterp(t_eval, t_pts, rho_t_pts)
-        
-        # compute cumulative intensity int rho(tau) dtau
         sigma_pts, weights = gauss_legendre(1, num_quad_pts)
-        locs, ws = vvquad_integrate(
-            0.0, tau_eval, sigma_pts, weights
-        )  # (out_dims, taus, cub_pts, 1)
+        sigma_pts, weights = self._to_jax(sigma_pts), self._to_jax(weights)
         
-        quad_rho_tau_eval = vvvinterp(
-            locs[..., 0], tau_pts, rho_tau_pts
-        )  # num_samps, out_dims, taus, cub_pts
-        int_rho_tau_eval = (quad_rho_tau_eval * ws).sum(-1)
+        # evaluation locs
+        tau_tilde, log_dtilde_dt = vmap(self._log_time_transform_jac, (1, None), 1)(
+            tau_eval[None, :], False)  # (out_dims, locs)
+        
+        log_rho_tilde = self._sample_log_rho_tilde( 
+            prng_state, 
+            num_samps, 
+            tau_tilde, 
+            isi_cond, 
+            x_cond,
+            sigma_pts, 
+            weights, 
+            int_eval_pts,
+            prior,
+            jitter,
+        )
 
-        # normalizer
-        locs, ws = quad_integrate(0.0, 1.0, sigma_pts, weights)
-        quad_rho = vvinterp_(locs[:, 0], tau_pts, rho_tau_pts)
-        int_rho = (quad_rho * ws).sum(-1)
-        normalizer = 1.0 - jnp.exp(-int_rho)  # (num_samps, out_dims)
-
-        # compute renewal density
-        exp_negintrho_t = jnp.exp(-int_rho_tau_eval)  # num_samps, out_dims, taus
-        renewal_density = rho_t_eval * exp_negintrho_t / normalizer[..., None]
-        return renewal_density
+        ISI_density = jnp.exp(log_rho_tilde + log_dtilde_dt)
+        return ISI_density
+    
+    def sample_conditional_ISI_expectation(
+        self, 
+        prng_state, 
+        num_samps,
+        func_of_tau, 
+        isi_cond, 
+        x_cond,
+        int_eval_pts=1000,
+        f_num_quad_pts=100,
+        isi_num_quad_pts=100, 
+        prior=True,
+        jitter=1e-6,
+    ):
+        """
+        Compute expectations in warped time space
+        """
+        obs_dims = len(self.log_warp_tau)
+        
+        sigma_pts, weights = gauss_legendre(1, f_num_quad_pts)
+        sigma_pts, weights = self._to_jax(sigma_pts), self._to_jax(weights)
+        
+        tau_tilde_pts, ws = gauss_quad_integrate(
+            0.0, 1.0, sigma_pts, weights
+        )  # (cub_pts, 1), (cub_pts,)
+        tau_tilde_pts = tau_tilde_pts.T.repeat(obs_dims, axis=0)
+        
+        sigma_pts, weights = gauss_legendre(1, isi_num_quad_pts)
+        sigma_pts, weights = self._to_jax(sigma_pts), self._to_jax(weights)
+        
+        tau_pts = vmap(self._log_time_transform, (1, None), 1)(
+            tau_tilde_pts, True)  # (out_dims, locs)
+        
+        f_pts = func_of_tau(tau_pts)
+        
+        log_rho_tilde_pts = self._sample_log_rho_tilde( 
+            prng_state, 
+            num_samps, 
+            tau_tilde_pts, 
+            isi_cond, 
+            x_cond,
+            sigma_pts, 
+            weights, 
+            int_eval_pts,
+            prior,
+            jitter,
+        )
+        
+        return (f_pts * jnp.exp(log_rho_tilde_pts) * ws).sum(-1)
     
     def sample_prior(
         self, 
@@ -1060,6 +1148,7 @@ class NonparametricPointProcess(Observations):
         y_samples, log_rho_ts = self._sample_spikes(
             prng_states[1], timesteps, ini_t_since, past_ISIs, x_samples, jitter)
         return y_samples, log_rho_ts
+
     
     
     
@@ -1108,16 +1197,16 @@ class GPLVM(module):
             xs = xs[:, None]  # add dummy out_dims
             
             Ell, KL_o = self.obs_model.VI(
-                prng_key_o, num_samps, jitter, xs, ys, ys_filt, lik_int_method)   
+                prng_key_o, jitter, xs, ys, ys_filt, lik_int_method)   
         
         elif type(self.obs_model) == ModulatedRenewal:
             xs, KL_x = self.inp_model.sample_posterior(
                 prng_key_x, num_samps, ts, xs, jitter, compute_KL=True)
             xs = xs[:, None]  # add dummy out_dims
             
-            t_since = deltas[..., 0]
+            taus = deltas[..., 0]
             Ell, KL_o = self.obs_model.VI(
-                prng_key_o, num_samps, jitter, xs, t_since, ys, ys_filt, lik_int_method)
+                prng_key_o, jitter, xs, taus, ys, ys_filt, lik_int_method)
         
         elif type(self.obs_model) == RateRescaledRenewal:
             xs, KL_x = self.inp_model.sample_posterior(
@@ -1125,7 +1214,7 @@ class GPLVM(module):
             xs = xs[:, None]  # add dummy out_dims
             
             Ell, KL_o = self.obs_model.VI(
-                prng_key_o, num_samps, jitter, xs, ys, ys_filt, lik_int_method)
+                prng_key_o, jitter, xs, ys, ys_filt, lik_int_method)
         
         elif type(self.obs_model) == NonparametricPointProcess:
             xs, KL_x = self.inp_model.sample_marginal_posterior(
@@ -1133,7 +1222,7 @@ class GPLVM(module):
             xs = xs[:, None]  # add dummy out_dims
             
             Ell, KL_o = self.obs_model.VI(
-                prng_key_o, num_samps, jitter, xs, deltas, ys, lik_int_method)
+                prng_key_o, jitter, xs, deltas, ys, lik_int_method)
             
-        Ell *= (tot_ts / len(ts))  # rescale due to temporal batching
+        Ell *= tot_ts  # rescale due to temporal batching
         return Ell - KL_o - KL_x

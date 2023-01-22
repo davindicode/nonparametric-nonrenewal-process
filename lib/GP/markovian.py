@@ -495,7 +495,8 @@ class IndependentLTI(SSM):
     ### sample ###
     def sample_prior(self, prng_state, num_samps, t_eval, jitter):
         """
-        Sample from the model prior f~N(0,K) multiple times using a nested loop.
+        Sample from the model prior f~N(0,K)
+        
         :param num_samps: number of samples to draw
         :param jnp.ndarray tx_eval: input locations at which to sample (out_dims, locs)
         :return:
@@ -559,7 +560,7 @@ class IndependentLTI(SSM):
         Q_fwd_bwd = vmap(vmap(LTI_process_noise, (0, 0), 0), (0, None), 0)(A_fwd_bwd, Pinf)
         
         # posterior mean
-        post_means, _, KL_ss = vmap_outdims_LGSSM_posterior(
+        post_means, _, KL = vmap_outdims_LGSSM_posterior(
             H,
             Pinf,
             Pinf,
@@ -613,4 +614,4 @@ class IndependentLTI(SSM):
         smoothed_samps = vmap(smooth_prior_sample)(prior_samps_noisy)[..., 0]  # vmap over MC
 
         # Matheron's rule pathwise samplig
-        return prior_samps_eval - smoothed_samps + post_means[None, ..., 0], KL_ss
+        return prior_samps_eval - smoothed_samps + post_means[None, ..., 0], KL.sum()  # sum over out_dims
