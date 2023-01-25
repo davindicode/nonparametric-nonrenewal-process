@@ -52,17 +52,17 @@ def order_times(t_eval, t_site):
     if t_eval is None:  # assume t_site is ordered and unique
         site_ind = jnp.arange(num_sites)
         return t_site, site_ind, site_ind
-    
+
     num_eval = len(t_eval)
     t_all = jnp.concatenate([t_site, t_eval])
-    #t_all, input_ind = jnp.unique(t_all, return_inverse=True)
-    
+    # t_all, input_ind = jnp.unique(t_all, return_inverse=True)
+
     sort_ind = jnp.argsort(t_all)
     t_all = t_all[sort_ind]
 
     site_ind, eval_ind = (
-        jnp.where(sort_ind < num_sites, size=num_sites)[0],#input_ind[:num_sites]],
-        jnp.where(sort_ind >= num_sites, size=num_eval)[0],#input_ind[num_sites:]],
+        jnp.where(sort_ind < num_sites, size=num_sites)[0],  # input_ind[:num_sites]],
+        jnp.where(sort_ind >= num_sites, size=num_eval)[0],  # input_ind[num_sites:]],
     )
     return t_all, site_ind, eval_ind
 
@@ -182,12 +182,10 @@ class GaussianLTI(SSM):
             covariances of shape (time, x_dims, x_dims)
         """
         site_locs, site_dlocs = self.get_site_locs()
-        
+
         # compute linear dynamical system
-        H, Pinf, As, Qs = self.kernel.get_LDS(
-            site_dlocs[None, :], site_locs.shape[0]
-        )
-        
+        H, Pinf, As, Qs = self.kernel.get_LDS(site_dlocs[None, :], site_locs.shape[0])
+
         # interpolation
         ind_eval, dt_fwd, dt_bwd = interpolation_times(t_eval, site_locs)
         dt_fwd_bwd = jnp.concatenate([dt_fwd, dt_bwd])  # (2*num_evals,)
@@ -262,13 +260,11 @@ class GaussianLTI(SSM):
         site_locs, site_dlocs = self.get_site_locs()
 
         # compute linear dynamical system
-        H, Pinf, As, Qs = self.kernel.get_LDS(
-            site_dlocs[None, :], site_locs.shape[0]
-        )
-        
+        H, Pinf, As, Qs = self.kernel.get_LDS(site_dlocs[None, :], site_locs.shape[0])
+
         # evaluation locations
         t_all, site_ind, eval_ind = order_times(t_eval, site_locs)
-        
+
         if t_eval is not None:
             num_evals = len(t_eval)
             ind_eval, dt_fwd, dt_bwd = interpolation_times(t_eval, site_locs)
@@ -278,10 +274,10 @@ class GaussianLTI(SSM):
                 dt_fwd_bwd
             )  # vmap over num_evals
             Q_fwd_bwd = vmap(LTI_process_noise, (0, None), 0)(A_fwd_bwd, Pinf)
-            
+
         else:
             ind_eval, A_fwd_bwd, Q_fwd_bwd = None, None, None
-        
+
         # posterior mean
         post_means, _, KL_ss = evaluate_LGSSM_posterior(
             H,
@@ -303,7 +299,7 @@ class GaussianLTI(SSM):
         prior_samps = self.sample_prior(
             prng_keys[0], num_samps, t_all, jitter
         )  # (num_samps, time, out_dims, 1)
-        
+
         prior_samps_t = prior_samps[:, site_ind]
         prior_samps_eval = prior_samps[:, eval_ind]
 
@@ -340,7 +336,7 @@ class GaussianLTI(SSM):
 @eqx.filter_vmap(args=(0, 0, 0, 1, 1, 0, 0, 1, 1, 1, None, None, None), out=(0, 0, 0))
 def vmap_outdims_LGSSM_posterior(
     H,
-    P_init, 
+    P_init,
     P_end,
     As,
     Qs,
@@ -355,7 +351,7 @@ def vmap_outdims_LGSSM_posterior(
 ):
     return evaluate_LGSSM_posterior(
         H,
-        P_init, 
+        P_init,
         P_end,
         As,
         Qs,
@@ -383,9 +379,7 @@ class IndependentLTI(SSM):
 
     fixed_grid_locs: bool
 
-    def __init__(
-        self, kernel, site_locs, site_obs, site_Lcov, fixed_grid_locs=False
-    ):
+    def __init__(self, kernel, site_locs, site_obs, site_Lcov, fixed_grid_locs=False):
         """
         :param module temporal_kernel: markov kernel module
         :param module spatial_kernel: spatial kernel
@@ -459,16 +453,20 @@ class IndependentLTI(SSM):
         H, Pinf, As, Qs = self.kernel._get_LDS(
             site_dlocs, site_locs.shape[1]
         )  # (ts, out_dims, sd, sd)
-        
+
         # evaluation locations
         ind_eval, dt_fwd, dt_bwd = vmap(interpolation_times, (0, 0), (1, 1, 1))(
             t_eval, site_locs
         )  # vmap over out_dims
-        dt_fwd_bwd = jnp.concatenate([dt_fwd, dt_bwd], axis=0)  # (2*num_evals, out_dims)
+        dt_fwd_bwd = jnp.concatenate(
+            [dt_fwd, dt_bwd], axis=0
+        )  # (2*num_evals, out_dims)
         A_fwd_bwd = vmap(self.kernel._state_transition)(
             dt_fwd_bwd
         )  # vmap over num_evals, (eval_inds, out_dims, sd, sd)
-        Q_fwd_bwd = vmap(vmap(LTI_process_noise, (0, 0), 0), (0, None), 0)(A_fwd_bwd, Pinf)
+        Q_fwd_bwd = vmap(vmap(LTI_process_noise, (0, 0), 0), (0, None), 0)(
+            A_fwd_bwd, Pinf
+        )
 
         # vmap over output dimensions
         post_means, post_covs, KL = vmap_outdims_LGSSM_posterior(
@@ -479,14 +477,14 @@ class IndependentLTI(SSM):
             Qs,
             self.site_obs[..., None],
             self.site_Lcov[..., None],
-            ind_eval, 
-            A_fwd_bwd, 
-            Q_fwd_bwd, 
+            ind_eval,
+            A_fwd_bwd,
+            Q_fwd_bwd,
             mean_only,
             compute_KL,
             jitter,
         )  # (out_dims, timesteps, 1, 1)
-        
+
         post_means = post_means[..., 0]  # (out_dims, timesteps, 1)
         post_covs = post_covs[..., 0]
 
@@ -496,7 +494,7 @@ class IndependentLTI(SSM):
     def sample_prior(self, prng_state, num_samps, t_eval, jitter):
         """
         Sample from the model prior f~N(0,K)
-        
+
         :param num_samps: number of samples to draw
         :param jnp.ndarray tx_eval: input locations at which to sample (out_dims, locs)
         :return:
@@ -504,29 +502,32 @@ class IndependentLTI(SSM):
         """
         state_dims, out_dims = self.kernel.state_dims, self.kernel.out_dims
         eps_I = jitter * jnp.eye(state_dims)
-        
+
         tsteps = t_eval.shape[-1]
         t_eval = jnp.broadcast_to(t_eval, (self.site_locs.shape[0], tsteps))
-        
+
         dt = jnp.diff(t_eval, axis=-1)  # (out_dims, eval_locs-1)
         if jnp.all(jnp.isclose(dt, dt[0, 0])):  # grid
             dt = dt[:, :1]
-            
+
         # sample independent temporal processes
         prng_state = jr.split(prng_state, out_dims)
-        
+
         H, Pinf, As, Qs = self.kernel._get_LDS(dt, tsteps)  # (ts, out_dims, sd, sd)
         minf = jnp.zeros((*Pinf.shape[:2], 1))
         samples = vmap(sample_LGSSM, (0, 0, 0, 1, 1, 0, None, None), 0)(
-            H, minf, Pinf, As, Qs, prng_state, num_samps, jitter)[..., 0]  # (out, ts, num_samps, 1)
+            H, minf, Pinf, As, Qs, prng_state, num_samps, jitter
+        )[
+            ..., 0
+        ]  # (out, ts, num_samps, 1)
         return samples.transpose(2, 0, 1, 3)
 
     def sample_posterior(
         self,
         prng_state,
-        num_samps, 
-        t_eval, 
-        jitter, 
+        num_samps,
+        t_eval,
+        jitter,
         compute_KL,
     ):
         """
@@ -536,7 +537,7 @@ class IndependentLTI(SSM):
         """
         prng_keys = jr.split(prng_state, 2)
         state_dims = self.kernel.state_dims
-        
+
         site_locs, site_dlocs = self.get_site_locs()
         t_eval = jnp.broadcast_to(t_eval, (site_locs.shape[0], t_eval.shape[-1]))
 
@@ -544,21 +545,25 @@ class IndependentLTI(SSM):
         H, Pinf, As, Qs = self.kernel._get_LDS(
             site_dlocs, site_locs.shape[1]
         )  # (ts, out_dims, sd, sd)
-        
+
         # evaluation locations
         t_all, site_ind, eval_ind = vmap(order_times, (0, 0), (0, 0, 0))(
             t_eval, self.site_locs
         )  # vmap over out_dims
-        
+
         ind_eval, dt_fwd, dt_bwd = vmap(interpolation_times, (0, 0), (1, 1, 1))(
             t_eval, site_locs
         )  # vmap over out_dims
-        dt_fwd_bwd = jnp.concatenate([dt_fwd, dt_bwd], axis=0)  # (2*num_evals, out_dims)
+        dt_fwd_bwd = jnp.concatenate(
+            [dt_fwd, dt_bwd], axis=0
+        )  # (2*num_evals, out_dims)
         A_fwd_bwd = vmap(self.kernel._state_transition)(
             dt_fwd_bwd
         )  # vmap over num_evals, (eval_inds, out_dims, sd, sd)
-        Q_fwd_bwd = vmap(vmap(LTI_process_noise, (0, 0), 0), (0, None), 0)(A_fwd_bwd, Pinf)
-        
+        Q_fwd_bwd = vmap(vmap(LTI_process_noise, (0, 0), 0), (0, None), 0)(
+            A_fwd_bwd, Pinf
+        )
+
         # posterior mean
         post_means, _, KL = vmap_outdims_LGSSM_posterior(
             H,
@@ -568,9 +573,9 @@ class IndependentLTI(SSM):
             Qs,
             self.site_obs[..., None],
             self.site_Lcov[..., None],
-            ind_eval, 
-            A_fwd_bwd, 
-            Q_fwd_bwd, 
+            ind_eval,
+            A_fwd_bwd,
+            Q_fwd_bwd,
             mean_only=True,
             compute_KL=compute_KL,
             jitter=jitter,
@@ -580,14 +585,14 @@ class IndependentLTI(SSM):
         prior_samps = self.sample_prior(
             prng_keys[0], num_samps, t_all, jitter
         )  # (num_samps, out_dims, time, 1)
-        
+
         # noisy prior samples at eval locs
         array_indexing = lambda ind, array: array[..., ind, :]
         varray_indexing = vmap(array_indexing, (0, 1), 1)  # vmap over out_dims
 
         prior_samps_t = varray_indexing(site_ind, prior_samps)
         prior_samps_eval = varray_indexing(eval_ind, prior_samps)
-        
+
         prior_samps_noisy = prior_samps_t + self.site_Lcov[None, ...] * jr.normal(
             prng_keys[1], shape=prior_samps_t.shape
         )  # (tr, out_dims, time, 1)
@@ -602,16 +607,21 @@ class IndependentLTI(SSM):
                 Qs,
                 prior_samp_i,
                 self.site_Lcov[..., None],
-                ind_eval, 
-                A_fwd_bwd, 
-                Q_fwd_bwd, 
+                ind_eval,
+                A_fwd_bwd,
+                Q_fwd_bwd,
                 mean_only=True,
                 compute_KL=False,
                 jitter=jitter,
             )
             return smoothed_sample
 
-        smoothed_samps = vmap(smooth_prior_sample)(prior_samps_noisy)[..., 0]  # vmap over MC
+        smoothed_samps = vmap(smooth_prior_sample)(prior_samps_noisy)[
+            ..., 0
+        ]  # vmap over MC
 
         # Matheron's rule pathwise samplig
-        return prior_samps_eval - smoothed_samps + post_means[None, ..., 0], KL.sum()  # sum over out_dims
+        return (
+            prior_samps_eval - smoothed_samps + post_means[None, ..., 0],
+            KL.sum(),
+        )  # sum over out_dims

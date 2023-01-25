@@ -125,7 +125,8 @@ def gauss_hermite(dim, num_quad_pts):
     The outputs can be used to approximate the following type of integral:
     int exp(-x)*f(x) dx ~ sum_i w[i,:]*f(x[i,:])
 
-    Return weights and sigma-points for Gauss-Hermite cubature
+    :return:
+        weights and sigma-points for Gauss-Hermite cubature ()
     """
     gh_x, gh_w = hermgauss(num_quad_pts)
     sigma_pts = np.array(list(itertools.product(*(gh_x,) * dim)))  # H**DxD

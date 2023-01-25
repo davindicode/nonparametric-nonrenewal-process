@@ -1,6 +1,6 @@
 import jax
-from jax import lax, vmap
 import jax.numpy as jnp
+from jax import lax, vmap
 
 from ..base import module
 
@@ -39,34 +39,44 @@ class Filter(module):
         :param jnp.ndarray input: input spiketrain or covariates with shape (trials, neurons, ts)
         :returns: filtered input of shape (trials, neurons, filter_length)
         """
-        h, KL = self.compute_filter(prng_state, compute_KL)  # sample one trajectory (filter_len, post, pre)
-        
+        h, KL = self.compute_filter(
+            prng_state, compute_KL
+        )  # sample one trajectory (filter_len, post, pre)
+
         if self.cross_coupling:
             dn = lax.conv_dimension_numbers(
-                inputs.shape, h.shape, ('NCW', 'WIO', 'NCW'))
+                inputs.shape, h.shape, ("NCW", "WIO", "NCW")
+            )
 
-            out = lax.conv_general_dilated(inputs,   # lhs = image tensor
-                                           h,      # rhs = conv kernel tensor
-                                           (1,),   # window strides
-                                           'VALID', # padding mode
-                                           (1,),   # lhs/image dilation
-                                           (1,),   # rhs/kernel dilation
-                                           dn)     # dimension_numbers = lhs, rhs, out dimension permutation
-            
+            out = lax.conv_general_dilated(
+                inputs,  # lhs = image tensor
+                h,  # rhs = conv kernel tensor
+                (1,),  # window strides
+                "VALID",  # padding mode
+                (1,),  # lhs/image dilation
+                (1,),  # rhs/kernel dilation
+                dn,
+            )  # dimension_numbers = lhs, rhs, out dimension permutation
+
         else:
             dn = lax.conv_dimension_numbers(
-                (inputs.shape[0], 1, 1), (h.shape[0], 1, 1), ('NCW', 'WIO', 'NCW'))
+                (inputs.shape[0], 1, 1), (h.shape[0], 1, 1), ("NCW", "WIO", "NCW")
+            )
             inputs = inputs[..., None, :]
             h = h[..., None]
-            
-            out = vmap(lax.conv_general_dilated, (1, 1, None, None, None, None, None), 1)(
-                inputs,   # lhs = image tensor
-                h,      # rhs = conv kernel tensor
-                (1,),   # window strides
-                'VALID', # padding mode
-                (1,),   # lhs/image dilation
-                (1,),   # rhs/kernel dilation
-                dn,     # dimension_numbers = lhs, rhs, out dimension permutation
-            )[..., 0, :]  # vmap over out_dims
-            
+
+            out = vmap(
+                lax.conv_general_dilated, (1, 1, None, None, None, None, None), 1
+            )(
+                inputs,  # lhs = image tensor
+                h,  # rhs = conv kernel tensor
+                (1,),  # window strides
+                "VALID",  # padding mode
+                (1,),  # lhs/image dilation
+                (1,),  # rhs/kernel dilation
+                dn,  # dimension_numbers = lhs, rhs, out dimension permutation
+            )[
+                ..., 0, :
+            ]  # vmap over out_dims
+
         return out, KL

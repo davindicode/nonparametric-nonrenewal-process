@@ -10,11 +10,11 @@ from jax.scipy.linalg import block_diag, solve_triangular
 
 from jax.scipy.special import erf, gammaln, logit
 
-from .base import CountLikelihood, FactorizedLikelihood, LinkTypes
-
 from ..utils.jax import mc_sample, safe_log, softplus, softplus_inv
 from ..utils.linalg import gauss_hermite
-from ..utils.neural import gen_ZIP, gen_NB, gen_CMP
+from ..utils.neural import gen_CMP, gen_NB, gen_ZIP
+
+from .base import CountLikelihood, FactorizedLikelihood, LinkTypes
 
 _log_twopi = math.log(2 * math.pi)
 
@@ -25,10 +25,10 @@ class Gaussian(FactorizedLikelihood):
     The Gaussian likelihood:
         p(yₙ|fₙ) = 𝓝(yₙ|fₙ,σ²)
     """
-    
+
     pre_variance: jnp.ndarray
 
-    def __init__(self, obs_dims, variance, array_type='float32'):
+    def __init__(self, obs_dims, variance, array_type="float32"):
         """
         :param jnp.ndarray pre_variance: The observation noise variance, σ² (obs_dims,)
         """
@@ -60,7 +60,7 @@ class Gaussian(FactorizedLikelihood):
         f_mean,
         f_cov,
         prng_state,
-        jitter, 
+        jitter,
         approx_int_method,
         log_predictive=False,
     ):
@@ -90,7 +90,8 @@ class Gaussian(FactorizedLikelihood):
 
         else:
             return super().variational_expectation(
-                y, f_mean, f_cov, jitter, approx_int_method, log_predictive)
+                y, f_mean, f_cov, prng_state, jitter, approx_int_method, log_predictive
+            )
 
     def sample_Y(self, prng_state, f):
         """
@@ -144,8 +145,8 @@ class PointProcess(FactorizedLikelihood):
         self,
         neurons,
         dt,
-        link_type="log", 
-        array_type='float32',
+        link_type="log",
+        array_type="float32",
     ):
         assert link_type in ["log", "softplus"]
         super().__init__(neurons, neurons, link_type, array_type)
@@ -158,16 +159,16 @@ class PointProcess(FactorizedLikelihood):
         :return:
             log p(yₙ|fₙ), p(yₙ|fₙ) = Pʸ(1-P)⁽¹⁻ʸ⁾
         """
-        f = safe_log(self.inverse_link(f)) 
+        f = safe_log(self.inverse_link(f))
         return y * f - jnp.exp(f) * self.dt
-    
+
     def variational_expectation(
         self,
         y,
         f_mean,
         f_cov,
         prng_state,
-        jitter, 
+        jitter,
         approx_int_method,
         log_predictive=False,
     ):
@@ -186,13 +187,14 @@ class PointProcess(FactorizedLikelihood):
             f_mean = f_mean[:, 0]
             f_var = jnp.diag(f_cov)  # diagonalize
 
-            Ell = y * f_mean - jnp.exp(f_mean + f_var/2.) * self.dt
+            Ell = y * f_mean - jnp.exp(f_mean + f_var / 2.0) * self.dt
             Ell = jnp.nansum(Ell)  # sum over obs_dims
             return Ell
-        
+
         else:
             return super().variational_expectation(
-                y, f_mean, f_cov, jitter, approx_int_method, log_predictive)
+                y, f_mean, f_cov, prng_state, jitter, approx_int_method, log_predictive
+            )
 
     def sample_Y(self, prng_state, f):
         """
@@ -206,8 +208,8 @@ class PointProcess(FactorizedLikelihood):
             rho = softplus(f)
         else:  # log
             rho = jnp.exp(f)
-            
-        rate = jnp.maximum(rho * self.dt, 1.)
+
+        rate = jnp.maximum(rho * self.dt, 1.0)
         return jr.bernoulli(prng_state, rate).astype(self.array_dtype())
 
 
@@ -219,7 +221,7 @@ class Bernoulli(FactorizedLikelihood):
 
     The error function likelihood = probit = Bernoulli likelihood with probit link.
     The logistic likelihood = logit = Bernoulli likelihood with logit link.
-    
+
     The logit link function:
         P = E[yₙ=1|fₙ] = 1 / 1 + exp(-fₙ)
 
@@ -232,7 +234,7 @@ class Bernoulli(FactorizedLikelihood):
         for erf(z) = (2/√π) ∫ exp(-x²) dx, where the integral is over [0, z]
     """
 
-    def __init__(self, obs_dims, link_type="logit", array_type='float32'):
+    def __init__(self, obs_dims, link_type="logit", array_type="float32"):
         assert link_type in ["logit", "probit"]
         super().__init__(obs_dims, obs_dims, link_type, array_type)
 
@@ -271,7 +273,7 @@ class Poisson(CountLikelihood):
     yₙ is non-negative integer count data
     """
 
-    def __init__(self, obs_dims, tbin, link_type="log", array_type='float32'):
+    def __init__(self, obs_dims, tbin, link_type="log", array_type="float32"):
         """
         :param link: link function, either 'exp' or 'logistic'
         """
@@ -305,15 +307,17 @@ class Poisson(CountLikelihood):
         prng_state,
         jitter,
         approx_int_method,
-        log_predictive=False, 
+        log_predictive=False,
     ):
         """
         Closed form of the expected log likelihood for exponential link function
         """
-        if log_predictive is False and self.link_type == LinkTypes["log"]:  # closed form for E[log p(y|f)]
+        if (
+            log_predictive is False and self.link_type == LinkTypes["log"]
+        ):  # closed form for E[log p(y|f)]
             f_mean = f_mean[:, 0]
             f_var = jnp.diag(f_cov)  # diagonalize
-            int_exp = jnp.exp(-f_mean + f_var / 2.)
+            int_exp = jnp.exp(-f_mean + f_var / 2.0)
             Ell = y * f_mean - int_exp - gammaln(y + 1.0)
 
             Ell = jnp.nansum(Ell)  # sum over obs_dims
@@ -325,9 +329,10 @@ class Poisson(CountLikelihood):
                 y,
                 f_mean,
                 f_cov,
+                prng_state,
                 jitter,
                 approx_int_method,
-                log_predictive, 
+                log_predictive,
             )
 
     def sample_Y(self, prng_state, f):
@@ -373,7 +378,7 @@ class ZeroInflatedPoisson(CountLikelihood):
 
     arctanh_alpha: Union[jnp.ndarray, None]
 
-    def __init__(self, obs_dims, tbin, alpha, link_type="log", array_type='float32'):
+    def __init__(self, obs_dims, tbin, alpha, link_type="log", array_type="float32"):
         """
         :param link: link function, either 'exp' or 'logistic'
         """
@@ -436,7 +441,6 @@ class ZeroInflatedPoisson(CountLikelihood):
         mean = self.inverse_link(f) * self.tbin
         alpha = jnp.tanh(self.arctanh_alpha)
         return gen_ZIP(prng_state, mean, alpha)
-    
 
 
 class NegativeBinomial(CountLikelihood):
@@ -452,7 +456,7 @@ class NegativeBinomial(CountLikelihood):
 
     r_inv: Union[jnp.ndarray, None]
 
-    def __init__(self, obs_dims, tbin, r_inv, link_type="log", array_type='float32'):
+    def __init__(self, obs_dims, tbin, r_inv, link_type="log", array_type="float32"):
         """
         :param link: link function, either 'exp' or 'logistic'
         """
@@ -499,7 +503,7 @@ class NegativeBinomial(CountLikelihood):
         :returns:
             NLL of shape (trial, time), jnp.ndarray
         """
-        asymptotic_mask = (r_inv < 1e-3)  # when r becomes very large
+        asymptotic_mask = r_inv < 1e-3  # when r becomes very large
         r = 1.0 / (r_inv + asymptotic_mask)  # avoid NaNs
 
         mu = self.inverse_link(f) * self.tbin
@@ -533,8 +537,6 @@ class NegativeBinomial(CountLikelihood):
         r = 1.0 / (self.r_inv + 1e-12)
         return gen_NB(prng_state, mean, r)
 
-    
-
 
 class ConwayMaxwellPoisson(CountLikelihood):
     """
@@ -554,7 +556,7 @@ class ConwayMaxwellPoisson(CountLikelihood):
         nu,
         J=100,
         link_type="log",
-        array_type='float32',
+        array_type="float32",
     ):
         """
         :param int J: number of terms to use for partition function sum

@@ -4,13 +4,13 @@ from typing import Union
 
 import equinox as eqx
 import jax
-from jax import lax, vmap
 import jax.numpy as jnp
 import jax.random as jr
+from jax import lax, vmap
 from jax.numpy.linalg import cholesky
 from jax.scipy.linalg import solve_triangular
 
-from ..base import module, ArrayTypes_
+from ..base import ArrayTypes_, module
 
 from .kernels import Kernel, MarkovianKernel
 from .linalg import mvn_conditional
@@ -95,9 +95,7 @@ class GP(module):
             amps = amplitude[None, :, None] * jnp.sqrt(
                 2.0 / self.RFF_num_feats
             )  # (num_samps, out_dims, feats)
-            samples = amps * cos_terms.sum(
-                -1
-            )  # (num_samps, out_dims, time)
+            samples = amps * cos_terms.sum(-1)  # (num_samps, out_dims, time)
 
         else:
             Kxx = vmap(self.kernel.K, (0, None, None), 0)(
@@ -105,9 +103,7 @@ class GP(module):
             )  # (num_samps, out_dims, time, time)
             eps_I = jitter * jnp.eye(ts)
             Lcov = cholesky(Kxx + eps_I)
-            samples = Lcov @ jr.normal(
-                prng_state, shape=(num_samps, out_dims, ts, 1)
-            )
+            samples = Lcov @ jr.normal(prng_state, shape=(num_samps, out_dims, ts, 1))
             samples = samples[..., 0]
 
         return samples
@@ -133,7 +129,7 @@ class SSM(module):
         :param jnp.ndarray site_obs: observations of shape (time, x_dims, 1)
         :param jnp.ndarray site_Lcov: covariances of shape (time, x_dims, x_dims)
         """
-        super().__init__(ArrayTypes_[array_type])
+        super().__init__(array_type)
         self.site_locs = self._to_jax(site_locs) if site_locs is not None else None
         self.site_obs = self._to_jax(site_obs)
         self.site_Lcov = self._to_jax(site_Lcov)

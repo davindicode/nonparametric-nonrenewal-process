@@ -5,8 +5,9 @@ from jax import lax, tree_map, vmap
 from jax.numpy.linalg import cholesky
 from jax.scipy.linalg import block_diag, cho_solve, solve_triangular
 
-from ..utils.linalg import solve_PSD
 from ..utils.jax import safe_log
+
+from ..utils.linalg import solve_PSD
 
 _log_twopi = math.log(2 * math.pi)
 
@@ -125,8 +126,8 @@ def predict_between_sites(
     ind,
     A_fwd,
     A_bwd,
-    Q_fwd, 
-    Q_bwd, 
+    Q_fwd,
+    Q_bwd,
     post_mean,
     post_cov,
     gain,
@@ -215,7 +216,6 @@ def fixed_interval_smoothing(
     return smoother_means, smoother_covs, gains, logZ
 
 
-
 predict_between_sites_vmap = vmap(
     predict_between_sites,
     (0, 0, 0, 0, 0, None, None, None, None, None),
@@ -223,18 +223,17 @@ predict_between_sites_vmap = vmap(
 )  # vmap over eval_nums
 
 
-
 def evaluate_LGSSM_posterior(
     H,
-    P_init, 
-    P_end, 
+    P_init,
+    P_end,
     As,
     Qs,
     site_obs,
     site_Lcov,
     ind_eval,
     A_fwd_bwd,
-    Q_fwd_bwd, 
+    Q_fwd_bwd,
     mean_only,
     compute_KL,
     jitter,
@@ -275,7 +274,7 @@ def evaluate_LGSSM_posterior(
         num_evals = len(ind_eval)
         A_fwd, A_bwd = A_fwd_bwd[:num_evals], A_fwd_bwd[-num_evals:]
         Q_fwd, Q_bwd = Q_fwd_bwd[:num_evals], Q_fwd_bwd[-num_evals:]
-        
+
         # add dummy states at either edge
         mean_aug = jnp.concatenate(
             [minf[None, :], smoother_means, minf[None, :]], axis=0
@@ -284,13 +283,13 @@ def evaluate_LGSSM_posterior(
             [P_init[None, ...], smoother_covs, P_end[None, ...]], axis=0
         )
         gain_aug = jnp.concatenate([jnp.zeros_like(gains[:1, ...]), gains], axis=0)
-        
+
         eval_means, eval_covs = predict_between_sites_vmap(
             ind_eval,
             A_fwd,
             A_bwd,
-            Q_fwd, 
-            Q_bwd, 
+            Q_fwd,
+            Q_bwd,
             mean_aug,
             cov_aug,
             gain_aug,
@@ -400,8 +399,8 @@ def evaluate_qsparse_posterior(
             L = Linv_stacked[..., -num_induc:]
 
     W = W.reshape(out_dims, num_induc, num_samps, ts).transpose(2, 0, 3, 1)
-    post_means = (
-        W @ v[None, ...].repeat(num_samps, axis=0)
+    post_means = W @ v[None, ...].repeat(
+        num_samps, axis=0
     )  # (num_samps, out_dims, time, 1)
 
     if mean_only is False:
@@ -428,21 +427,28 @@ def evaluate_qsparse_posterior(
         post_covs = None
 
     if compute_KL:
-       # if whitened:
+        # if whitened:
         log_determinants = -jnp.log(vdiag(L)).sum()
-#         else:
-#             log_determinants = (safe_log(vdiag(chol_Kzz)) - safe_log(vdiag(u_Lcov))).sum()
+        #         else:
+        #             log_determinants = (safe_log(vdiag(chol_Kzz)) - safe_log(vdiag(u_Lcov))).sum()
 
         trace_term = vmap(jnp.trace)(L @ L.transpose(0, 2, 1)).sum()
         quadratic_form = (v.transpose(0, 2, 1) @ v).sum()
-        KL = 0.5 * (trace_term + quadratic_form - out_dims*num_induc) + log_determinants
+        KL = (
+            0.5 * (trace_term + quadratic_form - out_dims * num_induc)
+            + log_determinants
+        )
 
         # collision avoidance
-        repulsion_func = lambda x: jnp.maximum(1e-3 - jnp.abs(x).sum(), 0.)
-        dist_uu = vmap(vmap(vmap(repulsion_func)))(induc_locs[..., None, :] - induc_locs[:, None, ...])
-        repulsion = dist_uu.at[:, jnp.arange(num_induc), jnp.arange(num_induc)].set(0.).sum()
+        repulsion_func = lambda x: jnp.maximum(1e-3 - jnp.abs(x).sum(), 0.0)
+        dist_uu = vmap(vmap(vmap(repulsion_func)))(
+            induc_locs[..., None, :] - induc_locs[:, None, ...]
+        )
+        repulsion = (
+            dist_uu.at[:, jnp.arange(num_induc), jnp.arange(num_induc)].set(0.0).sum()
+        )
         KL += repulsion
-        
+
     else:
         KL = 0.0
 
@@ -493,8 +499,8 @@ def evaluate_tsparse_posterior(
         0, 1, 3, 2
     )  # (num_samps, out_dims, time, num_induc)
 
-    post_means = (
-        Kxz_Rinv @ lambda_1[None, ...].repeat(num_samps, axis=0)
+    post_means = Kxz_Rinv @ lambda_1[None, ...].repeat(
+        num_samps, axis=0
     )  # (num_samps, out_dims, time, 1)
 
     if mean_only is False or compute_aux:
@@ -536,8 +542,11 @@ def evaluate_tsparse_posterior(
         trace_term = vmap(jnp.trace)(Rinv_Kzz).sum()
         quadratic_form = (lambda_1.transpose(0, 2, 1) @ Rinv_Kzz @ Rinv_lambda_1).sum()
         log_determinants = -jnp.log(vdiag(Rinv_Kzz)).sum()
-        #(safe_log(vdiag(chol_R)) - safe_log(vdiag(chol_Kzz))).sum()
-        KL = 0.5 * (trace_term + quadratic_form - out_dims*num_induc) + log_determinants
+        # (safe_log(vdiag(chol_R)) - safe_log(vdiag(chol_Kzz))).sum()
+        KL = (
+            0.5 * (trace_term + quadratic_form - out_dims * num_induc)
+            + log_determinants
+        )
     else:
         KL = 0.0
 

@@ -29,7 +29,7 @@ class SigmoidRefractory(Filter):
         beta,
         tau,
         filter_length,
-        array_type='float32',
+        array_type="float32",
     ):
         """
         :param jnp.ndarray a: parameter a of shape (post, pre)
@@ -73,6 +73,7 @@ class RaisedCosineBumps(Filter):
     c: jnp.ndarray
     w: jnp.ndarray
     phi: jnp.ndarray
+    L2_reg: float
 
     def __init__(
         self,
@@ -81,14 +82,15 @@ class RaisedCosineBumps(Filter):
         w,
         phi,
         filter_length,
-        array_type='float32',
+        L2_reg=0.0,
+        array_type="float32",
     ):
         """
         Raised cosine basis as used in the literature.
 
         higher a is more linear spacing of peaks
         c shifts the peak maxima to the left
-        
+
         .. note::
 
             Stimulus history object needs to assert (w_u.shape[-1] == 1 or w_u.shape[-1] == self.rate_model.out_dims)
@@ -111,6 +113,7 @@ class RaisedCosineBumps(Filter):
         self.c = self._to_jax(c)
         self.w = self._to_jax(w)
         self.phi = self._to_jax(phi)
+        self.L2_reg = L2_reg
 
     def compute_filter(self, prng_state, compute_KL):
         """
@@ -121,7 +124,13 @@ class RaisedCosineBumps(Filter):
         A = jnp.minimum(
             jnp.maximum(self.a * jnp.log(t + self.c) - self.phi, -np.pi), np.pi
         )  # (filter_length, basis, post, pre)
-        return (self.w * 0.5 * (jnp.cos(A) + 1.0)).sum(1), 0.0
+
+        if self.L2_reg > 0.0:
+            KL = (self.w**2).sum()
+        else:
+            KL = 0.0
+
+        return (self.w * 0.5 * (jnp.cos(A) + 1.0)).sum(1), KL
 
 
 class GaussianProcess(Filter):
@@ -141,7 +150,7 @@ class GaussianProcess(Filter):
         self,
         filter_length,
         tbin,
-        array_type='float32',
+        array_type="float32",
     ):
         """
         :param int out_dim: the number of output dimensions per input dimension (1 or neurons)

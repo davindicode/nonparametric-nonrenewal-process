@@ -1,14 +1,14 @@
 import argparse
 
-import numpy as np
+import sys
 
 import gplvm_template
 
-import sys
+import numpy as np
+
 sys.path.append("..")
 
 import lib
-
 
 
 def get_dataset(session_name, max_ISI_order, select_fracs=None):
@@ -43,15 +43,13 @@ def get_dataset(session_name, max_ISI_order, select_fracs=None):
     )
 
 
-
-
 def observed_kernel_dict_induc_list(obs_covs, num_induc, out_dims, covariates):
     """
     Get kernel dictionary and inducing point locations for dataset covariates
     """
     induc_list = []
     kernel_dicts = []
-    
+
     ones = np.ones(out_dims)
 
     obs_covs_comps = obs_covs.split("-")
@@ -62,46 +60,51 @@ def observed_kernel_dict_induc_list(obs_covs, num_induc, out_dims, covariates):
         if comp == "hd":
             induc_list += [np.linspace(0, 2 * np.pi, num_induc + 1)[:-1]]
             kernel_dicts += [
-                {"type": "circSE", "var": ones, "len": 5.0 * np.ones((out_dims, 1))}]
-            
+                {"type": "circSE", "var": ones, "len": 5.0 * np.ones((out_dims, 1))}
+            ]
+
         elif comp == "theta":
             induc_list += [np.linspace(0, 2 * np.pi, num_induc + 1)[:-1]]
             kernel_dicts += [
-                {"type": "circSE", "var": ones, "len": 5.0 * np.ones((out_dims, 1))}]
-            
+                {"type": "circSE", "var": ones, "len": 5.0 * np.ones((out_dims, 1))}
+            ]
+
         elif comp == "speed":
             scale = covariates["speed"].std()
             induc_list += [np.random.uniform(0, scale, size=(num_induc,))]
             kernel_dicts += [
-                {"type": "SE", "var": ones, "len": scale * np.ones((out_dims, 1))}]
-            
+                {"type": "SE", "var": ones, "len": scale * np.ones((out_dims, 1))}
+            ]
+
         elif comp == "x":
             left_x = covariates["x"].min()
             right_x = covariates["x"].max()
             induc_list += [np.random.uniform(left_x, right_x, size=(num_induc,))]
             ls = (right_x - left_x) / 10.0
             kernel_dicts += [
-                {"type": "SE", "var": ones, "len": ls * np.ones((out_dims, 1))}]
-            
+                {"type": "SE", "var": ones, "len": ls * np.ones((out_dims, 1))}
+            ]
+
         elif comp == "y":
             bottom_y = covariates["y"].min()
             top_y = covariates["y"].max()
             induc_list += [np.random.uniform(bottom_y, top_y, size=(num_induc,))]
             ls = (top_y - bottom_y) / 10.0
             kernel_dicts += [
-                {"type": "SE", "var": ones, "len": ls * np.ones((out_dims, 1))}]
-            
+                {"type": "SE", "var": ones, "len": ls * np.ones((out_dims, 1))}
+            ]
+
         elif comp == "time":
             scale = covariates["time"].max()
             induc_list += [np.linspace(0, scale, num_induc)]
             kernel_dicts += [
-                {"type": "SE", "var": ones, "len": scale / 2.0 * np.ones((out_dims, 1))}]
-            
+                {"type": "SE", "var": ones, "len": scale / 2.0 * np.ones((out_dims, 1))}
+            ]
+
         else:
             raise ValueError("Invalid covariate type")
 
     return kernel_dicts, induc_list
-
 
 
 def gen_name(parser_args, dataset_dict):
@@ -112,10 +115,9 @@ def gen_name(parser_args, dataset_dict):
         parser_args.observations,
         parser_args.observed_covs,
         parser_args.latent_covs,
-        #parser_args.bin_size,
+        # parser_args.bin_size,
     )
     return name
-
 
 
 def main():
@@ -124,14 +126,15 @@ def main():
     parser.add_argument("--data_type", action="store", type=str)
 
     args = parser.parse_args()
-    
-    
-    
+
     # dataset
     dataset_dict = get_dataset(session_id, phase)
-    lib.models.fit_model(dev, args, dataset_dict, )
+    lib.models.fit_model(
+        dev,
+        args,
+        dataset_dict,
+    )
 
-    
     batches = args.batches
     dataset = lib.utils.Dataset(inp, target, batches)
 

@@ -19,6 +19,44 @@ _log_twopi = math.log(2 * math.pi)
 
 
 ### renewal densities ###
+class Exponential(RenewalLikelihood):
+    def __init__(
+        self,
+        obs_dims,
+        dt,
+        link_type="log",
+        array_type="float32",
+    ):
+        """
+        Renewal parameters shape can be shared for all obs_dims or independent.
+        """
+        super().__init__(obs_dims, dt, link_type, array_type)
+
+    def log_density(self, ISI):
+        """
+        :param jnp.ndarray ISI: interspike interval array with NaN padding (obs_dims,)
+        :return:
+            log density of shape (obs_dims,)
+        """
+        alpha = self.alpha
+
+        log_ISI = safe_log(ISI)
+        ll = (alpha - 1) * log_ISI - ISI - gammaln(alpha)
+        return ll
+
+    def cum_density(self, ISI):
+        """
+        :param jnp.ndarray ISI: interspike interval (obs_dims,)
+        """
+        return 1.0 - jnp.exp(-ISI)
+
+    def mean_scale(self):
+        return 1.0
+
+    def sample_ISI(self, num_samps):
+        return scstats.expon.rvs(size=(num_samps, self.obs_dims))
+
+
 class Gamma(RenewalLikelihood):
     """
     Gamma renewal process
@@ -28,16 +66,16 @@ class Gamma(RenewalLikelihood):
 
     def __init__(
         self,
-        neurons,
+        obs_dims,
         dt,
         alpha,
         link_type="log",
-        array_type='float32',
+        array_type="float32",
     ):
         """
-        Renewal parameters shape can be shared for all neurons or independent.
+        Renewal parameters shape can be shared for all obs_dims or independent.
         """
-        super().__init__(neurons, dt, link_type, array_type)
+        super().__init__(obs_dims, dt, link_type, array_type)
         self.alpha = self._to_jax(alpha)
 
     def apply_constraints(self):
@@ -81,7 +119,7 @@ class Gamma(RenewalLikelihood):
     def sample_ISI(self, num_samps):
         alpha = np.array(self.alpha)
         return scstats.gamma.rvs(
-            alpha, scale=self.shape_scale(), size=(num_samps, self.obs_dims)
+            alpha, scale=self.mean_scale(), size=(num_samps, self.obs_dims)
         )
 
 
@@ -95,16 +133,16 @@ class LogNormal(RenewalLikelihood):
 
     def __init__(
         self,
-        neurons,
+        obs_dims,
         dt,
         sigma,
         link_type="log",
-        array_type='float32',
+        array_type="float32",
     ):
         """
         :param np.ndarray sigma: :math:`$sigma$` parameter which is > 0
         """
-        super().__init__(neurons, dt, link_type, array_type)
+        super().__init__(obs_dims, dt, link_type, array_type)
         self.sigma = self._to_jax(sigma)
 
     def apply_constraints(self):
@@ -112,7 +150,7 @@ class LogNormal(RenewalLikelihood):
         constrain sigma parameter in numerically stable regime
         """
         model = jax.tree_map(lambda p: p, self)  # copy
-        
+
         def update(sigma):
             return jnp.maximum(sigma, 1e-5)
 
@@ -133,7 +171,7 @@ class LogNormal(RenewalLikelihood):
         sigma = self.sigma
 
         log_ISI = safe_log(ISI)
-        quad_term = -0.5 * (log_ISI / sigma)**2
+        quad_term = -0.5 * (log_ISI / sigma) ** 2
         norm_term = -(jnp.log(sigma) + 0.5 * _log_twopi)
 
         ll = norm_term - log_ISI + quad_term
@@ -151,7 +189,7 @@ class LogNormal(RenewalLikelihood):
 
     def sample_ISI(self, num_samps):
         sigma = self.sigma
-        return sctats.lognorm.rsv(s=sigma, scale=self.shape_scale(), size=(num_samps,))
+        return sctats.lognorm.rsv(s=sigma, scale=self.mean_scale(), size=(num_samps,))
 
 
 class InverseGaussian(RenewalLikelihood):
@@ -164,16 +202,16 @@ class InverseGaussian(RenewalLikelihood):
 
     def __init__(
         self,
-        neurons,
+        obs_dims,
         dt,
         mu,
         link_type="log",
-        array_type='float32',
+        array_type="float32",
     ):
         """
         :param np.ndarray mu: :math:`$mu$` parameter which is > 0
         """
-        super().__init__(neurons, dt, link_type, array_type)
+        super().__init__(obs_dims, dt, link_type, array_type)
         self.mu = self._to_jax(mu)
 
     def apply_constraints(self):
@@ -181,7 +219,7 @@ class InverseGaussian(RenewalLikelihood):
         constrain sigma parameter in numerically stable regime
         """
         model = jax.tree_map(lambda p: p, self)  # copy
-        
+
         def update(mu):
             return jnp.maximum(mu, 1e-5)
 
@@ -217,4 +255,4 @@ class InverseGaussian(RenewalLikelihood):
         return self.mu
 
     def sample_ISI(self, num_samps):
-        return scstats.invgauss(mu, scale=self.shape_scale, size=(num_samps,))
+        return scstats.invgauss(mu, scale=self.mean_scale, size=(num_samps,))

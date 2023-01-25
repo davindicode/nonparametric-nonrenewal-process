@@ -38,14 +38,14 @@ def rectquad(x):
     """
     Rectified quadratic
     """
-    return 0.5*(x + jnp.sqrt(x**2 + 4))
+    return 0.5 * (x + jnp.sqrt(x**2 + 4))
 
 
 def rectquad_inv(x):
     """
     Rectified quadratic inverse
     """
-    return x - 1/x
+    return x - 1 / x
 
 
 def constrain_diagonal(K, lower_lim=1e-6):

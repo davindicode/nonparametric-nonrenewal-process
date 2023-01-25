@@ -2,9 +2,9 @@ import math
 from functools import partial
 
 import equinox as eqx
-from jax import vmap
 import jax.numpy as jnp
 import jax.random as jr
+from jax import vmap
 from jax.numpy.linalg import cholesky
 from jax.scipy.linalg import cho_solve, solve_triangular
 
@@ -145,7 +145,13 @@ class qSVGP(SparseGP):
     whitened: bool
 
     def __init__(
-        self, kernel, induc_locs, u_mu, u_Lcov, RFF_num_feats=0, whitened=False, 
+        self,
+        kernel,
+        induc_locs,
+        u_mu,
+        u_Lcov,
+        RFF_num_feats=0,
+        whitened=False,
     ):
         """
         :param induc_locs: inducing point locations z, array of shape (out_dims, num_induc, in_dims)
@@ -219,9 +225,7 @@ class tSVGP(SparseGP):
     lambda_1: jnp.ndarray
     chol_Lambda_2: jnp.ndarray
 
-    def __init__(
-        self, kernel, induc_locs, lambda_1, chol_Lambda_2, RFF_num_feats=0
-    ):
+    def __init__(self, kernel, induc_locs, lambda_1, chol_Lambda_2, RFF_num_feats=0):
         """
         :param induc_locs: inducing point locations z, array of shape (out_dims, num_induc, in_dims)
         :param variance: The observation noise variance, σ²

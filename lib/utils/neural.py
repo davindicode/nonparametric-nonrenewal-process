@@ -1,10 +1,9 @@
-import numpy as np
-import scipy.signal as signal
-
 import jax
-from jax import lax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
+import scipy.signal as signal
+from jax import lax
 from jax.scipy.special import gammaln
 
 from ..utils.jax import safe_log
@@ -71,17 +70,41 @@ def time_rescale(spikes, intensities, dt, max_intervals):
     :param jnp.ndarray intensities: (ts, obs_dims)
     :param float dt: time bin size
     """
+    obs_dims = spikes.shape[1]
+    intervals = jnp.nan * jnp.empty((obs_dims, max_intervals))
+
     def step(carry, inputs):
-        t_tilde = carry
+        t_tilde, inds, intervals = carry
         intensity, spike = inputs
 
         t_tilde += intensity * dt
-        t_tilde_ = jnp.where(spike, 0., t_tilde)  # reset after spike
-        return (t_tilde_, ll), t_tilde if return_t_tilde else None
+        t_tilde_ = jnp.where(spike, 0.0, t_tilde)  # reset after spike
+        intervals = intervals.at[jnp.arange(obs_dims), inds].set(
+            jnp.where(spike, t_tilde, intervals[jnp.arange(obs_dims), inds])
+        )
+        inds = jnp.where(spike, inds + 1, inds)
+        return (t_tilde_, inds, intervals), None
 
-    init = jnp.nan*jnp.ones((self.renewal.obs_dims))
-    _, t_tildes = lax.scan(step, init=init, xs=(intensities, spikes))
-    return log_lik, t_tildes
+    init = (jnp.nan * jnp.empty(obs_dims), jnp.zeros(obs_dims, dtype=int), intervals)
+    (_, _, intervals), _ = lax.scan(step, init=init, xs=(intensities, spikes))
+    return intervals[1:, :]  # skip first NaN
+
+
+def KS_test(renewal_cum_density, rescaled_intervals):
+    """
+    :param jnp.ndarray rescaled_intervals: (obs_dims, num_intervals)
+    """
+    num_intervals = (~jnp.isnan(rescaled_intervals)).sum(1)  # (obs_dims,)
+    cdfs = renewal_cum_density(rescaled_intervals)
+
+    sort_cdfs, T_KS, p = [], [], []
+    for n in range(num_intervals.shape[0]):
+        sort_cdfs.append(np.sort(cdfs[n, : num_intervals[n]]))
+        uni_cdfs = np.linspace(0.0, 1.0, num_intervals[n] + 1)[1:]
+        T_KS.append(np.max(sort_cdfs - uni_cdfs))
+        p.append(0.0)
+
+    return sort_cdfs, T_KS, p
 
 
 def train_to_ind(train, allow_duplicate):
@@ -267,7 +290,7 @@ def compute_ISI_LV(sample_bin, spiketimes):
         for LV ∈ [0.5, 1], and bursty spiking for LV > 1.
         S. Shinomoto, K. Shima, and J. Tanji. Differences in spiking patterns
         among cortical neurons. Neural Computation, 15(12):2823–2842, 2003.
-        
+
     References:
 
     [1] `A measure of local variation of inter-spike intervals',
@@ -286,7 +309,6 @@ def compute_ISI_LV(sample_bin, spiketimes):
         ISI.append(ISI_)
 
     return ISI, LV
-
 
 
 # histograms
@@ -369,7 +391,6 @@ def spike_var_MI(rate, prob):
         MI[u] = (prob * rate[u] * np.log2(logterm[u])).sum()
 
     return MI
-
 
 
 def smooth_hist(rate_binned, sm_filter, bound):
@@ -573,8 +594,8 @@ def gen_ZIP(prng_state, mean, alpha):
     prng_state, _ = jr.split(prng_state)
     cnts = jr.poisson(prng_state, mean)
     return (1.0 - zero_mask) * cnts
-    
-    
+
+
 def gen_NB(prng_state, mean, r):
     s = (mean / r) * jr.gamma(
         prng_state, r
@@ -583,7 +604,7 @@ def gen_NB(prng_state, mean, r):
     return jr.poisson(prng_state, s)
 
 
-def gen_CMP(prng_state, mu, nu):#, max_rejections=1000):
+def gen_CMP(prng_state, mu, nu):  # , max_rejections=1000):
     """
     Use rejection sampling to sample from the COM-Poisson count distribution. [1]
 
@@ -599,60 +620,67 @@ def gen_CMP(prng_state, mu, nu):#, max_rejections=1000):
     :returns:
         inhomogeneous Poisson process sample (numpy.array)
     """
+
     def cond_fun(val):
         _, left_inds, _ = val
         return left_inds.any()
-        
+
     def poiss_reject(val):
         Y, left_inds, prng_state = val
         prng_keys = jr.split(prng_state, 3)
-        
+
         mu_ = jnp.floor(mu)
         y_dash = jr.poisson(prng_keys[0], mu)
 
         log_alpha = (nu - 1) * (
-            (y_dash - mu_) * safe_log(mu) - gammaln(y_dash + 1.) + gammaln(mu_ + 1.)
+            (y_dash - mu_) * safe_log(mu) - gammaln(y_dash + 1.0) + gammaln(mu_ + 1.0)
         )
 
         u = jr.uniform(prng_keys[1], shape=mu.shape)
         alpha = jnp.exp(log_alpha)
         selected = (u <= alpha) * left_inds
-        
+
         Y = jnp.where(selected, y_dash, Y)
-        left_inds *= (~selected)
-#         if k >= max_rejections:
-#             raise ValueError("Maximum rejection steps exceeded")
-#         else:
-#             k += 1
+        left_inds *= ~selected
+        #         if k >= max_rejections:
+        #             raise ValueError("Maximum rejection steps exceeded")
+        #         else:
+        #             k += 1
         return Y, left_inds, prng_keys[2]
-    
+
     def geom_reject(val):
         Y, left_inds, prng_state = val
         prng_keys = jr.split(prng_state, 3)
-        
+
         p = 2 * nu / (2 * mu * nu + 1 + nu)
         u_0 = jr.uniform(prng_keys[0], shape=mu.shape)
         y_dash = jnp.floor(safe_log(u_0) / safe_log(1 - p))
         a = jnp.floor(mu / (1 - p) ** (1 / nu))
 
         log_alpha = (a - y_dash) * safe_log(1 - p) + nu * (
-            (y_dash - a) * safe_log(mu) - gammaln(y_dash + 1.)  + gammaln(a + 1.)
+            (y_dash - a) * safe_log(mu) - gammaln(y_dash + 1.0) + gammaln(a + 1.0)
         )
 
         u = jr.uniform(prng_keys[1], shape=mu.shape)
         alpha = jnp.exp(log_alpha)
         selected = (u <= alpha) * left_inds
-        
+
         Y = jnp.where(selected, y_dash, Y)
-        left_inds *= (~selected)        
+        left_inds *= ~selected
         return Y, left_inds, prng_keys[2]
-    
+
     prng_states = jr.split(prng_state, 2)
     Y = jnp.empty_like(mu)
-    Y, _, _ = lax.while_loop(cond_fun, poiss_reject, init_val=(Y, (nu >= 1), prng_states[0]))
-    Y, _, _ = lax.while_loop(cond_fun, geom_reject, init_val=(Y, (nu < 1), prng_states[1]))
-    
+    Y, _, _ = lax.while_loop(
+        cond_fun, poiss_reject, init_val=(Y, (nu >= 1), prng_states[0])
+    )
+    Y, _, _ = lax.while_loop(
+        cond_fun, geom_reject, init_val=(Y, (nu < 1), prng_states[1])
+    )
+
     return Y
+
+
 #     trials = mu.shape[0]
 #     neurons = mu.shape[1]
 #     Y = np.empty(mu.shape)
@@ -660,7 +688,7 @@ def gen_CMP(prng_state, mu, nu):#, max_rejections=1000):
 #     for tr in range(trials):
 #         for n in range(neurons):
 #             mu_, nu_ = mu[tr, n, :], nu[tr, n, :]
-            
+
 #             # Poisson rejection sampling for nu >= 1
 #             k = 0
 #             left_bins = np.where(nu_ >= 1)[0]

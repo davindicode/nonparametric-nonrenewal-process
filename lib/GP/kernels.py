@@ -9,7 +9,7 @@ from jax import lax, tree_map, vmap
 from jax.numpy.linalg import cholesky
 from jax.scipy.linalg import expm, solve_triangular
 
-from ..base import module, ArrayTypes_
+from ..base import ArrayTypes_, module
 
 from ..utils.jax import safe_sqrt, softplus, softplus_inv
 from ..utils.linalg import rotation_matrix, solve_continuous_lyapunov
@@ -17,7 +17,6 @@ from ..utils.linalg import rotation_matrix, solve_continuous_lyapunov
 from .linalg import bdiag, id_kronecker, LTI_process_noise
 
 _sqrt_twopi = math.sqrt(2 * math.pi)
-
 
 
 ### metrics ###
@@ -45,7 +44,7 @@ def _scaled_dist_squared_Euclidean(X, Y, lengthscale, diagonal):
 def _scaled_dist_squared_Cosine(X, Y, lengthscale, diagonal):
     """
     2 * (1 - cos(d))
-    
+
     :param jnp.ndarray X: input of shape (out_dims, num_points, in_dims)
     :param jnp.ndarray lengthscale: lengths of shape (out_dims, in_dims)
     :return:
@@ -53,20 +52,24 @@ def _scaled_dist_squared_Cosine(X, Y, lengthscale, diagonal):
     """
     if diagonal:
         XY = X - Y  # (out, pts, in)
-        r2 = 2 * ((1 - jnp.cos(XY)) / (lengthscale[:, None, :]) ** 2).sum(-1, keepdims=True)
+        r2 = 2 * ((1 - jnp.cos(XY)) / (lengthscale[:, None, :]) ** 2).sum(
+            -1, keepdims=True
+        )
     else:
-        XY = X[..., None, :] - Y[..., None, :].transpose(0, 2, 1, 3)  # (out, pts, pts, in)
+        XY = X[..., None, :] - Y[..., None, :].transpose(
+            0, 2, 1, 3
+        )  # (out, pts, pts, in)
         r2 = 2 * ((1 - jnp.cos(XY)) / (lengthscale[:, None, None, :]) ** 2).sum(-1)
     return r2
 
 
 MetricTypes = {
-    "Euclidean": 0, 
+    "Euclidean": 0,
     "Cosine": 1,
 }
 
 MetricFuncs = {
-    0: _scaled_dist_squared_Euclidean, 
+    0: _scaled_dist_squared_Euclidean,
     1: _scaled_dist_squared_Cosine,
 }
 
@@ -191,11 +194,13 @@ class MarkovianKernel(StationaryKernel):
         """
         H, Pinf = self._state_output()  # (out_dims, sd, sd)
         out_dims, state_dims_per_out = Pinf.shape[0], Pinf.shape[1]
-        
+
         dt = jnp.broadcast_to(dt, (out_dims, dt.shape[-1]))
-        Id = jnp.broadcast_to(jnp.eye(state_dims_per_out, dtype=self.array_dtype()), Pinf.shape)
+        Id = jnp.broadcast_to(
+            jnp.eye(state_dims_per_out, dtype=self.array_dtype()), Pinf.shape
+        )
         Zs = jnp.zeros_like(Pinf)
-        
+
         # insert convenience boundaries for kalman filter and smoother
         if dt.shape[1] == 1:  # single dt value, e.g. regular time grid
             A = self._state_transition(dt[:, 0])  # (out_dims, sd, sd)
@@ -219,7 +224,7 @@ class MarkovianKernel(StationaryKernel):
             matrices of shape (ts, sd, sd)
         """
         H, Pinf, As, Qs = self._get_LDS(dt, timesteps)
-        
+
         H, Pinf = bdiag(H), bdiag(Pinf)
 
         vbdiag = vmap(bdiag)  # vmap over timesteps
@@ -227,46 +232,46 @@ class MarkovianKernel(StationaryKernel):
         return H, Pinf, As, Qs
 
     ### representations ###
-    def spectral_representation(self, omega, return_full = False):
+    def spectral_representation(self, omega, return_full=False):
         """
         Calculation of the spectral representation of the kernel, from its state space parameters.
         We return HS(\omega)H^T which is a scalar (directly in observation space.
 
         Note that in the LEG case this expression simplifies because of the structue of the process
         (it assumes F = NN^T + R - R^T where N is the noise matrix)
-        
+
         :param jnp.array omega: angular frequency float
         """
         F, L, Qc = self.state_dynamics()
         H, _ = self.state_output()
         imag_id = 1j * jnp.eye(self.state_dims)
-        
+
         tmp = F + imag_id * omega
         tmp_inv = jnp.linalg.inv(tmp)
         conj_tmp_inv = jnp.linalg.inv(F - imag_id * omega)
         Komega = tmp_inv @ L @ Qc @ L.T @ conj_tmp_inv.T
-        
+
         if return_full:
             return Komega
         return H @ Komega @ H.T
 
-    def temporal_representation(self, tau, return_full = False):
+    def temporal_representation(self, tau, return_full=False):
         """
         Calculation of the temporal representation of the kernel, from its state space parameters
         Computed with H P_inf * expm(F * \tau)^T H^T
-        
+
         :param jnp.array tau: time interval float
         """
         F, _, _ = self.state_dynamics()
         H, Pinf = self.state_output()
-        
+
         A = expm(F * tau)
         At = expm(-F.T * tau)
-        P = (A @ Pinf)
-        P_ = (Pinf @ At)
-        
-        Kt = lax.cond(tau > 0.0, lambda: P, lambda:  P_)
-        
+        P = A @ Pinf
+        P_ = Pinf @ At
+
+        Kt = lax.cond(tau > 0.0, lambda: P, lambda: P_)
+
         if return_full:
             return Kt
         return H @ Kt @ H.T
@@ -280,7 +285,7 @@ class WhiteNoise(MarkovianKernel):
 
     Qc: jnp.ndarray
 
-    def __init__(self, Qc, array_type='float32'):
+    def __init__(self, Qc, array_type="float32"):
         in_dims = 1
         out_dims = Qc.shape[0]
         state_dims = out_dims
@@ -306,19 +311,20 @@ class WhiteNoise(MarkovianKernel):
         Calculation of the closed form discrete-time state
         """
         return jnp.zeros((self.state_dims, self.state_dims))
-    
-    
+
+
 class WienerProcess(Kernel):
     """
     Wiener process kernels
     """
-    def __init__(self, Qc, array_type='float32'):
+
+    def __init__(self, Qc, array_type="float32"):
         in_dims = 1
         out_dims = Qc.shape[0]
         state_dims = out_dims
         super().__init__(in_dims, out_dims, state_dims, array_type)
         self.Qc = self._to_jax(Qc)
-        
+
     @eqx.filter_vmap()
     def _state_dynamics(self):
         F = []
@@ -327,7 +333,7 @@ class WienerProcess(Kernel):
 
     @eqx.filter_vmap()
     def _state_output(self):
-        H = self._to_jax([[1.]])
+        H = self._to_jax([[1.0]])
         return H, None
 
     @eqx.filter_vmap(kwargs=dict(dt=0))
@@ -338,28 +344,24 @@ class WienerProcess(Kernel):
         return jnp.zeros((self.state_dims, self.state_dims)), self.Qc
 
 
-
 class WienerVelocity(Kernel):
-    def __init__(self, Qc, array_type='float32'):
+    def __init__(self, Qc, array_type="float32"):
         super().__init__(Qc, array_type)
-        
-        
-        
+
+
 class WienerAcceleration(Kernel):
-    def __init__(self, Qc, array_type='float32'):
+    def __init__(self, Qc, array_type="float32"):
         super().__init__(Qc, array_type)
-    
-    
-    
-    
+
+
 class DotProduct(Kernel):
     r"""
     Base class for kernels which are functions of :math:`x \cdot y`.
     """
-    
+
     pre_var: jnp.ndarray
-    
-    def __init__(self, in_dims, out_dims, variance, array_type='float32'):
+
+    def __init__(self, in_dims, out_dims, variance, array_type="float32"):
         super().__init__(in_dims, out_dims, None, array_type)
         self.pre_var = softplus_inv(self._to_jax(variance))
 
@@ -371,11 +373,10 @@ class DotProduct(Kernel):
             if diagonal:
                 return self._K_r(jnp.zeros((*X.shape[:2], 1)))
             Y = X
-        
+
         return X.matmul(Z.transpose(0, 1, 3, 2))
-    
-    
-    
+
+
 class Linear(DotProduct):
     r"""
     Implementation of Linear kernel:
@@ -387,7 +388,7 @@ class Linear(DotProduct):
         a :class:`.Sum` with a :class:`.Constant` kernel.
     """
 
-    def __init__(self, in_dims, out_dims, array_type='float32'):
+    def __init__(self, in_dims, out_dims, array_type="float32"):
         super().__init__(in_dims, out_dims, array_type)
 
     def K(self, X, Y, diagonal):
@@ -399,29 +400,30 @@ class Polynomial(DotProduct):
     Implementation of Polynomial kernel:
         :math:`k(x, z) = \sigma^2(\text{bias} + x \cdot z)^d.`
     """
-    
+
     degree: int
 
-    def __init__(self, in_dims, bias, degree=1, array_type='float32'):
+    def __init__(self, in_dims, bias, degree=1, array_type="float32"):
         """
         :param jnp.ndarray bias: Bias parameter of this kernel. Should be positive.
         :param int degree: Degree :math:`d` of the polynomial.
         """
         super().__init__(in_dims, out_dims, array_type)
-        self.log_bias = jnp.log(self._to_jax(bias)) # N
+        self.log_bias = jnp.log(self._to_jax(bias))  # N
 
         if degree < 1:
-            raise ValueError("Degree for Polynomial kernel should be a positive integer.")
+            raise ValueError(
+                "Degree for Polynomial kernel should be a positive integer."
+            )
         self.degree = degree
 
     def K(self, X, Y, diagonal):
         bias = jnp.exp(self.log_bias)
-        
+
         if diagonal:
             bias = bias[..., 0]
-            
-        return ((bias + self._dot_product(X, Z, diag)) ** self.degree)
 
+        return (bias + self._dot_product(X, Z, diag)) ** self.degree
 
 
 class Cosine(MarkovianKernel):
@@ -431,7 +433,7 @@ class Cosine(MarkovianKernel):
 
     pre_omega: jnp.ndarray
 
-    def __init__(self, frequency, array_type='float32'):
+    def __init__(self, frequency, array_type="float32"):
         """
         :param jnp.ndarray frequency: radial frequency ω
         """
@@ -497,7 +499,7 @@ class LEG(MarkovianKernel):
     H: jnp.ndarray
     Lam: jnp.ndarray
 
-    def __init__(self, N, R, H, Lam, array_type='float32'):
+    def __init__(self, N, R, H, Lam, array_type="float32"):
         out_dims = H.shape[0]
         state_dims = N.shape[0]
         in_dims = 1
@@ -576,7 +578,7 @@ class DecayingSquaredExponential(Kernel):
         lengthscale,
         lengthscale_beta,
         beta,
-        array_type='float32',
+        array_type="float32",
     ):
         super().__init__(input_dims, track_dims, f, tensor_type)
         assert (
@@ -606,8 +608,8 @@ class DecayingSquaredExponential(Kernel):
             -0.5
             * (
                 r2
-                + (((X - self.beta) / self.lengthscale_beta)**2).sum(-1)[..., None]
-                + (((Z - self.beta) / self.lengthscale_beta)**2).sum(-1)[..., None, :]
+                + (((X - self.beta) / self.lengthscale_beta) ** 2).sum(-1)[..., None]
+                + (((Z - self.beta) / self.lengthscale_beta) ** 2).sum(-1)[..., None, :]
             )
         )
 
@@ -672,7 +674,6 @@ class Lengthscale(MarkovianKernel):
         raise NotImplementedError("kernel spectrum not implemented")
 
 
-        
 class SquaredExponential(Lengthscale):
     r"""
     Implementation of Squared Exponential kernel:
@@ -687,10 +688,15 @@ class SquaredExponential(Lengthscale):
     σ² is the variance parameter
     """
 
-    def __init__(self, out_dims, variance, lengthscale, metric_type="Euclidean", array_type='float32'):
-        super().__init__(
-            out_dims, None, variance, lengthscale, metric_type, array_type
-        )
+    def __init__(
+        self,
+        out_dims,
+        variance,
+        lengthscale,
+        metric_type="Euclidean",
+        array_type="float32",
+    ):
+        super().__init__(out_dims, None, variance, lengthscale, metric_type, array_type)
 
     def _K_r(self, r2):
         variance = softplus(self.pre_var)[:, None, None]
@@ -717,7 +723,6 @@ class SquaredExponential(Lengthscale):
         amplitude = jnp.sqrt(variance)
         return ks, amplitude
 
-    
 
 class RationalQuadratic(Lengthscale):
     r"""
@@ -729,15 +734,19 @@ class RationalQuadratic(Lengthscale):
     :param jnp.array scale_mixture: Scale mixture (:math:`\alpha`) parameter of this
         kernel. Should have size 1.
     """
-    
+
     pre_scale_mixture: jnp.ndarray
 
     def __init__(
-        self, out_dims, variance, lengthscale, scale_mixture, metric_type="Euclidean", array_type='float32'
-    ):       
-        super().__init__(
-            out_dims, None, variance, lengthscale, metric_type, array_type
-        )
+        self,
+        out_dims,
+        variance,
+        lengthscale,
+        scale_mixture,
+        metric_type="Euclidean",
+        array_type="float32",
+    ):
+        super().__init__(out_dims, None, variance, lengthscale, metric_type, array_type)
         self.pre_scale_mixture = softplus_inv(self._to_jax(scale_mixture))
 
     @property
@@ -752,16 +761,15 @@ class RationalQuadratic(Lengthscale):
         variance = softplus(self.pre_var)[:, None, None]
         scale_mixture = softplus(self.pre_scale_mixture)[:, None, None]
         return variance * (1 + (0.5 / scale_mixture) * r2).pow(-scale_mixture)
-    
-    
+
 
 class Matern12(Lengthscale):
     """
     Exponential, i.e. Matern-1/2
-    Functions drawn from a GP with this kernel are not differentiable anywhere. 
+    Functions drawn from a GP with this kernel are not differentiable anywhere.
     """
 
-    def __init__(self, out_dims, variance, lengthscale, array_type='float32'):
+    def __init__(self, out_dims, variance, lengthscale, array_type="float32"):
         state_dims = out_dims
         super().__init__(
             out_dims, state_dims, variance, lengthscale, "Euclidean", array_type
@@ -806,7 +814,7 @@ class Matern12(Lengthscale):
         """
         ell = softplus(self.pre_len[0])  # first dimension
         A = jnp.exp(-dt / ell)[None, None]
-        #Q = LTI_process_noise(A, Pinf)
+        # Q = LTI_process_noise(A, Pinf)
         return A
 
     @eqx.filter_vmap
@@ -815,18 +823,19 @@ class Matern12(Lengthscale):
         H = jnp.ones((1, 1), dtype=self.array_dtype())  # observation projection
         Pinf = var[None, None]
         return H, Pinf
-    
+
     def sample_spectrum(self, prng_state, num_samps, RFF_num_feats):
         lengthscale = softplus(self.pre_len)  # (out, d_x)
         variance = softplus(self.pre_var)  # (out_dims,)
 
         k_std = 1.0 / lengthscale
         ks = k_std[None, :, None, :] * jr.t(
-            prng_state, df=1., shape=(num_samps, self.out_dims, RFF_num_feats, self.in_dims)
+            prng_state,
+            df=1.0,
+            shape=(num_samps, self.out_dims, RFF_num_feats, self.in_dims),
         )
         amplitude = jnp.sqrt(variance)
         return ks, amplitude
-    
 
 
 class Matern32(Lengthscale):
@@ -835,8 +844,8 @@ class Matern32(Lengthscale):
     Functions drawn from a GP with this kernel are once differentiable
     """
 
-    def __init__(self, out_dims, variance, lengthscale, array_type='float32'):
-        
+    def __init__(self, out_dims, variance, lengthscale, array_type="float32"):
+
         state_dims = 2 * out_dims
         super().__init__(
             out_dims, state_dims, variance, lengthscale, "Euclidean", array_type
@@ -901,18 +910,19 @@ class Matern32(Lengthscale):
         H = self._to_jax([[1.0, 0.0]])  # observation projection
         Pinf = self._to_jax([[var, 0.0], [0.0, 3.0 * var / ell**2.0]])
         return H, Pinf
-    
+
     def sample_spectrum(self, prng_state, num_samps, RFF_num_feats):
         lengthscale = softplus(self.pre_len)  # (out, d_x)
         variance = softplus(self.pre_var)  # (out_dims,)
 
         k_std = 1.0 / lengthscale
         ks = k_std[None, :, None, :] * jr.t(
-            prng_state, df=2., shape=(num_samps, self.out_dims, RFF_num_feats, self.in_dims)
+            prng_state,
+            df=2.0,
+            shape=(num_samps, self.out_dims, RFF_num_feats, self.in_dims),
         )
         amplitude = jnp.sqrt(variance)
         return ks, amplitude
-    
 
 
 class Matern52(Lengthscale):
@@ -920,10 +930,10 @@ class Matern52(Lengthscale):
     The Matern 5/2 kernel. Functions drawn from a GP with this kernel are twice differentiable
     """
 
-    def __init__(self, out_dims, variance, lengthscale, array_type='float32'):
+    def __init__(self, out_dims, variance, lengthscale, array_type="float32"):
         state_dims = 3 * out_dims
         super().__init__(
-            out_dims, state_dims, variance, lengthscale, 'Euclidean', array_type
+            out_dims, state_dims, variance, lengthscale, "Euclidean", array_type
         )
 
     def _K_r(self, r2):
@@ -1015,19 +1025,19 @@ class Matern52(Lengthscale):
             ]
         )
         return H, Pinf
-    
+
     def sample_spectrum(self, prng_state, num_samps, RFF_num_feats):
         lengthscale = softplus(self.pre_len)  # (out, d_x)
         variance = softplus(self.pre_var)  # (out_dims,)
 
         k_std = 1.0 / lengthscale
         ks = k_std[None, :, None, :] * jr.t(
-            prng_state, df=3., shape=(num_samps, self.out_dims, RFF_num_feats, self.in_dims)
+            prng_state,
+            df=3.0,
+            shape=(num_samps, self.out_dims, RFF_num_feats, self.in_dims),
         )
         amplitude = jnp.sqrt(variance)
         return ks, amplitude
-    
-    
 
 
 class Matern72(Lengthscale):
@@ -1035,10 +1045,10 @@ class Matern72(Lengthscale):
     Matern-7/2 kernel
     """
 
-    def __init__(self, out_dims, variance, lengthscale, array_type='float32'):
+    def __init__(self, out_dims, variance, lengthscale, array_type="float32"):
         state_dims = 4 * out_dims
         super().__init__(
-            out_dims, state_dims, variance, lengthscale, 'Euclidean', array_type
+            out_dims, state_dims, variance, lengthscale, "Euclidean", array_type
         )
 
     # kernel
@@ -1048,12 +1058,7 @@ class Matern72(Lengthscale):
         r = safe_sqrt(r2)
         return (
             variance
-            * (
-                1.0
-                + sqrt7 * r
-                + 14.0 / 5.0 * r**2
-                + 7.0 * sqrt7 / 15.0 * r**3
-            )
+            * (1.0 + sqrt7 * r + 14.0 / 5.0 * r**2 + 7.0 * sqrt7 / 15.0 * r**3)
             * jnp.exp(-sqrt7 * r)
         )
 
@@ -1143,14 +1148,14 @@ class Matern72(Lengthscale):
     def _state_output(self):
         """
         Calculation of the discrete-time state transition matrix A = expm(FΔt)
-        
+
         :param float dt: step size(s), Δtₙ = tₙ - tₙ₋₁
         :return:
             state transition matrix A (4, 4)
         """
         var = softplus(self.pre_var)
         ell = softplus(self.pre_len[0])  # first dimension
-        
+
         H = self._to_jax([[1.0, 0.0, 0.0, 0.0]])  # observation projection
         kappa = 7.0 / 5.0 * var / ell**2.0
         kappa2 = 9.8 * var / ell**4.0
@@ -1164,19 +1169,19 @@ class Matern72(Lengthscale):
             ]
         )
         return H, Pinf
-    
+
     def sample_spectrum(self, prng_state, num_samps, RFF_num_feats):
         lengthscale = softplus(self.pre_len)  # (out, d_x)
         variance = softplus(self.pre_var)  # (out_dims,)
 
         k_std = 1.0 / lengthscale
         ks = k_std[None, :, None, :] * jr.t(
-            prng_state, df=4., shape=(num_samps, self.out_dims, RFF_num_feats, self.in_dims)
+            prng_state,
+            df=4.0,
+            shape=(num_samps, self.out_dims, RFF_num_feats, self.in_dims),
         )
         amplitude = jnp.sqrt(variance)
         return ks, amplitude
-    
-    
 
 
 ### combinations ###
@@ -1200,7 +1205,10 @@ class MarkovSparseKronecker(MarkovianKernel):
         num_induc = induc_locs.shape[0]
         state_dims = markov_factor.state_dims * num_induc
         super().__init__(
-            in_dims, markov_factor.out_dims, state_dims, ArrayTypes_[markov_factor.array_type]
+            in_dims,
+            markov_factor.out_dims,
+            state_dims,
+            ArrayTypes_[markov_factor.array_type],
         )
         self.markov_factor = markov_factor
         self.sparse_factor = sparse_factor
@@ -1238,7 +1246,7 @@ class MarkovSparseKronecker(MarkovianKernel):
             dt
         )  # (out_dims, state_dims, state_dims)
         return A  # (out_dims, state_dims, state_dims)
-    
+
     def state_transition(self, dt):
         """
         :return:
@@ -1302,20 +1310,20 @@ class Product(Kernel):
             K = K * k.K(X[..., inds], None if Y is None else Y[..., inds], diagonal)
 
         return K
-    
+
     def sample_spectrum(self, prng_state, num_samps, RFF_num_feats):
         """
         Product of stationary kernel spectra
         """
         ks_list = []
-        amplitude = 1.
+        amplitude = 1.0
         for k in self.kernels:
             ks, amps = k.sample_spectrum(prng_state, num_samps, RFF_num_feats)
             amplitude *= amps
             ks_list.append(ks)
-            
+
         return jnp.concatenate(ks_list, axis=-1), amplitude
-    
+
 
 class Sum(Kernel):
     """
@@ -1350,7 +1358,7 @@ class GroupMarkovian(MarkovianKernel):
     """
     A group of LDSs with the same state dimension
     """
-    
+
     kernels: List[MarkovianKernel]
 
     def __init__(self, kernels):
@@ -1358,7 +1366,7 @@ class GroupMarkovian(MarkovianKernel):
         state_dims = kernels[0].state_dims
         in_dims = kernels[0].in_dims
         array_type = kernels[0].array_type
-        
+
         for k in kernels[1:]:
             if out_dims != k.out_dims:
                 raise ValueError("Output dimensions must be the same for all kernels")
@@ -1367,7 +1375,7 @@ class GroupMarkovian(MarkovianKernel):
             if in_dims != k.in_dims:
                 raise ValueError("Input dimensions must be the same for all kernels")
             assert array_type == k.array_type
-            
+
         super().__init__(in_dims, out_dims, state_dims, ArrayTypes_[array_type])
         self.kernels = kernels
 
@@ -1385,7 +1393,7 @@ class GroupMarkovian(MarkovianKernel):
             Pinf.append(Pinf_)
             As.append(As_)
             Qs.append(Qs_)
-            
+
         return [jnp.stack(A, axis=0) for A in [H, Pinf, As, Qs]]
 
     def get_LDS(self, dt: jnp.ndarray, timesteps: int):
@@ -1398,12 +1406,12 @@ class GroupMarkovian(MarkovianKernel):
         """
         vbdiag = vmap(bdiag)  # vmap over orders
         vvbdiag = vmap(vbdiag)  # vmap over timesteps
-        
+
         H, Pinf, As, Qs = self._get_LDS(dt, timesteps)
         H, Pinf = vbdiag(H), vbdiag(Pinf)
         As, Qs = vvbdiag(As), vvbdiag(Qs)
         return H, Pinf, As, Qs
-    
+
     def state_transition(self, dt):
         """
         Calculation of the discrete-time state transition matrix A = expm(FΔt) for a sum of GPs
@@ -1415,7 +1423,7 @@ class GroupMarkovian(MarkovianKernel):
         A = []
         for k in self.kernels:
             A.append(k.state_transition(dt))
-            
+
         return jnp.stack(A, axis=0)
 
 
@@ -1432,7 +1440,7 @@ class StackMarkovian(MarkovianKernel):
         state_dims = kernels[0].state_dims
         in_dims = kernels[0].in_dims
         array_type = kernels[0].array_type
-        
+
         for k in kernels[1:]:
             out_dims += k.state_dims
             state_dims += k.state_dims
@@ -1531,7 +1539,7 @@ class SumMarkovian(MarkovianKernel):
         state_dims = kernels[0].state_dims
         in_dims = kernels[0].in_dims
         array_type = kernels[0].array_type
-        
+
         for k in kernels[1:]:
             if out_dims != k.out_dims:
                 raise ValueError("Output dimensions must be the same for all kernels")
@@ -1539,7 +1547,7 @@ class SumMarkovian(MarkovianKernel):
             if in_dims != k.in_dims:
                 raise ValueError("Input dimensions must be the same for all kernels")
             assert array_type == k.array_type
-            
+
         super().__init__(in_dims, out_dims, state_dims, ArrayTypes_[array_type])
         self.kernels = kernels
 

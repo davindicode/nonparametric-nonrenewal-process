@@ -1,10 +1,22 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from .factorized import Gaussian, PointProcess, Bernoulli, Poisson, ZeroInflatedPoisson, \
-    NegativeBinomial, ConwayMaxwellPoisson
-from .heteroscedastic import HeteroscedasticGaussian, HeteroscedasticZeroInflatedPoisson, \
-    HeteroscedasticNegativeBinomial, HeteroscedasticConwayMaxwellPoisson, UniversalCount
-from .renewal import Gamma, LogNormal, InverseGaussian
+from .factorized import (
+    Bernoulli,
+    ConwayMaxwellPoisson,
+    Gaussian,
+    NegativeBinomial,
+    PointProcess,
+    Poisson,
+    ZeroInflatedPoisson,
+)
+from .heteroscedastic import (
+    HeteroscedasticConwayMaxwellPoisson,
+    HeteroscedasticGaussian,
+    HeteroscedasticNegativeBinomial,
+    HeteroscedasticZeroInflatedPoisson,
+    UniversalCount,
+)
+from .renewal import Exponential, Gamma, InverseGaussian, LogNormal
 
 # __all__ = ["interp"]

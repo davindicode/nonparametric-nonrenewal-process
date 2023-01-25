@@ -1,32 +1,34 @@
 from typing import Union
 
-from jax import lax
+import jax
 import jax.numpy as jnp
 import jax.scipy as jsc
+from jax import vmap
 
 from ..base import module
-from ..utils.linalg import get_blocks, gauss_hermite
-from ..utils.jax import mc_sample, safe_log, softplus, rectquad
+from ..utils.jax import mc_sample, rectquad, safe_log, softplus
+from ..utils.linalg import gauss_hermite, get_blocks
 
 # cannot store strings or callables in modules
 LinkTypes = {
-    "none": -1, 
-    "log": 0, 
-    "softplus": 1, 
-    "rectified": 2, 
-    "rectquad": 3, 
-    "logit": 4, 
-    
+    "none": -1,
+    "log": 0,
+    "softplus": 1,
+    "rectified": 2,
+    "rectquad": 3,
+    "logit": 4,
 }
 
 LinkFuncs = {
-    0: jnp.exp, 
-    1: softplus, 
-    2: lambda x: jnp.maximum(x, 0.0), 
-    3: rectquad, 
-    4: lambda x: (0.5 * (1.0 + jsc.special.erf(x / jnp.sqrt(2.0))) * (1 - 2 * 1e-8) + 1e-8), 
+    0: jnp.exp,
+    1: softplus,
+    2: lambda x: jnp.maximum(x, 0.0),
+    3: rectquad,
+    4: lambda x: (
+        0.5 * (1.0 + jsc.special.erf(x / jnp.sqrt(2.0))) * (1 - 2 * 1e-8) + 1e-8
+    ),
 }
-            
+
 
 ### classes ###
 class Likelihood(module):
@@ -55,7 +57,7 @@ class Likelihood(module):
         self.f_dims = f_dims
         self.obs_dims = obs_dims
         self.link_type = LinkTypes[link_type]
-        
+
     def inverse_link(self, x):
         return LinkFuncs[self.link_type](x)
 
@@ -93,16 +95,17 @@ class FactorizedLikelihood(Likelihood):
         y,
         f_mean,
         f_cov,
-        prng_state, 
-        jitter, 
+        prng_state,
+        jitter,
         approx_int_method,
-        log_predictive=False, 
+        log_predictive=False,
     ):
         """
         E[log p(yₙ|fₙ)] = ∫ log p(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ and its derivatives
         The log marginal likelihood is log E[p(yₙ|fₙ)] = log ∫ p(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ
         onlt the block-diagonal part of f_std matters
 
+        :param jnp.array y: mean of q(f) of shape (f_dims,)
         :param jnp.array f_mean: mean of q(f) of shape (f_dims, 1)
         :param jnp.array f_cov: covariance of q(f) of shape (f_dims, f_dims)
         :return:
@@ -111,14 +114,16 @@ class FactorizedLikelihood(Likelihood):
         cubature_dim = self.num_f_per_obs  # f will have (cub_dim, approx_points)
 
         if approx_int_method["type"] == "GH":  # Gauss-Hermite
-            f, w = gauss_hermite(
-                cubature_dim, approx_int_method["approx_pts"])
+            f, w = gauss_hermite(cubature_dim, approx_int_method["approx_pts"])
             f = jnp.tile(
-                f[None, ...], (self.obs_dims, 1, 1)
+                f.T[None, ...], (self.obs_dims, 1, 1)
             )  # copy over obs_dims, (obs_dims, cubature_dim, approx_points)
         elif approx_int_method["type"] == "MC":  # sample unit Gaussian
             f, w = mc_sample(
-                (self.obs_dims, cubature_dim), prng_state, approx_int_method["approx_pts"])
+                (self.obs_dims, cubature_dim),
+                prng_state,
+                approx_int_method["approx_pts"],
+            )
         else:
             raise NotImplementedError("Approximate integration method not recognised")
 
@@ -131,7 +136,7 @@ class FactorizedLikelihood(Likelihood):
 
         else:  # block-diagonal form
             eps_I = jitter * jnp.eye(cubature_dim)[None, ...]
-            
+
             f_cov = get_blocks(np.diag(np.diag(f_cov)), self.obs_dims, cubature_dim)
             # chol_f_cov = jnp.sqrt(np.maximum(f_cov, 1e-12)) # diagonal, more stable
             chol_f_cov = cholesky(
@@ -142,8 +147,9 @@ class FactorizedLikelihood(Likelihood):
             df_points = chol_f_cov @ f  # (obs_dims, cubature_dim, approx_points)
 
         f_locs = f_mean + df_points  # integration points
-        ll = vmap(self.log_likelihood, (-1, None), -1)(
-            f_locs, y, False
+        ll = vmap(self.log_likelihood, (1, None), 1)(
+            f_locs,
+            y,
         )  # vmap over approx_pts (obs_dims, approx_pts)
 
         if log_predictive:  # log predictive density
@@ -326,7 +332,7 @@ class RenewalLikelihood(Likelihood):
 
     def log_survival(self, ISI):
         return safe_log(1.0 - self.cum_density(ISI))
-    
+
     def log_hazard(self, ISI):
         return self.log_density(ISI) - self.log_survival(ISI)
 

@@ -7,18 +7,18 @@ import jax.numpy as jnp
 
 ArrayTypes = {
     "float32": 0,
-    "float64": 1, 
+    "float64": 1,
 }
 ArrayTypes_ = {v: k for k, v in ArrayTypes.items()}
 
 
 class module(eqx.Module):
-    
+
     array_type: int
 
     def __init__(self, array_type):
         self.array_type = ArrayTypes[array_type]
-        
+
     def array_dtype(self):
         return jnp.dtype(ArrayTypes_[self.array_type])
 
