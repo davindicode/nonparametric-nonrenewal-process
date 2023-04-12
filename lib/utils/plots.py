@@ -218,39 +218,6 @@ def mesh_plot(figax, mesh_tuple, cmap="gray", vmin=None, vmax=None):
     return im
 
 
-def draw_2d(
-    figax,
-    data,
-    vmin=0,
-    vmax=1,
-    cmap="gray",
-    origin="upper",
-    aspect="auto",
-    extent=None,
-    interp_method=None,
-):
-    """
-    Visualize a 2D array using imshow, the first axis of data is the y-axis.
-
-    :param list colors: colors to be included in the colormap
-    :param string name: name the colormap
-    :returns: figure and axis
-    :rtype: tuple
-    """
-    fig, ax = figax
-    im = ax.imshow(
-        data,
-        cmap=cmap,
-        origin=origin,
-        vmin=vmin,
-        vmax=vmax,
-        aspect=aspect,
-        interpolation=interp_method,
-        extent=extent,
-    )
-    return im
-
-
 def raster_plot(
     figax, spikes, time_bins, bin_time, units, colors=None, marker="|", markersize=2
 ):
@@ -374,68 +341,6 @@ def cmap_arrow(
         end[0], end[1], c=1, s=(2 * head_size) ** 2, marker=tri, cmap=cmap, vmin=0
     )
 
-
-def visualize_field(
-    figax,
-    data,
-    grid_extent,
-    aspect="equal",
-    spike_pos=None,
-    cbar=True,
-    vmin=0,
-    vmax=None,
-    cmap="viridis",
-    ticktitle="firing rate (Hz)",
-    ticks=None,
-    ticklabels=None,
-    cbar_format=None,
-    cax=None,
-    cbar_size="5%",
-):
-    """ """
-    fig, ax = figax
-    if vmax is None:
-        vmax = data.max()
-
-    im = draw_2d(
-        figax,
-        data,
-        origin="lower",
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax,
-        extent=(
-            grid_extent[0][0],
-            grid_extent[0][1],
-            grid_extent[1][0],
-            grid_extent[1][1],
-        ),
-        aspect=aspect,
-    )
-    decorate_ax(
-        ax,
-        xlim=[grid_extent[0][0], grid_extent[0][1]],
-        ylim=[grid_extent[1][0], grid_extent[1][1]],
-        spines=[False, False, False, False],
-    )
-    if cbar:
-        if cax is None:
-            divider = make_axes_locatable(ax)
-            cax = divider.append_axes("right", size=cbar_size, pad=0.2)
-
-        add_colorbar(
-            (fig, cax),
-            im,
-            ticktitle=ticktitle,
-            ticks=ticks,
-            ticklabels=ticklabels,
-            cbar_format=cbar_format,
-        )
-
-    if spike_pos is not None:
-        x_s, y_s = spike_pos
-        ax.scatter(x_s, y_s, s=1, color="r", zorder=1, alpha=0.7)
-    return im
 
 
 def plot_dispersion(ax, q_cdf, s_KS, labelx=False, labely=False):

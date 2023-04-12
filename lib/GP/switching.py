@@ -20,18 +20,19 @@ def obs_switch_locs(obs_locs, switch_locs):
     Return relative order indices
     """
     obs_num = len(obs_locs)
-    unique_locs = jnp.concatenate((obs_locs, switch_locs), axis=0)
+    sw_num = len(switch_locs)
+    unique_locs = jnp.concatenate((switch_locs, obs_locs), axis=0)
     locs = jnp.concatenate((unique_locs, switch_locs), axis=0)  # double switch locs
-    locs_num = len(locs)
 
     sort_ind = jnp.argsort(locs)
-    switch_inds = jnp.where(sort_ind >= obs_num, size=locs_num - obs_num)[0]
-    obs_inds = jnp.where(sort_ind < obs_num, size=obs_num)[0]
-
     locs = locs[sort_ind]
+    argsort_ind = jnp.argsort(sort_ind)
+    
+    trans_inds, jump_inds = argsort_ind[sw_num:], jnp.argsort(sort_ind)[:sw_num]
+    obs_inds = argsort_ind[sw_num:sw_num+obs_num]
     unique_locs = jnp.sort(unique_locs)
-
-    return locs, obs_inds, switch_inds, unique_locs
+    
+    return locs, trans_inds, jump_inds, obs_inds, unique_locs
 
 
 def tile_between_inds(path, inds, ts):
@@ -194,7 +195,7 @@ class DTMarkovChain(module):
         states = vmap(sample_i)(prng_states)
         return states  # (tr, time)
 
-    def sample_posterior(self, prng_state, num_samps, compute_KL):
+    def sample_posterior(self, prng_state, num_samps, compute_KL, MAP=False):
         """
         Forward-backward sampling algorithm
 
@@ -208,7 +209,9 @@ class DTMarkovChain(module):
         log_posts, KL, aux = self.evaluate_posterior(self.site_ll, compute_KL)
         log_marg, log_betas, log_pi, log_T = aux
 
-        prng_states = jr.split(prng_state, num_samps)  # (num_samps, 2)
+        prng_states = jr.split(prng_state, num_samps * timesteps).reshape(
+            num_samps, timesteps, -1
+        )  # (num_samps, timesteps, 2)
 
         # combine forward with backward sweep
         def step(carry, inputs):
@@ -216,19 +219,21 @@ class DTMarkovChain(module):
             log_beta, prng_state = inputs
 
             log_p = log_beta + log_p_cond
-            s = jr.categorical(prng_state, log_p_cond)  # (K,)
-            log_p_cond = log_T[:, s] + log_p_cond  # next step probabilities
+            if MAP:
+                s = jnp.argmax(log_p)
+            else:
+                s = jr.categorical(prng_state, log_p)  # 0 to K-1 integers
+            log_p_cond = log_T[:, s]  # next step probabilities
 
             return log_p_cond, s
 
-        def sample_i(prng_state):
-            prng_keys = jr.split(prng_state, timesteps)
+        def sample_i(prng_keys):
             _, states = lax.scan(
                 step, init=jnp.zeros(self.K), xs=(log_betas, prng_keys), reverse=False
             )  # (ts, K)
             return states
 
-        states = vmap(sample_i, 0, 0)(prng_states)  # (tr, time)
+        states = vmap(sample_i)(prng_states)  # (tr, time)
         return states, KL
 
 
@@ -363,8 +368,8 @@ class CTMarkovChain(module):
             log_p_cond = carry  # log p(z_t | z_{<t})
             prng_state = inputs
 
-            s = jr.categorical(prng_state, log_p_cond)  # (K,)
-            log_p_cond = log_T[:, s] + log_p_cond[s]  # next step probabilities
+            s = jr.categorical(prng_state, log_p_cond)  # 0 to K-1 integers
+            log_p_cond = log_T[:, s]  # next step probabilities
             return log_p_cond, s
 
         def sample_i(prng_state):
@@ -375,7 +380,7 @@ class CTMarkovChain(module):
         states = vmap(sample_i, 0, 0)(prng_states)  # (tr, time)
         return states
 
-    def sample_posterior(self, prng_state, num_samps, compute_KL):
+    def sample_posterior(self, prng_state, num_samps, compute_KL, MAP=False):
         """
         Forward-backward sampling algorithm
 
@@ -397,8 +402,11 @@ class CTMarkovChain(module):
             log_beta, prng_state = inputs
 
             log_p = log_beta + log_p_cond
-            s = jr.categorical(prng_state, log_p_cond)  # (K,)
-            log_p_cond = log_T[:, s] + log_p_cond  # next step probabilities
+            if MAP:
+                s = jnp.argmax(log_p)
+            else:
+                s = jr.categorical(prng_state, log_p)  # 0 to K-1 integers
+            log_p_cond = log_T[:, s]  # next step probabilities
 
             return log_p_cond, s
 
@@ -559,22 +567,23 @@ class JumpLTI(SSM):
         """
         Both site obervation locs and switch locs contribute the site locations
         """
-        locs, obs_inds, switch_inds, unique_locs = obs_switch_locs(
+        locs, trans_inds, jump_inds, obs_inds, unique_locs = obs_switch_locs(
             self.site_locs, self.switch_locs
         )
 
         if self.fixed_grid_locs:
             locs = lax.stop_gradient(locs)  # (ts,)
-            return locs, obs_inds, switch_inds, unique_locs[1:2] - unique_locs[0:1]
+            return locs, trans_inds, jump_inds, obs_inds, unique_locs[1:2] - unique_locs[0:1]
         else:
-            return locs, obs_inds, switch_inds, jnp.diff(unique_locs)
+            return locs, trans_inds, jump_inds, obs_inds, jnp.diff(unique_locs)
 
-    def get_site_params(self, obs_inds, switch_inds):
+    def get_site_params(self, obs_inds, ts):
         """
         Insert unobserved locations at switch edge locations
+        
+        :param int ts: total time points = len(obs_inds) + len(switch_inds)
         """
         sd = self.site_obs.shape[-2]
-        ts = len(obs_inds) + len(switch_inds)
 
         all_obs = jnp.zeros((ts, sd, 1), dtype=self.array_dtype())
         all_Lcov = 1e6 * jnp.eye(sd, dtype=self.array_dtype())[None, ...].repeat(
@@ -585,7 +594,7 @@ class JumpLTI(SSM):
         all_Lcov = all_Lcov.at[obs_inds].set(self.site_Lcov)
         return all_obs, all_Lcov
 
-    def get_conditional_LDS(self, dt, obs_inds, switch_inds, j_path):
+    def get_conditional_LDS(self, dt, trans_inds, jump_inds, j_path):
         """
         Insert switches inbetween observation sites
         Each observation site has a state
@@ -595,16 +604,17 @@ class JumpLTI(SSM):
         :param jnp.ndarray s_path: GP state trajectories (switch_locs + 1,), [0, s_dims)
         :param jnp.ndarray j_path: switch state trajectories (switch_locs,), [0, j_dims)
         """
-        switches, observes, sd = len(switch_inds), len(obs_inds), self.kernel.state_dims
-        trans_without_jumps = observes + switches // 2 - 1
-        trans_with_jumps = observes + switches + 1  # include boundary transitions
-
+        sd = self.kernel.state_dims
+        num_switch_locs = len(jump_inds)
+        trans_without_jumps = len(trans_inds)  # (ts,)
+        trans_with_jumps = num_switch_locs + trans_without_jumps + 1  # include boundary transitions
+        
         num_samps = j_path.shape[0]
         As = jnp.empty((num_samps, trans_with_jumps, sd, sd), dtype=self.array_dtype())
         Qs = jnp.empty((num_samps, trans_with_jumps, sd, sd), dtype=self.array_dtype())
 
         # use out_dims of kernel as states
-        H, Pinf, As_, Qs_ = self.kernel.get_LDS(dt, trans_without_jumps)  # (ts, sd, sd)
+        H, Pinf, As_, Qs_ = self.kernel.get_LDS(dt, trans_without_jumps)  # (ts+1, sd, sd)
 
         # jump matrices
         array_indexing = lambda ind, array: array[ind, ...]
@@ -614,15 +624,16 @@ class JumpLTI(SSM):
         Ajs, Qjs = varray_indexing(j_path, Ajs), varray_indexing(
             j_path, Qjs
         )  # (num_samps, ts, sd, sd)
-
+        
         # insert matrices
         trans_inds = jnp.concatenate(
-            (jnp.array([0]), obs_inds + 1, switch_inds[1::2] + 1)
-        )
-        jump_inds = switch_inds[::2] + 1
+            (jnp.array([0]), trans_inds + 1)
+        )  # first transition matrix is always identity to get i.c., last step also included
+        jump_inds = jump_inds + 1
+        
         As = As.at[:, trans_inds].set(As_).at[:, jump_inds].set(Ajs)
         Qs = Qs.at[:, trans_inds].set(Qs_).at[:, jump_inds].set(Qjs)
-
+        
         return H, Pinf, As, Qs
 
     ### posterior ###
@@ -634,13 +645,13 @@ class JumpLTI(SSM):
 
         :param jnp.ndarray j_path: (num_samps, path_locs)
         """
-        all_locs, obs_inds, switch_inds, unique_dlocs = self.get_site_locs()
+        all_locs, trans_inds, jump_inds, obs_inds, unique_dlocs = self.get_site_locs()
 
         H, Pinf, As, Qs = self.get_conditional_LDS(
-            unique_dlocs, obs_inds, switch_inds, j_path
+            unique_dlocs, trans_inds, jump_inds, j_path
         )
 
-        all_obs, all_Lcovs = self.get_site_params(obs_inds, switch_inds)
+        all_obs, all_Lcovs = self.get_site_params(obs_inds, len(all_locs))
 
         # interpolation
         ind_eval, dt_fwd, dt_bwd = interpolation_times(t_eval, all_locs)
@@ -649,7 +660,7 @@ class JumpLTI(SSM):
             dt_fwd_bwd
         )  # vmap over num_evals
         Q_fwd_bwd = vmap(LTI_process_noise, (0, None), 0)(A_fwd_bwd, Pinf)
-
+        
         post_means, post_covs, KL = vLGSSM(
             H,
             Pinf,
@@ -666,7 +677,7 @@ class JumpLTI(SSM):
             jitter,
         )
 
-        return post_means, post_covs, KL
+        return post_means[:, obs_inds], post_covs[:, obs_inds], KL
 
     def evaluate_posterior(
         self, prng_state, num_samps, t_eval, mean_only, compute_KL, jitter
@@ -703,20 +714,20 @@ class JumpLTI(SSM):
             f_sample: the prior samples (num_samps, time, out_dims, 1)
         """
         num_samps = prng_states.shape[0]
-        all_locs, obs_inds, switch_inds, unique_locs = obs_switch_locs(
-            t_eval, self.switch_locs
+        all_locs, trans_inds, jump_inds, obs_inds, unique_locs = obs_switch_locs(
+            t_eval, self.switch_locs[(t_eval[0] < self.switch_locs) & (t_eval[-1] > self.switch_locs)]
         )
-
+        
         unique_dlocs = jnp.diff(unique_locs)  # (eval_locs-1,)
         if jnp.all(jnp.isclose(unique_dlocs, unique_dlocs[0])):  # grid
             unique_dlocs = unique_dlocs[:1]
 
         H, Pinf, As, Qs = self.get_conditional_LDS(
-            unique_dlocs, obs_inds, switch_inds, j_path
+            unique_dlocs, trans_inds, jump_inds, j_path
         )
-        minf = jnp.zeros((Pinf.shape[-1], 1))
+        m0 = jnp.zeros((Pinf.shape[-1], 1))
 
-        samples = vsample(H, minf, Pinf, As, Qs, prng_states, 1, jitter)
+        samples = vsample(H, m0, Pinf, As, Qs, prng_states, 1, jitter)
         x_samples = samples[:, obs_inds, 0, ...]
         return x_samples
 
@@ -729,17 +740,17 @@ class JumpLTI(SSM):
         compute_KL,
     ):
         prng_state, prng_states = prng_states[0], prng_states[1:]
-        all_locs, obs_inds, switch_inds, unique_locs = obs_switch_locs(
+        all_locs, trans_inds, jump_inds, obs_inds, unique_locs = obs_switch_locs(
             self.site_locs, self.switch_locs
         )
-        all_obs, all_Lcovs = self.get_site_params(obs_inds, switch_inds)
+        all_obs, all_Lcovs = self.get_site_params(obs_inds, len(all_locs))
 
         # compute linear dynamical system
         unique_dlocs = jnp.diff(unique_locs)  # (eval_locs-1,)
         if jnp.all(jnp.isclose(unique_dlocs, unique_dlocs[0])):  # grid
             unique_dlocs = unique_dlocs[:1]
         H, Pinf, As, Qs = self.get_conditional_LDS(
-            unique_dlocs, obs_inds, switch_inds, j_path
+            unique_dlocs, trans_inds, jump_inds, j_path
         )
 
         # evaluation locations
@@ -772,7 +783,7 @@ class JumpLTI(SSM):
             compute_KL,
             jitter,
         )  # (tr, time, out_dims, 1)
-
+        
         # sample prior at obs and eval locs
         prior_samps = self.sample_conditional_prior(prng_states, t_all, j_path, jitter)
 
@@ -803,7 +814,7 @@ class JumpLTI(SSM):
             )
             return smoothed_sample
 
-        smoothed_samps = vmap(smooth_prior_sample, (0, 0, 0), 0)(
+        smoothed_samps = vmap(smooth_prior_sample)(
             prior_samps_noisy, As, Qs
         )
         return prior_samps_eval - smoothed_samps + post_means, KL_x
@@ -940,12 +951,13 @@ class SwitchingLTI(SSM):
         else:
             return locs, obs_inds, switch_inds, jnp.diff(unique_locs)
 
-    def get_site_params(self, obs_inds, switch_inds):
+    def get_site_params(self, obs_inds, ts):
         """
         Insert unobserved locations at switch edge locations
+        
+        :param int ts: total time points = len(obs_inds) + len(switch_inds)
         """
         sd = self.site_obs.shape[-2]
-        ts = len(obs_inds) + len(switch_inds)
 
         site_obs = jnp.zeros((ts, sd, 1))
         site_Lcov = 1e6 * jnp.eye(sd)[None, ...].repeat(
@@ -1022,7 +1034,7 @@ class SwitchingLTI(SSM):
         """
         site_locs, obs_inds, switch_inds, site_dlocs = self.get_site_locs()
 
-        site_obs, site_Lcovs = self.get_site_params(obs_inds)
+        site_obs, site_Lcovs = self.get_site_params(obs_inds, len(all_locs))
         H, Ps, As, Qs = self.get_conditional_LDS(
             site_dlocs, tsteps, obs_inds, switch_inds, s_path, j_path
         )

@@ -7,15 +7,10 @@ import argparse
 # import tensorflow as tf  # Yes, tensorflow. Even though we're using JAX.
 # tf.config.experimental.set_visible_devices([], 'GPU')
 
-import sys
-
 import gplvm_template
 
 import numpy as np
 
-sys.path.append("..")
-
-import lib
 
 
 def counts_dataset(session_name, bin_size, path, select_fracs=None):
@@ -195,12 +190,15 @@ def observed_kernel_dict_induc_list(rng, observations, num_induc, out_dims, cova
     for comp in observations_comps:
         if comp == "":  # empty
             continue
+            
+        order_arr = rng.permuted(
+            np.tile(np.arange(num_induc), out_dims).reshape(out_dims, num_induc), 
+            axis=1, 
+        )
 
         if comp == "theta":
             induc_list += [
-                np.linspace(0, 2 * np.pi, num_induc + 1)[None, :-1, None].repeat(
-                    out_dims, axis=0
-                )
+                np.linspace(0, 2 * np.pi, num_induc + 1)[order_arr][..., None]
             ]
             kernel_dicts += [
                 {
@@ -213,7 +211,7 @@ def observed_kernel_dict_induc_list(rng, observations, num_induc, out_dims, cova
 
         elif comp == "speed":
             scale = covariates["speed"].std()
-            induc_list += [rng.uniform(0, scale, size=(out_dims, num_induc, 1))]
+            induc_list += [np.linspace(0, scale, num_induc)[order_arr][..., None]]
             kernel_dicts += [
                 {
                     "type": "SE",
@@ -226,7 +224,7 @@ def observed_kernel_dict_induc_list(rng, observations, num_induc, out_dims, cova
         elif comp == "x":
             left_x = covariates["x"].min()
             right_x = covariates["x"].max()
-            induc_list += [rng.uniform(left_x, right_x, size=(out_dims, num_induc, 1))]
+            induc_list += [np.linspace(left_x, right_x, num_induc)[order_arr][..., None]]
             ls = (right_x - left_x) / 10.0
             kernel_dicts += [
                 {
@@ -240,7 +238,7 @@ def observed_kernel_dict_induc_list(rng, observations, num_induc, out_dims, cova
         elif comp == "y":
             bottom_y = covariates["y"].min()
             top_y = covariates["y"].max()
-            induc_list += [rng.uniform(bottom_y, top_y, size=(out_dims, num_induc, 1))]
+            induc_list += [np.linspace(bottom_y, top_y, num_induc)[order_arr][..., None]]
             ls = (top_y - bottom_y) / 10.0
             kernel_dicts += [
                 {
@@ -253,9 +251,7 @@ def observed_kernel_dict_induc_list(rng, observations, num_induc, out_dims, cova
 
         elif comp == "time":
             scale = covariates["time"].max()
-            induc_list += [
-                np.linspace(0, scale, num_induc)[None, :, None].repeat(out_dims, axis=0)
-            ]
+            induc_list += [np.linspace(0, scale, num_induc)[order_arr][..., None]]
             kernel_dicts += [
                 {
                     "type": "SE",

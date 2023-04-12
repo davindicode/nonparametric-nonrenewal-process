@@ -1375,6 +1375,28 @@ class NonparametricPointProcess(Observations):
 class GPLVM(module):
     """
     base class for GPLVM
+    
+    For example, we can do dimensional reduction on Iris dataset as follows:
+        >>> # With y as the 2D Iris data of shape 150x4 and we want to reduce its dimension
+        >>> # to a tensor X of shape 150x2, we will use GPLVM.
+        .. doctest::
+           :hide:
+            >>> # Simulating iris data.
+            >>> y = torch.stack([dist.Normal(4.8, 0.1).sample((150,)),
+            ...                  dist.Normal(3.2, 0.3).sample((150,)),
+            ...                  dist.Normal(1.5, 0.4).sample((150,)),
+            ...                  dist.Exponential(0.5).sample((150,))])
+        >>> # First, define the initial values for X parameter:
+        >>> X_init = torch.zeros(150, 2)
+        >>> # Then, define a Gaussian Process model with input X_init and output y:
+        >>> kernel = gp.kernels.RBF(input_dim=2, lengthscale=torch.ones(2))
+        >>> Xu = torch.zeros(20, 2)  # initial inducing inputs of sparse model
+        >>> gpmodule = gp.models.SparseGPRegression(X_init, y, kernel, Xu)
+        >>> # Finally, wrap gpmodule by GPLVM, optimize, and get the "learned" mean of X:
+        >>> gplvm = gp.models.GPLVM(gpmodule)
+        >>> gp.util.train(gplvm)  # doctest: +SKIP
+        >>> X = gplvm.X
+        
     """
 
     inp_model: GaussianLatentObservedSeries
