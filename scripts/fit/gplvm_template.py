@@ -62,7 +62,10 @@ def standard_parser(parser):
     parser.add_argument("--gpu", default=0, type=int)
     parser.add_argument("--num_MC", default=1, type=int)
     parser.add_argument("--lik_int_method", default="GH-20", type=str)
-
+    parser.add_argument("--unroll", default=10, type=int)
+    parser.add_argument("--joint_samples", dest="joint_samples", action="store_true")
+    parser.set_defaults(joint_samples=False)
+    
     parser.add_argument("--jitter", default=1e-6, type=float)
     parser.add_argument("--batch_size", default=10000, type=int)
 
@@ -1099,10 +1102,12 @@ def fit_and_save(parser_args, dataset_dict, observed_kernel_dict_induc_list, sav
         )
 
         # loss
-        @partial(eqx.filter_value_and_grad, arg=filter_spec)
-        def compute_loss(model, prng_state, num_samps, jitter, data, lik_int_method):
+        @eqx.filter_value_and_grad
+        def compute_loss(diff_model, static_model, prng_state, num_samps, jitter, data, lik_int_method):
+            model = eqx.combine(diff_model, static_model)
             nELBO = -model.ELBO(
-                prng_state, num_samps, jitter, tot_ts, data, lik_int_method
+                prng_state, num_samps, jitter, tot_ts, data, lik_int_method, 
+                config.joint_samples, config.unroll
             )
             return nELBO
 
@@ -1110,8 +1115,9 @@ def fit_and_save(parser_args, dataset_dict, observed_kernel_dict_induc_list, sav
         def make_step(
             model, prng_state, num_samps, jitter, data, lik_int_method, opt_state
         ):
+            diff_model, static_model = eqx.partition(model, filter_spec)
             loss, grads = compute_loss(
-                model, prng_state, num_samps, jitter, data, lik_int_method
+                diff_model, static_model, prng_state, num_samps, jitter, data, lik_int_method
             )
 
             updates, opt_state = optim.update(grads, opt_state)
