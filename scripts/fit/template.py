@@ -35,9 +35,11 @@ from gaussneuro.utils.loaders import BatchedTimeSeries
 ### script ###
 def rgetattr(obj, attr, *args):
     def _getattr(obj, attr):
+        a = attr.split('[')
+        if len(a) > 1:  # list
+            return getattr(obj, a[0], *args)[int(a[1].split(']')[0])]
         return getattr(obj, attr, *args)
-
-    return reduce(_getattr, [obj] + attr.split("."))
+    return reduce(_getattr, [obj] + attr.split('.'))
 
 
 def standard_parser(parser):
@@ -72,7 +74,7 @@ def standard_parser(parser):
     parser.add_argument("--lr_start", default=1e-2, type=float)
     parser.add_argument("--lr_end", default=1e-4, type=float)
     parser.add_argument("--lr_decay", default=0.98, type=float)
-    parser.add_argument("--fix_param_names", default=[], nargs="+", type=str)
+    parser.add_argument("--freeze_params", default=[], nargs="+", type=str)
 
     parser.add_argument("--max_epochs", default=3000, type=int)
     parser.add_argument("--loss_margin", default=-1e0, type=float)
@@ -125,13 +127,12 @@ def covariate_kernel(kernel_dicts, f_dims, array_type):
                     f_dims,
                     var_f,
                     len_fx,
-                    metric_type="Euclidean",
                     array_type=array_type,
                 )
 
-            elif kernel_type == "circSE":
-                krn = lib.GP.kernels.SquaredExponential(
-                    f_dims, var_f, len_fx, metric_type="Cosine", array_type=array_type
+            elif kernel_type == "periodic":
+                krn = lib.GP.kernels.Periodic(
+                    f_dims, var_f, len_fx, array_type=array_type
                 )
 
             elif kernel_type == "RQ":
@@ -185,7 +186,7 @@ def ISI_kernel_dict_induc_list(rng, isi_order, num_induc, out_dims):
 
     for _ in range(isi_order - 1):  # first time to spike separate
         order_arr = rng.permuted(
-            np.tile(np.arange(num_induc), out_dims).reshape(obs_dims, num_induc), 
+            np.tile(np.arange(num_induc), out_dims).reshape(out_dims, num_induc), 
             axis=1, 
         )
 
@@ -583,6 +584,13 @@ def build_renewal_gp(
             mu,
             link_type,
         )
+        
+    elif renewal_type == "expon":
+        renewal = lib.likelihoods.Exponential(
+            obs_dims,
+            dt,
+            link_type,
+        )
 
     else:
         raise ValueError("Invalid renewal likelihood")
@@ -639,7 +647,6 @@ def build_nonparametric(
     dt,
     obs_dims,
     array_type,
-    #stvgp=False,
 ):
     """
     Build point process models with nonparametric CIFs
@@ -651,7 +658,7 @@ def build_nonparametric(
     observations_comps = observations.split("-")
     ss_type = observations_comps[2]
     RFF_num_feats = int(observations_comps[3])
-    refract_neg = -float(observations_comps[4])  # -12.
+    ini_refract_amp = -float(observations_comps[4])
 
     if ss_type == "matern12":
         len_t = 1.0 * np.ones((obs_dims, 1))  # GP lengthscale
@@ -683,43 +690,11 @@ def build_nonparametric(
         array_type,
     )
 
-#     if stvgp:
-#         num_induc_t = int(observations_comps[5])
-#         spatial_MF = observations_comps[6] == "spatial_MF"
-#         fixed_grid_locs = observations_comps[7] == "fixed_grid"
-
-#         # spatiotemporal SVGP
-#         num_induc_sp = induc_locs.shape[1]
-#         num_induc = num_induc_sp * num_induc_t
-
-#         site_locs = np.linspace(0.0, 1.0, num_induc_t)[None, :].repeat(obs_dims, axis=0)
-#         site_obs = 0.1 * rng.normal(size=(obs_dims, num_induc_t, num_induc_sp, 1))
-#         if spatial_MF:
-#             site_Lcov = 0.1 * np.ones((1, 1, num_induc_sp, 1)).repeat(
-#                 num_induc_t, axis=1
-#             ).repeat(obs_dims, axis=0)
-#         else:  # full posterior covariance
-#             site_Lcov = 0.1 * np.eye(num_induc_sp)[None, None, ...].repeat(
-#                 num_induc_t, axis=1
-#             ).repeat(obs_dims, axis=0)
-
-#         st_kernel = lib.GP.kernels.MarkovSparseKronecker(ss_kernel, kernel, induc_locs)
-
-#         gp = lib.GP.spatiotemporal.KroneckerLTI(
-#             st_kernel,
-#             site_locs,
-#             site_obs,
-#             site_Lcov,
-#             RFF_num_feats,
-#             spatial_MF,
-#             fixed_grid_locs,
-#         )
-
-#     else:  # SVGP
+    # SVGP
     num_induc = induc_locs.shape[1]
 
     order_arr = rng.permuted(
-        np.tile(np.arange(num_induc), out_dims).reshape(obs_dims, num_induc), 
+        np.tile(np.arange(num_induc), obs_dims).reshape(obs_dims, num_induc), 
         axis=1, 
     )
 
@@ -744,10 +719,11 @@ def build_nonparametric(
     # BNPP
     wrap_tau = 1.0 * np.ones((obs_dims,))  # seconds
     refract_tau = 1e-1 * np.ones((obs_dims,))
+    refract_amp = ini_refract_amp * np.ones((obs_dims,))
     mean_bias = 0.0 * np.ones((obs_dims,))
 
     model = NonparametricPointProcess(
-        gp, wrap_tau, refract_tau, refract_neg, mean_bias, dt
+        gp, wrap_tau, refract_tau, refract_amp, mean_bias, dt
     )
     return model
 
@@ -1091,14 +1067,14 @@ def fit_and_save(parser_args, dataset_dict, observed_kernel_dict_induc_list, sav
 
         # freeze parameters
         select_fixed_params = lambda tree: [
-            rgetattr(tree, name) for name in config.fix_param_names
+            rgetattr(tree, name) for name in config.freeze_params
         ]
 
         filter_spec = jax.tree_map(lambda o: eqx.is_inexact_array(o), model)
         filter_spec = eqx.tree_at(
             select_fixed_params,
             filter_spec,
-            replace=(False,) * len(config.fix_param_names),
+            replace=(False,) * len(config.freeze_params),
         )
 
         # loss

@@ -7,7 +7,7 @@ import argparse
 # import tensorflow as tf  # Yes, tensorflow. Even though we're using JAX.
 # tf.config.experimental.set_visible_devices([], 'GPU')
 
-import gplvm_template
+import template
 
 import numpy as np
 
@@ -70,10 +70,10 @@ def counts_dataset(session_name, bin_size, path, select_fracs=None):
         "time": timestamps,
     }
 
-    metainfo = {
-        "neuron_regions": neuron_regions,
-    }
-    name = data_type
+    metainfo = {}
+    name = (
+        session_name + "bin{}".format(bin_size) + "sel{}to{}".format(*select_fracs)
+    )
     units_used = rc_t.shape[0]
     max_count = int(rc_t.max())
 
@@ -275,7 +275,6 @@ def gen_name(parser_args, dataset_dict):
         parser_args.observations,
         parser_args.observed_covs,
         parser_args.latent_covs,
-        # parser_args.bin_size,
     )
     return name
 
@@ -287,8 +286,8 @@ def main():
     parser_counts = subparsers.add_parser("counts", help="Fit model to count data.")
     parser_spikes = subparsers.add_parser("spikes", help="Fit model to spikes data.")
 
-    parser_counts = gplvm_template.standard_parser(parser_counts)
-    parser_spikes = gplvm_template.standard_parser(parser_spikes)
+    parser_counts = template.standard_parser(parser_counts)
+    parser_spikes = template.standard_parser(parser_spikes)
 
     parser_counts.add_argument("--data_path", action="store", type=str)
     parser_counts.add_argument("--session_name", action="store", type=str)
@@ -321,7 +320,7 @@ def main():
 
     print("Setting up model...")
     save_name = gen_name(args, dataset_dict)
-    gplvm_template.fit_and_save(
+    template.fit_and_save(
         args, dataset_dict, observed_kernel_dict_induc_list, save_name
     )
 
