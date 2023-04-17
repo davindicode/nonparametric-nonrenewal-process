@@ -58,7 +58,6 @@ def standard_parser(parser):
     parser.add_argument("--double_arrays", dest="double_arrays", action="store_true")
     parser.set_defaults(double_arrays=False)
     parser.add_argument("--device", default=0, type=int)
-    parser.add_argument("--array_type", default="float32", type=str)
 
     parser.add_argument("--seeds", default=[123], nargs="+", type=int)
     parser.add_argument("--gpu", default=0, type=int)
@@ -296,7 +295,7 @@ def build_kernel(
 
 
 ### observation models ###
-def build_spikefilters(rng, obs_dims, filter_type):
+def build_spikefilters(rng, obs_dims, filter_type, array_type):
     """
     Create the spike coupling object.
 
@@ -338,6 +337,7 @@ def build_spikefilters(rng, obs_dims, filter_type):
             beta,
             tau,
             filter_length,
+            array_type, 
         )
 
     elif filter_type_comps[0] == "rcb":
@@ -366,54 +366,55 @@ def build_spikefilters(rng, obs_dims, filter_type):
             w_h,
             phi_h,
             filter_length,
+            array_type, 
         )
 
-    elif filter_type_comps[0] == "svgp":
-        num_induc = int(filter_type_comps[1])
+#     elif filter_type_comps[0] == "svgp":
+#         num_induc = int(filter_type_comps[1])
 
-        if filter_type_comps[2] == "full":
-            D = obs_dims * obs_dims
-            out_dims = obs_dims
+#         if filter_type_comps[2] == "full":
+#             D = obs_dims * obs_dims
+#             out_dims = obs_dims
 
-        elif filter_type_comps[2] == "self":
-            D = obs_dims
-            out_dims = 1
+#         elif filter_type_comps[2] == "self":
+#             D = obs_dims
+#             out_dims = 1
 
-        else:
-            raise ValueError
+#         else:
+#             raise ValueError
 
-        v = 100 * tbin * torch.ones(1, D)
-        l = 100.0 * tbin * torch.ones((1, D))
-        l_b = 100.0 * tbin * torch.ones((1, D))
-        beta = 1.0 * torch.ones((1, D))
+#         v = 100 * tbin * torch.ones(1, D)
+#         l = 100.0 * tbin * torch.ones((1, D))
+#         l_b = 100.0 * tbin * torch.ones((1, D))
+#         beta = 1.0 * torch.ones((1, D))
 
-        mean_func = nppl.kernels.means.decaying_exponential(D, 0.0, 100.0 * tbin)
+#         mean_func = nppl.kernels.means.decaying_exponential(D, 0.0, 100.0 * tbin)
 
-        Xu = torch.linspace(0, hist_len * tbin, num_induc)[None, :, None].repeat(
-            D, 1, 1
-        )
+#         Xu = torch.linspace(0, hist_len * tbin, num_induc)[None, :, None].repeat(
+#             D, 1, 1
+#         )
 
-        krn2 = lib.GP.kernels.DecayingSquaredExponential(
-            input_dims=1,
-            lengthscale=l,
-            lengthscale_beta=l_b,
-            beta=beta,
-            track_dims=[0],
-            f="exp",
-            tensor_type=tensor_type,
-        )
-        kernelobj = lib.GP.kernel.Product(krn1, krn2)
-        inducing_points = jnp.array(Xu)
+#         krn2 = lib.GP.kernels.DecayingSquaredExponential(
+#             input_dims=1,
+#             lengthscale=l,
+#             lengthscale_beta=l_b,
+#             beta=beta,
+#             track_dims=[0],
+#             f="exp",
+#             tensor_type=tensor_type,
+#         )
+#         kernelobj = lib.GP.kernel.Product(krn1, krn2)
+#         inducing_points = jnp.array(Xu)
 
-        gp = lib.GP.sparse.qSVGP(
-            1,
-            D,
-            kernelobj,
-            inducing_points=inducing_points,
-            whitened=True,
-        )
+#         gp = lib.GP.sparse.qSVGP(
+#             1,
+#             D,
+#             kernelobj,
+#             inducing_points=inducing_points,
+#             whitened=True,
+#         )
 
-        flt = lib.filters.GaussianProcess(out_dims, obs_dims, hist_len + 1, tbin, gp)
+#         flt = lib.filters.GaussianProcess(out_dims, obs_dims, hist_len + 1, tbin, gp)
 
     else:
         raise ValueError
@@ -565,6 +566,7 @@ def build_renewal_gp(
             dt,
             alpha,
             link_type,
+            array_type, 
         )
 
     elif renewal_type == "lognorm":
@@ -574,6 +576,7 @@ def build_renewal_gp(
             dt,
             sigma,
             link_type,
+            array_type, 
         )
 
     elif renewal_type == "invgauss":
@@ -583,6 +586,7 @@ def build_renewal_gp(
             dt,
             mu,
             link_type,
+            array_type, 
         )
         
     elif renewal_type == "expon":
@@ -590,6 +594,7 @@ def build_renewal_gp(
             obs_dims,
             dt,
             link_type,
+            array_type, 
         )
 
     else:
@@ -734,7 +739,7 @@ def setup_latents(rng, d_x, latent_covs, site_lims, array_type):
     latent covariates
     """
     latent_covs_comps = latent_covs.split("-")
-
+    
     if len(latent_covs_comps) > 4:
         # settings
         num_site_locs = int(latent_covs_comps[-4])
@@ -756,7 +761,8 @@ def setup_latents(rng, d_x, latent_covs, site_lims, array_type):
                 var_z = 1.0 * np.ones((d_z))  # GP variance
                 len_z = 1.0 * np.ones((d_z, 1))  # GP lengthscale
                 ss_kernels.append(
-                    lib.GP.kernels.Matern12(d_z, variance=var_z, lengthscale=len_z)
+                    lib.GP.kernels.Matern12(
+                        d_z, variance=var_z, lengthscale=len_z, array_type=array_type)
                 )
 
             elif ztype == "matern32":
@@ -765,7 +771,8 @@ def setup_latents(rng, d_x, latent_covs, site_lims, array_type):
                 var_z = 1.0 * np.ones((d_z))  # GP variance
                 len_z = 1.0 * np.ones((d_z, 1))  # GP lengthscale
                 ss_kernels.append(
-                    lib.GP.kernels.Matern32(d_z, variance=var_z, lengthscale=len_z)
+                    lib.GP.kernels.Matern32(
+                        d_z, variance=var_z, lengthscale=len_z, array_type=array_type)
                 )
 
             elif ztype == "matern52":
@@ -774,7 +781,8 @@ def setup_latents(rng, d_x, latent_covs, site_lims, array_type):
                 var_z = 1.0 * np.ones((d_z))  # GP variance
                 len_z = 1.0 * np.ones((d_z, 1))  # GP lengthscale
                 ss_kernels.append(
-                    lib.GP.kernels.Matern52(d_z, variance=var_z, lengthscale=len_z)
+                    lib.GP.kernels.Matern52(
+                        d_z, variance=var_z, lengthscale=len_z, array_type=array_type)
                 )
 
             elif ztype == "LEG":
@@ -785,7 +793,7 @@ def setup_latents(rng, d_x, latent_covs, site_lims, array_type):
                 H = rng.normal(size=(d_z, d_s))[None] / np.sqrt(d_s)
                 Lam = rng.normal(size=(d_s, d_s))[None] / np.sqrt(d_s)
 
-                ss_kernels.append(lib.GP.kernels.LEG(N, R, H, Lam))
+                ss_kernels.append(lib.GP.kernels.LEG(N, R, H, Lam, array_type=array_type))
 
             elif zc != "":
                 raise ValueError("Invalid latent covariate type")
@@ -819,11 +827,10 @@ def setup_latents(rng, d_x, latent_covs, site_lims, array_type):
     # joint latent observed covariates
     lat_covs_dims = list(range(d_x, d_x + tot_d_z))
     obs_covs_dims = list(range(d_x))
-
+    
     inputs_model = GaussianLatentObservedSeries(
-        ssgp, lat_covs_dims, obs_covs_dims, diagonal_cov
+        ssgp, lat_covs_dims, obs_covs_dims, diagonal_cov, array_type
     )
-
     return inputs_model
 
 
@@ -846,7 +853,7 @@ def setup_observations(
         used covariates, inputs model, observation model
     """
     ### GP observation model ###
-    obs_filter = build_spikefilters(rng, obs_dims, filter_type)
+    obs_filter = build_spikefilters(rng, obs_dims, filter_type, array_type)
     observations_comps = observations.split("-")
 
     if observations_comps[0] == "factorized_gp":
@@ -974,6 +981,11 @@ def build_model(
     timestamps,
     obs_covs_dims,
 ):
+    if config.double_arrays:
+        array_type = "float64"
+    else:
+        array_type = "float32"
+
     gen_kernel_induc_func = (
         lambda rng, observations, num_induc, out_dims: observed_kernel_dict_induc_list(
             rng, observations, num_induc, out_dims, dataset_dict["covariates"]
@@ -992,7 +1004,7 @@ def build_model(
         obs_covs_dims,
         config.latent_covs,
         [timestamps[0], timestamps[-1]],
-        config.array_type,
+        array_type,
     )
 
     obs_model = setup_observations(
@@ -1005,12 +1017,23 @@ def build_model(
         config.latent_covs,
         obs_dims,
         tbin,
-        config.array_type,
+        array_type,
     )
     model = GaussianTwoLayer(inp_model, obs_model)
 
     return model
 
+
+def setup_jax(config):
+    if config.force_cpu:
+        jax.config.update("jax_platform_name", "cpu")
+    else:
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # see issue #152
+        os.environ["CUDA_VISIBLE_DEVICES"] = f"{config.device}"
+
+    if config.double_arrays:
+        jax.config.update("jax_enable_x64", True)
+        
 
 def fit_and_save(parser_args, dataset_dict, observed_kernel_dict_induc_list, save_name):
     """
@@ -1020,14 +1043,7 @@ def fit_and_save(parser_args, dataset_dict, observed_kernel_dict_induc_list, sav
     config = argparse.Namespace(**{**vars(parser_args), **dataset_dict["properties"]})
 
     # JAX
-    if config.force_cpu:
-        jax.config.update("jax_platform_name", "cpu")
-    else:
-        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # see issue #152
-        os.environ["CUDA_VISIBLE_DEVICES"] = f"{config.device}"
-
-    if config.double_arrays:
-        jax.config.update("jax_enable_x64", True)
+    setup_jax(config)
 
     # data preparation
     timestamps, covariates, ISIs, observations, filter_length = select_inputs(

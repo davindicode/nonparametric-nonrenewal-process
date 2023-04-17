@@ -1,12 +1,5 @@
 import argparse
 
-# import os
-# os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = ".7"
-# os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-# os.environ['XLA_FLAGS'] = "--xla_gpu_strict_conv_algorithm_picker=false --xla_gpu_force_compilation_parallelism=1"
-# import tensorflow as tf  # Yes, tensorflow. Even though we're using JAX.
-# tf.config.experimental.set_visible_devices([], 'GPU')
-
 import template
 
 import numpy as np
