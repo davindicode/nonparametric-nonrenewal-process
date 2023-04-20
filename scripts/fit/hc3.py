@@ -1,29 +1,17 @@
 import argparse
 
-import sys
-
-import gplvm_template
+import template
 
 import numpy as np
 
-sys.path.append("..")
-
-import lib
 
 
 def counts_dataset(session_name, bin_size, path, select_fracs=None):
     filename = session_name + ".npz"
     data = np.load(path + filename)
 
-    # select units
-    if data_type == "th1":
-        sel_unit = data["hdc_unit"]
-    else:
-        sel_unit = ~data["hdc_unit"]
-    neuron_regions = data["neuron_regions"][sel_unit]  # 1 is ANT, 0 is PoS
-
     # spike counts
-    spktrain = data["spktrain"][sel_unit, :]
+    spktrain = data["spktrain"]
     sample_bin = data["tbin"]  # s
     # sample_bin = 0.001
     track_samples = spktrain.shape[1]
@@ -104,18 +92,14 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
     filename = session_name + ".npz"
     data = np.load(path + filename)
 
-    # select units
-    sel_unit = data["hdc_unit"]
-    neuron_regions = data["neuron_regions"][sel_unit]  # 1 is ANT, 0 is PoS
-
     # spikes
-    spktrain = data["spktrain"][sel_unit, :]
+    spktrain = data["spktrain"]
     spktrain[spktrain > 1.0] = 1.0  # ensure binary train
     tbin = data["tbin"]  # seconds
     track_samples = spktrain.shape[1]
 
     # ISIs
-    ISIs = data["ISIs"][:, sel_unit, :max_ISI_order]  # (ts, neurons, order)
+    ISIs = data["ISIs"][:, :, :max_ISI_order]  # (ts, neurons, order)
     order_computed_at = np.empty_like(ISIs[0, :, 0]).astype(int)
     for n in range(order_computed_at.shape[0]):
         order_computed_at[n] = np.where(
@@ -133,6 +117,7 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
     # covariates
     x_t = data["x_t"][subselect]
     y_t = data["y_t"][subselect]
+    theta_t = data["hd_t"][subselect]
     hd_t = data["hd_t"][subselect]
 
     # compute velocities
@@ -147,6 +132,7 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
     timestamps = np.arange(start, end) * tbin
 
     rcov = {
+        "theta": theta_t % (2 * np.pi),
         "hd": hd_t % (2 * np.pi),
         "omega": w_t,
         "speed": s_t,
@@ -157,9 +143,7 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
 
     ISIs = ISIs[subselect]
 
-    metainfo = {
-        "neuron_regions": neuron_regions,
-    }
+    metainfo = {}
     name = (
         session_name + "ISI{}".format(max_ISI_order) + "sel{}to{}".format(*select_fracs)
     )
@@ -184,7 +168,7 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
     return dataset_dict
 
 
-def observed_kernel_dict_induc_list(obs_covs, num_induc, out_dims, covariates):
+def observed_kernel_dict_induc_list(rng, obs_covs, num_induc, out_dims, covariates):
     """
     Get kernel dictionary and inducing point locations for dataset covariates
     """
@@ -198,48 +182,102 @@ def observed_kernel_dict_induc_list(obs_covs, num_induc, out_dims, covariates):
         if comp == "":  # empty
             continue
 
-        if comp == "hd":
-            induc_list += [np.linspace(0, 2 * np.pi, num_induc + 1)[:-1]]
+        order_arr = rng.permuted(
+            np.tile(np.arange(num_induc), out_dims).reshape(out_dims, num_induc), 
+            axis=1, 
+        )
+        
+        if comp == "theta":
+            induc_list += [
+                np.linspace(0, 2 * np.pi, num_induc + 1)[order_arr][..., None]
+            ]
             kernel_dicts += [
-                {"type": "circSE", "var": ones, "len": 5.0 * np.ones((out_dims, 1))}
+                {
+                    "type": "periodic",
+                    "in_dims": 1,
+                    "var": ones,
+                    "len": 2.0 * np.ones((out_dims, 1)),
+                }
+            ]
+            
+        elif comp == "hd":
+            induc_list += [
+                np.linspace(0, 2 * np.pi, num_induc + 1)[order_arr][..., None]
+            ]
+            kernel_dicts += [
+                {
+                    "type": "periodic",
+                    "in_dims": 1,
+                    "var": ones,
+                    "len": 5.0 * np.ones((out_dims, 1)),
+                }
             ]
 
-        elif comp == "theta":
-            induc_list += [np.linspace(0, 2 * np.pi, num_induc + 1)[:-1]]
+        elif comp == "omega":
+            scale = covariates["omega"].std()
+            induc_list += [scale * np.linspace(-1., 1., num_induc)[order_arr][..., None]]
+            ls = scale * np.ones(out_dims)
             kernel_dicts += [
-                {"type": "circSE", "var": ones, "len": 5.0 * np.ones((out_dims, 1))}
+                {
+                    "type": "SE",
+                    "in_dims": 1,
+                    "var": ones,
+                    "len": 10.0 * np.ones((out_dims, 1)),
+                }
             ]
 
         elif comp == "speed":
             scale = covariates["speed"].std()
-            induc_list += [np.random.uniform(0, scale, size=(num_induc,))]
+            induc_list += [np.linspace(0, scale, num_induc, 1)[order_arr][..., None]]
             kernel_dicts += [
-                {"type": "SE", "var": ones, "len": scale * np.ones((out_dims, 1))}
+                {
+                    "type": "SE",
+                    "in_dims": 1,
+                    "var": ones,
+                    "len": scale * np.ones((out_dims, 1)),
+                }
             ]
 
         elif comp == "x":
             left_x = covariates["x"].min()
             right_x = covariates["x"].max()
-            induc_list += [np.random.uniform(left_x, right_x, size=(num_induc,))]
+            induc_list += [np.linspace(left_x, right_x, num_induc, 1)[order_arr][..., None]]
             ls = (right_x - left_x) / 10.0
             kernel_dicts += [
-                {"type": "SE", "var": ones, "len": ls * np.ones((out_dims, 1))}
+                {
+                    "type": "SE",
+                    "in_dims": 1,
+                    "var": ones,
+                    "len": ls * np.ones((out_dims, 1)),
+                }
             ]
 
         elif comp == "y":
             bottom_y = covariates["y"].min()
             top_y = covariates["y"].max()
-            induc_list += [np.random.uniform(bottom_y, top_y, size=(num_induc,))]
+            induc_list += [np.linspace(bottom_y, top_y, num_induc)[order_arr][..., None]]
             ls = (top_y - bottom_y) / 10.0
             kernel_dicts += [
-                {"type": "SE", "var": ones, "len": ls * np.ones((out_dims, 1))}
+                {
+                    "type": "SE",
+                    "in_dims": 1,
+                    "var": ones,
+                    "len": ls * np.ones((out_dims, 1)),
+                }
             ]
 
         elif comp == "time":
             scale = covariates["time"].max()
-            induc_list += [np.linspace(0, scale, num_induc)]
+            induc_list += [
+                np.linspace(0, scale, num_induc)[order_arr][..., None]
+            ]
             kernel_dicts += [
-                {"type": "SE", "var": ones, "len": scale / 2.0 * np.ones((out_dims, 1))}
+                {
+                    "type": "SE",
+                    "in_dims": 1,
+                    "var": ones,
+                    "len": scale / 2.0 * np.ones((out_dims, 1)),
+                }
             ]
 
         else:
@@ -256,7 +294,6 @@ def gen_name(parser_args, dataset_dict):
         parser_args.observations,
         parser_args.observed_covs,
         parser_args.latent_covs,
-        # parser_args.bin_size,
     )
     return name
 
@@ -268,8 +305,8 @@ def main():
     parser_counts = subparsers.add_parser("counts", help="Fit model to count data.")
     parser_spikes = subparsers.add_parser("spikes", help="Fit model to spikes data.")
 
-    parser_counts = gplvm_template.standard_parser(parser_counts)
-    parser_spikes = gplvm_template.standard_parser(parser_spikes)
+    parser_counts = template.standard_parser(parser_counts)
+    parser_spikes = template.standard_parser(parser_spikes)
 
     parser_counts.add_argument("--data_path", action="store", type=str)
     parser_counts.add_argument("--session_name", action="store", type=str)
@@ -302,7 +339,9 @@ def main():
 
     print("Setting up model...")
     save_name = gen_name(args, dataset_dict)
-    gplvm_template.fit(args, dataset_dict, observed_kernel_dict_induc_list, save_name)
+    template.fit_and_save(
+        args, dataset_dict, observed_kernel_dict_induc_list, save_name
+    )
 
 
 if __name__ == "__main__":

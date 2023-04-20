@@ -663,7 +663,7 @@ def build_nonparametric(
     observations_comps = observations.split("-")
     ss_type = observations_comps[2]
     RFF_num_feats = int(observations_comps[3])
-    ini_refract_amp = -float(observations_comps[4])
+    ini_refract_amp = float(observations_comps[4])
 
     if ss_type == "matern12":
         len_t = 1.0 * np.ones((obs_dims, 1))  # GP lengthscale
