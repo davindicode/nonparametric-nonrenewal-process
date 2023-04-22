@@ -977,7 +977,7 @@ def build_model(
     config,
     dataset_dict,
     observed_kernel_dict_induc_list,
-    seed,
+    rng,
     timestamps,
     obs_covs_dims,
 ):
@@ -994,9 +994,6 @@ def build_model(
 
     obs_dims = dataset_dict["properties"]["neurons"]
     tbin = float(dataset_dict["properties"]["tbin"])
-
-    # seed numpy rng
-    rng = np.random.default_rng(seed)
 
     # create and initialize model
     inp_model = setup_latents(
@@ -1072,11 +1069,12 @@ def fit_and_save(parser_args, dataset_dict, observed_kernel_dict_induc_list, sav
     for seed in seeds:
         print("seed: {}".format(seed))
 
+        rng = np.random.default_rng(seed)
         model = build_model(
             config,
             dataset_dict,
             observed_kernel_dict_induc_list,
-            seed,
+            rng,
             timestamps,
             obs_covs_dims,
         )

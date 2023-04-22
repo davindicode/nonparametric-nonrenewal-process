@@ -40,7 +40,7 @@ python3 th1.py spikes --data_path ../../data/th1/ --session_name Mouse28_140313_
 python3 th1.py spikes --data_path ../../data/th1/ --session_name Mouse28_140313_wake --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs hd --observations nonparam_pp_gp-32-matern32-1000-12. --likelihood isi4 --freeze_params obs_model.log_refract_amp --device 0
 
 
-python3 th1.py spikes --data_path ../../data/th1/ --session_name Mouse28_140313_wake --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs hd-speed --observations nonparam_pp_gp-48-matern32-1000-12. --likelihood isi1 --freeze_params obs_model.log_refract_amp --device 0
+python3 th1.py spikes --data_path ../../data/th1/ --session_name Mouse28_140313_wake --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs hd-x-y-speed --observations nonparam_pp_gp-96-matern32-1000-12. --likelihood isi4 --freeze_params obs_model.log_refract_amp --jitter 1e-5 --device 0
 
 
 #--freeze_params obs_model.gp.induc_locs
