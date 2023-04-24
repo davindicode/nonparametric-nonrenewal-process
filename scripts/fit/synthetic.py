@@ -10,13 +10,6 @@ def counts_dataset(session_name, bin_size, path, select_fracs=None):
     filename = session_name + ".npz"
     data = np.load(path + filename)
 
-    # select units
-    if data_type == "th1":
-        sel_unit = data["hdc_unit"]
-    else:
-        sel_unit = ~data["hdc_unit"]
-    neuron_regions = data["neuron_regions"][sel_unit]  # 1 is ANT, 0 is PoS
-
     # spike counts
     spktrain = data["spktrain"][sel_unit, :]
     sample_bin = data["tbin"]  # s
@@ -31,33 +24,19 @@ def counts_dataset(session_name, bin_size, path, select_fracs=None):
     # covariates
     x_t = data["x_t"]
     y_t = data["y_t"]
-    hd_t = data["hd_t"]
 
     tbin, resamples, rc_t, (rhd_t, rx_t, ry_t) = utils.neural.bin_data(
         bin_size,
         sample_bin,
         spktrain,
         track_samples,
-        (np.unwrap(hd_t), x_t, y_t),
+        (x_t, y_t),
         average_behav=True,
         binned=True,
     )
-
-    # recompute velocities
-    rw_t = (rhd_t[1:] - rhd_t[:-1]) / tbin
-    rw_t = np.concatenate((rw_t, rw_t[-1:]))
-
-    rvx_t = (rx_t[1:] - rx_t[:-1]) / tbin
-    rvy_t = (ry_t[1:] - ry_t[:-1]) / tbin
-    rs_t = np.sqrt(rvx_t**2 + rvy_t**2)
-    rs_t = np.concatenate((rs_t, rs_t[-1:]))
-
     timestamps = np.arange(resamples) * tbin
 
     rcov = {
-        "hd": rhd_t % (2 * np.pi),
-        "omega": rw_t,
-        "speed": rs_t,
         "x": rx_t,
         "y": ry_t,
         "time": timestamps,
@@ -107,7 +86,7 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
 
     # ISIs
     ISIs = data["ISIs"][..., :max_ISI_order]  # (ts, neurons, order)
-
+    
     order_computed_at = np.empty_like(ISIs[0, :, 0]).astype(int)
     for n in range(order_computed_at.shape[0]):
         order_computed_at[n] = np.where(
@@ -125,22 +104,12 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
     # covariates
     x_t = data["x_t"][subselect]
     y_t = data["y_t"][subselect]
-    theta_t = data["theta_t"][subselect]
-
-    # compute velocities
-    vx_t = (x_t[1:] - x_t[:-1]) / tbin
-    vy_t = (y_t[1:] - y_t[:-1]) / tbin
-    s_t = np.sqrt(vx_t**2 + vy_t**2)
-    s_t = np.concatenate((s_t, s_t[-1:]))
-
     timestamps = np.arange(start, end) * tbin
 
     rcov = {
-        "theta": theta_t % (2 * np.pi),
-        "speed": s_t,
         "x": x_t,
         "y": y_t,
-        "time": timestamps,
+        "time": timestamps - timestamps[0],
     }
 
     ISIs = ISIs[subselect]
@@ -189,32 +158,7 @@ def observed_kernel_dict_induc_list(rng, observations, num_induc, out_dims, cova
             axis=1, 
         )
 
-        if comp == "theta":
-            induc_list += [
-                np.linspace(0, 2 * np.pi, num_induc + 1)[order_arr][..., None]
-            ]
-            kernel_dicts += [
-                {
-                    "type": "circSE",
-                    "in_dims": 1,
-                    "var": ones,
-                    "len": 5.0 * np.ones((out_dims, 1)),
-                }
-            ]
-
-        elif comp == "speed":
-            scale = covariates["speed"].std()
-            induc_list += [np.linspace(0, scale, num_induc)[order_arr][..., None]]
-            kernel_dicts += [
-                {
-                    "type": "SE",
-                    "in_dims": 1,
-                    "var": ones,
-                    "len": scale * np.ones((out_dims, 1)),
-                }
-            ]
-
-        elif comp == "x":
+        if comp == "x":
             left_x = covariates["x"].min()
             right_x = covariates["x"].max()
             induc_list += [np.linspace(left_x, right_x, num_induc)[order_arr][..., None]]

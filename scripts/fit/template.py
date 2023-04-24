@@ -23,7 +23,7 @@ import gaussneuro as lib
 from gaussneuro.observations.base import Observations
 from gaussneuro.observations.svgp import (
     ModulatedFactorized,
-    ModulatedRenewal,
+    #ModulatedRenewal,
     RateRescaledRenewal,
 )
 from gaussneuro.observations.bnpp import NonparametricPointProcess
@@ -297,30 +297,7 @@ def build_kernel(
 ### observation models ###
 def build_spikefilters(rng, obs_dims, filter_type, array_type):
     """
-    Create the spike coupling object.
-
-    if spkcoupling_mode[:2] == 'gp':
-        l0, l_b0, beta0, l_mean0, num_induc = filter_props
-        if spkcoupling_mode[2:6] == 'full':
-            D = obs_dims*obs_dims
-        else:
-            D = obs_dims
-        l_t = l0*np.ones((1, D))
-        l_b = l_b0*np.ones((1, D))
-        beta = beta0*np.ones((1, D))
-        filter_kernel = [('DSE', 'euclid', l_t, l_b, beta)]
-        mean_func = nppl.likelihoods.filters.decaying_exponential(D, 0., l_mean0)
-        filter_data = (hist_len, filter_kernel)
-
-        #    if filter_data is not None: # add filter time dimension
-        filter_len, filter_kernel = filter_data
-        max_time = filter_len*tbin
-        ind_list = [np.linspace(0, max_time, num_induc)] + ind_list
-        temp = []
-        for k in kernel_tuples_:
-            temp.append(k[:1] + filter_kernel + k[1:])
-        kernel_tuples_ = temp
-
+    Create the spike coupling object
     """
     if filter_type == "":
         return None
@@ -328,11 +305,14 @@ def build_spikefilters(rng, obs_dims, filter_type, array_type):
     filter_length = int(filter_type.split("H")[-1])
 
     if filter_type_comps[0] == "sigmoid":
-        alpha = np.ones((obs_dims, 1))
-        beta = np.ones((obs_dims, 1))
-        tau = 10 * np.ones((obs_dims, 1))
+        strs = filter_type_comps[1:4]
+        alpha, beta, tau = int(strs[0]), float(strs[1]), float(strs[2])
+        
+        alpha = alpha * np.ones((obs_dims, 1))
+        beta = beta * np.ones((obs_dims, 1))
+        tau = tau * np.ones((obs_dims, 1))
 
-        flt = lib.filters.FIR.SigmoidRefractory(
+        flt = lib.filters.SigmoidRefractory(
             alpha,
             beta,
             tau,
@@ -341,26 +321,28 @@ def build_spikefilters(rng, obs_dims, filter_type, array_type):
         )
 
     elif filter_type_comps[0] == "rcb":
-        strs = filter_type_comps[1:5]
-        B, L, a, c = int(strs[0]), float(strs[1]), float(strs[2]), float(strs[3])
+        strs = filter_type_comps[1:6]
+        B, phi_lower, phi_upper, a, c = (
+            int(strs[0]), float(strs[1]), float(strs[2]), float(strs[3]), float(strs[4])
+        )
 
         ini_var = 1.0
-        if filter_type_comps[5] == "full":
+        if filter_type_comps[6] == "full":
             a = a * np.ones((obs_dims, obs_dims))
             c = c * np.ones((obs_dims, obs_dims))
-            phi_h = np.broadcast_to(np.linspace(0.0, L, B), (B, obs_dims, obs_dims))
+            phi_h = np.broadcast_to(np.linspace(phi_lower, phi_upper, B), (B, obs_dims, obs_dims))
             w_h = np.sqrt(ini_var) * rng.normal(size=(B, obs_dims, obs_dims))
 
-        elif filter_type_comps[5] == "self":
+        elif filter_type_comps[6] == "self":
             a = a * np.ones((obs_dims, 1))
             c = c * np.ones((obs_dims, 1))
-            phi_h = np.linspace(0.0, L, B)[:, None, None].repeat(obs_dims, axis=1)
+            phi_h = np.linspace(phi_lower, phi_upper, B)[:, None, None].repeat(obs_dims, axis=1)
             w_h = (np.sqrt(ini_var) * rng.normal(size=(B, obs_dims)))[..., None]
 
         else:
             raise ValueError
 
-        flt = lib.filters.FIR.RaisedCosineBumps(
+        flt = lib.filters.RaisedCosineBumps(
             a,
             c,
             w_h,
@@ -369,52 +351,46 @@ def build_spikefilters(rng, obs_dims, filter_type, array_type):
             array_type, 
         )
 
-#     elif filter_type_comps[0] == "svgp":
-#         num_induc = int(filter_type_comps[1])
+    elif filter_type_comps[0] == "svgp":
+        strs = filter_type_comps[1:4]
+        num_induc, a_r, tau_r = (
+            int(strs[0]), float(strs[1]), float(strs[2])
+        )
 
-#         if filter_type_comps[2] == "full":
-#             D = obs_dims * obs_dims
-#             out_dims = obs_dims
+        if filter_type_comps[4] == "full":
+            D = obs_dims ** 2
+            a_r = -a_r * np.ones((D, D))
+            tau_r = tau_r * np.ones((D, D))
 
-#         elif filter_type_comps[2] == "self":
-#             D = obs_dims
-#             out_dims = 1
+        elif filter_type_comps[4] == "self":
+            D = obs_dims
+            a_r = -a_r * np.ones((D, 1))
+            tau_r = tau_r * np.ones((D, 1))
+            
+        else:
+            raise ValueError
 
-#         else:
-#             raise ValueError
+        # qSVGP inducing points
+        induc_locs = np.linspace(0, filter_length, num_induc)[None, :, None].repeat(D, axis=0)
+        u_mu = 0.0 * rng.normal(size=(D, num_induc, 1))
+        u_Lcov = 1.0 * np.eye(num_induc)[None, ...].repeat(D, axis=0)
 
-#         v = 100 * tbin * torch.ones(1, D)
-#         l = 100.0 * tbin * torch.ones((1, D))
-#         l_b = 100.0 * tbin * torch.ones((1, D))
-#         beta = 1.0 * torch.ones((1, D))
+        # kernel
+        len_fx = filter_length / 4. * np.ones((D, 1))  # GP lengthscale
+        var_f = 1.0 * np.ones(D)  # kernel variance
+        
+        kern = lib.GP.kernels.DecayingSquaredExponential(
+            D, variance=var_f, lengthscale=len_fx, 
+            beta=var_f, lengthscale_beta=1.5*len_fx, array_type=array_type)
+        gp = lib.GP.sparse.qSVGP(
+            kern, induc_locs, u_mu, u_Lcov, RFF_num_feats=0, whitened=True)
 
-#         mean_func = nppl.kernels.means.decaying_exponential(D, 0.0, 100.0 * tbin)
-
-#         Xu = torch.linspace(0, hist_len * tbin, num_induc)[None, :, None].repeat(
-#             D, 1, 1
-#         )
-
-#         krn2 = lib.GP.kernels.DecayingSquaredExponential(
-#             input_dims=1,
-#             lengthscale=l,
-#             lengthscale_beta=l_b,
-#             beta=beta,
-#             track_dims=[0],
-#             f="exp",
-#             tensor_type=tensor_type,
-#         )
-#         kernelobj = lib.GP.kernel.Product(krn1, krn2)
-#         inducing_points = jnp.array(Xu)
-
-#         gp = lib.GP.sparse.qSVGP(
-#             1,
-#             D,
-#             kernelobj,
-#             inducing_points=inducing_points,
-#             whitened=True,
-#         )
-
-#         flt = lib.filters.GaussianProcess(out_dims, obs_dims, hist_len + 1, tbin, gp)
+        flt = lib.filters.GaussianProcess(
+            gp, 
+            a_r,
+            tau_r, 
+            filter_length,
+        )
 
     else:
         raise ValueError
@@ -1047,7 +1023,7 @@ def fit_and_save(parser_args, dataset_dict, observed_kernel_dict_induc_list, sav
         dataset_dict, config
     )
     obs_covs_dims = covariates.shape[-1]
-
+    
     tot_ts = len(timestamps)
     dataloader = BatchedTimeSeries(
         timestamps, covariates, ISIs, observations, config.batch_size, filter_length

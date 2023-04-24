@@ -148,7 +148,7 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
         "speed": s_t,
         "x": x_t,
         "y": y_t,
-        "time": timestamps,
+        "time": timestamps - timestamps[0],
     }
 
     ISIs = ISIs[subselect]

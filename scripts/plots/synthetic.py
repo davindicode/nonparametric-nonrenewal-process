@@ -5,9 +5,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats as scstats
 
-import torch
-
-from neuroprob import utils
+sys.path.append("../../../GaussNeuro")
+from gaussneuro import utils
 
 
 

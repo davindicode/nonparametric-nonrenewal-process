@@ -117,7 +117,7 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
     # covariates
     x_t = data["x_t"][subselect]
     y_t = data["y_t"][subselect]
-    theta_t = data["hd_t"][subselect]
+    theta_t = data["theta_t"][subselect]
     hd_t = data["hd_t"][subselect]
 
     # compute velocities
@@ -138,7 +138,7 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
         "speed": s_t,
         "x": x_t,
         "y": y_t,
-        "time": timestamps,
+        "time": timestamps - timestamps[0],
     }
 
     ISIs = ISIs[subselect]

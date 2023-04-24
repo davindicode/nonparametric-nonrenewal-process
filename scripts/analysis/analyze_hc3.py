@@ -5,7 +5,7 @@ import sys
 
 sys.path.append("../fit/")
 import template
-import th1
+import hc3
 
 sys.path.append("../../../GaussNeuro")
 import gaussneuro as lib
@@ -43,12 +43,14 @@ def regression(
         )
         config = results["config"]
         obs_type = config.observations.split('-')[0]
-        jitter = config.jitter
+        jitter = 1e-6
 
         # data
         timestamps, covs_t, ISIs, observations, filter_length = template.select_inputs(
             dataset_dict, config)
         
+        xs = covs_t  # (ts, x_dims)
+        deltas = ISIs[..., :ISI_orders] if ISIs is not None else ISIs
         ys = observations[:, filter_length:]
         ys_filt = observations[:, :]
         
@@ -57,38 +59,28 @@ def regression(
         obs_covs_dims = covs_t.shape[-1]
         
         model = template.build_model(
-            config, dataset_dict, th1.observed_kernel_dict_induc_list, rng, timestamps, obs_covs_dims)
+            config, dataset_dict, hc3.observed_kernel_dict_induc_list, rng, timestamps, obs_covs_dims)
         model = eqx.tree_deserialise_leaves(checkpoint_dir + name + ".eqx", model)
         
         # rate/time rescaling
         max_intervals = int(ys.sum(-1).max())
-        if obs_type == 'factorized_gp':
-            post_mean_rho = model.obs_model.posterior_mean(
-                prng_state, covs_t, ys_filt, jitter, sel_outdims)
+        post_mean_rho = model.obs_model.evaluate_posterior_mean(
+            prng_state, xs, ys_filt, jitter, sel_outdims)
+        
+        if obs_type == 'factorized_gp' or obs_type == 'nonparam_pp_gp':
             rescaled_intervals = lib.utils.spikes.time_rescale(
                 ys.T, post_mean_rho.T, model.obs_model.likelihood.dt, max_intervals=max_intervals)
 
             pp = lib.likelihoods.Exponential(
                 model.obs_model.likelihood.obs_dims, model.obs_model.likelihood.dt)
+
             qs = np.array(pp.cum_density(rescaled_intervals))[:, 1:]
             
         elif obs_type == 'rate_renewal_gp':
-            post_mean_rho = model.obs_model.posterior_mean(
-                prng_state, covs_t, ys_filt, jitter, sel_outdims)
             rescaled_intervals = lib.utils.spikes.time_rescale(
                 ys.T, post_mean_rho.T, model.obs_model.renewal.dt, max_intervals=max_intervals)
 
             qs = np.array(jax.vmap(model.obs_model.renewal.cum_density)(rescaled_intervals.T).T)
-            
-        elif obs_type == 'nonparam_pp_gp':
-            post_mean_rho = model.obs_model.posterior_mean(
-                prng_state, covs_t, ISIs, jitter, sel_outdims)
-            rescaled_intervals = lib.utils.spikes.time_rescale(
-                ys.T, post_mean_rho.T, model.obs_model.likelihood.dt, max_intervals=max_intervals)
-
-            pp = lib.likelihoods.Exponential(
-                model.obs_model.likelihood.obs_dims, model.obs_model.likelihood.dt)
-            qs = np.array(pp.cum_density(rescaled_intervals))[:, 1:]
             
         else:
             raise ValueError('Invalid observation model type')
@@ -100,7 +92,6 @@ def regression(
                 sort_cdf, T_KS, sign_KS, p_KS = None, None, None, None
             else:
                 sort_cdf, T_KS, sign_KS, p_KS = lib.utils.stats.KS_test(qs[n, :ul[0]], alpha=0.05)
-                
             sort_cdfs.append(sort_cdf)
             T_KSs.append(T_KS)
             sign_KSs.append(sign_KS)
@@ -109,7 +100,7 @@ def regression(
         # train likelihoods
         timesteps = len(timestamps)
         train_ell, _ = model.obs_model.variational_expectation(
-            prng_state, jitter, covs_t[None, None], ys, ys_filt, False, timesteps, lik_int_method, False)
+            prng_state, jitter, xs[None, None], ys, ys_filt, False, timesteps, lik_int_method, False)
 
         # test data
         test_lpds, pred_log_intensities, test_spikes = [], [], []
@@ -118,58 +109,55 @@ def regression(
             timestamps, covs_t, ISIs, observations, filter_length = template.select_inputs(
                 test_dataset_dict, config)
             
+            test_xs = covs_t
+            test_deltas = ISIs[:, st:, :ISI_orders] if ISIs is not None else ISIs
             test_ys = observations[:, filter_length:]
             test_ys_filt = observations
 
             # test likelihoods
             test_timesteps = len(timestamps)
-            test_xs = covs_t[None, None]  # (1, 1, ts, x_dims)
             test_lpd, _ = model.obs_model.variational_expectation(
-                prng_state, jitter, test_xs, test_ys, test_ys_filt, 
+                prng_state, jitter, test_xs[None, None], test_ys, test_ys_filt, 
                 False, test_timesteps, lik_int_method, False, 
             )
             test_lpds.append(test_lpd)
             
             # predicted intensities and posterior sampling
             num_samps = 10
-            pred_window, pred_window_filt = np.arange(10000), np.arange(10000 + filter_length)
-            x_eval = covs_t[None, None, pred_window].repeat(num_samps, axis=0)
-            ini_Y = test_ys_filt[None, :, pred_window_filt[:filter_length]].repeat(num_samps, axis=0)
-            ini_t_tilde = jnp.zeros((num_samps, neurons))
-            
             if obs_type == 'factorized_gp':
                 pred_log_intens, _, _ = model.obs_model.filtered_gp_posterior(
-                    prng_state, covs_t[None, None, pred_window], 
-                    ys_filt=test_ys_filt[None, :, pred_window_filt], 
+                    prng_state, test_xs[None, None], ys_filt=test_ys_filt, 
                     mean_only=True, diag_cov=True, 
                     compute_KL=False, jitter=jitter, sel_outdims=None
                 )
                 
+                x_eval = test_xs[None, None].repeat(num_samps, axis=0)
+                ini_Y = test_ys_filt[None, :, :filter_length].repeat(num_samps, axis=0)
                 sample_ys, log_rho_ts = model.obs_model.sample_posterior(
                     prng_state, x_eval, ini_Y=ini_Y, jitter=jitter)
 
-#             elif obs_type == 'rate_renewal_gp':
-#                 pred_log_intens = model.obs_model.log_conditional_intensity(
-#                     prng_state, ini_t_tilde, covs_t[None, None, pred_window], 
-#                     test_ys[None, :, pred_window], 
-#                     test_ys_filt[None, :, pred_window_filt], 
-#                     jitter, unroll=10
-#                 )
+            elif obs_type == 'rate_renewal_gp':
+                ini_t_tilde = jnp.zeros(neurons)
+                pred_log_intens = model.obs_model.sample_log_conditional_intensity(
+                    prng_state, ini_t_tilde, test_xs[None, None], test_ys, test_ys_filt, jitter, unroll=10
+                )
                 
-#                 sample_ys, log_rho_ts = model.obs_model.sample_posterior(
-#                     prng_state, x_eval, ini_spikes=ini_Y, ini_t_tilde=ini_t_tilde, jitter=jitter)
+                ini_t_tilde = jnp.zeros((num_samps, neurons))
+                sample_ys, log_rho_ts = model.obs_model.sample_posterior(
+                    prng_state, x_eval, ini_spikes=None, ini_t_tilde=ini_t_tilde, jitter=jitter)
 
-#             elif obs_type == 'nonparam_pp_gp':
-#                 pred_log_intens, _ = model.obs_model.log_conditional_intensity(
-#                     covs_t[None, None, pred_window], test_deltas[None, pred_window], jitter, sel_outdims)
+            elif obs_type == 'nonparam_pp_gp':
+                pred_log_intens, _ = model.obs_model.evaluate_log_conditional_intensity(
+                    test_xs[None, None], test_deltas[None], jitter, sel_outdims)
                 
-#                 sample_ys, log_rho_ts = model.obs_model.sample_posterior(
-#                     prng_state, x_eval, ini_t_since=ini_t_since, jitter=jitter)
+                ini_t_tilde = jnp.zeros((num_samps, neurons))
+                y_samples, log_rho_ts = model.obs_model.sample_posterior(
+                    prng_state, x_eval, ini_t_since=ini_t_since, jitter=jitter)
                 
-#             pred_log_intensities.append(pred_log_intens)
-#             test_spikes.append(test_ys)
-#             sample_spikes.append(sample_ys)
-#             sample_log_rhos.append(log_rho_ts)
+            pred_log_intensities.append(pred_log_intens)
+            test_spikes.append(test_ys)
+            sample_spikes.append(sample_ys)
+            sample_log_rhos.append(log_rho_ts)
 
         # export
         results = {
@@ -270,12 +258,12 @@ def main():
     ### parser ###
     parser = argparse.ArgumentParser(
         usage="%(prog)s [options]",
-        description="Analysis of th1 regression models.",
+        description="Analysis of hc3 regression models.",
     )
 
     parser.add_argument("--seed", default=123, type=int)
     parser.add_argument("--savedir", default="../saves/", type=str)
-    parser.add_argument("--datadir", default="../../data/th1/", type=str)
+    parser.add_argument("--datadir", default="../../data/hc3/", type=str)
     parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
 
     parser.add_argument("--batch_size", default=10000, type=int)
@@ -304,14 +292,15 @@ def main():
     prng_state = jr.PRNGKey(args.seed)
     batch_size = args.batch_size
 
+    
     ### names ###
     reg_config_names = [
-        'Mouse28_140313_wakeISI5sel0.0to0.5_PP-log__factorized_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_PP-log_rcb-8-3.-1.-1.-self-H500_factorized_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_gamma-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_isi4__nonparam_pp_gp-32-matern32-1000-12._X[hd]_Z[]', 
+        'ec014.29_ec014.468_L-to-RISI5sel0.0to0.5_PP-log__factorized_gp-32-1000_X[x-theta]_Z[]', 
+        'ec014.29_ec014.468_L-to-RISI5sel0.0to0.5_PP-log_rcb-8-3.-1.-1.-self-H500_factorized_gp-32-1000_X[x-theta]_Z[]', 
+        'ec014.29_ec014.468_L-to-RISI5sel0.0to0.5_gamma-log__rate_renewal_gp-32-1000_X[x-theta]_Z[]', 
+        'ec014.29_ec014.468_L-to-RISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-32-1000_X[x-theta]_Z[]', 
+        'ec014.29_ec014.468_L-to-RISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-32-1000_X[x-theta]_Z[]', 
+        'ec014.29_ec014.468_L-to-RISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern32-1000-12._X[x-theta]_Z[]', 
     ]
 
     tuning_model_name = (
@@ -319,11 +308,11 @@ def main():
     )
 
     ### load dataset ###
-    session_name = 'Mouse28_140313_wake'
+    session_name = 'ec014.29_ec014.468_L-to-R'
     max_ISI_order = 4
 
     select_fracs = [0.0, 0.5]
-    dataset_dict = th1.spikes_dataset(session_name, data_path, max_ISI_order, select_fracs)
+    dataset_dict = hc3.spikes_dataset(session_name, data_path, max_ISI_order, select_fracs)
 
     test_select_fracs = [
         [0.5, 0.6], 
@@ -333,7 +322,7 @@ def main():
         [0.9, 1.0], 
     ]
     test_dataset_dicts = [
-        th1.spikes_dataset(session_name, data_path, max_ISI_order, tf) for tf in test_select_fracs
+        hc3.spikes_dataset(session_name, data_path, max_ISI_order, tf) for tf in test_select_fracs
     ]
 
     ### analysis ###
@@ -346,7 +335,7 @@ def main():
         "regression": regression_dict,
     }
 
-    pickle.dump(data_run, open(save_dir + "th1_results.p", "wb"))
+    pickle.dump(data_run, open(save_dir + "hc3_results.p", "wb"))
 
 
 if __name__ == "__main__":

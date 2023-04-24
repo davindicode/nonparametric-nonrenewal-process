@@ -73,10 +73,13 @@ python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.
 
 
 # spike history filters
-python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_L-to-R --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-theta --observations factorized_gp-32-1000 --filter_type rcb-8-3.-1.-1.-self-H500 --freeze_params obs_model.spikefilter.a obs_model.spikefilter.log_c --likelihood PP-log --device 0
+python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_L-to-R --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-theta --observations factorized_gp-32-1000 --filter_type rcb-8-17.-36.-6.-30.-self-H500 --freeze_params obs_model.spikefilter.a obs_model.spikefilter.log_c obs_model.spikefilter.phi --likelihood PP-log --device 0
+
+python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_L-to-R --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-theta --observations factorized_gp-32-1000 --filter_type svgp-10-3.-10.-self-H500 --likelihood PP-log --device 0
 
 
-python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_L-to-R --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-theta-speed --observations factorized_gp-40-1000 --filter_type rcb-8-3.-1.-1.-self-H500 --freeze_params obs_model.spikefilter.a obs_model.spikefilter.log_c --likelihood PP-log --device 0
+
+python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_L-to-R --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-theta-speed --observations factorized_gp-40-1000 --filter_type svgp-10-3.-10.-self-H500 --freeze_params obs_model.spikefilter.a obs_model.spikefilter.log_c --likelihood PP-log --device 0
 
 
 # BNPP
@@ -103,4 +106,4 @@ python3 synthetic.py spikes --data_path ../../data/synthetic/ --session_name syn
 
 
 
-python3 synthetic.py spikes --data_path ../../data/synthetic/ --session_name syn_data_seed123 --select_frac 0.0 1.0 --array_type float32 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.998 --lr_end 1e-4 --margin_epochs 100 --loss_margin -1 --batch_size 10000 --observed_covs x-y-theta --observations nonparam_pp_gp-32-matern32-300-12. --likelihood isi4 --device 0
+python3 synthetic.py spikes --data_path ../../data/synthetic/ --session_name syn_data_seed123 --select_frac 0.0 1.0 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.998 --lr_end 1e-4 --margin_epochs 100 --loss_margin -1 --batch_size 10000 --observed_covs x-y --observations nonparam_pp_gp-16-matern32-1000-1. --likelihood isi4 --device 0

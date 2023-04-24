@@ -3,9 +3,9 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.special as sps
-import torch
 
-from neuroprob import utils
+sys.path.append("../../../GaussNeuro")
+from gaussneuro import utils
 
 
 def logo(fig):
