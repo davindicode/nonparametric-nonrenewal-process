@@ -10,7 +10,8 @@ import hc3
 sys.path.append("../../../GaussNeuro")
 import gaussneuro as lib
 
-import equinox as eqx
+import utils
+
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -25,8 +26,6 @@ def regression(
 ):
     tbin = dataset_dict["properties"]["tbin"]
     neurons = dataset_dict["properties"]["neurons"]
-    #pick_neurons = list(range(neurons))
-    sel_outdims = None
     
     lik_int_method = {
         "type": "GH", 
@@ -223,7 +222,7 @@ def tuning(
 
     mean_ISI, var_ISI, CV_ISI = jax.vmap(m, (0, None))(locs_eval, sel_outdims)
 
-    # conditional ISI distribution
+    ### conditional ISI distribution ###
     evalsteps = 120
     covs_dims = covs_t.shape[-1]
 

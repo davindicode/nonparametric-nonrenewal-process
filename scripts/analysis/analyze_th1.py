@@ -10,7 +10,8 @@ import th1
 sys.path.append("../../../GaussNeuro")
 import gaussneuro as lib
 
-import equinox as eqx
+import utils
+
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -25,23 +26,25 @@ def regression(
 ):
     tbin = dataset_dict["properties"]["tbin"]
     neurons = dataset_dict["properties"]["neurons"]
-    #pick_neurons = list(range(neurons))
-    sel_outdims = None
     
     lik_int_method = {
         "type": "GH", 
         "approx_pts": 50, 
     }
 
+    num_samps = 1
+    pred_start, pred_end = 0, 10000
     regression_dict = {}
-    for name in reg_config_names:
-        print('Analyzing regression for {}...'.format(name))
+    for model_name in reg_config_names:
+        print('Analyzing regression for {}...'.format(model_name))
         
         # config
-        results = pickle.load(
-            open(checkpoint_dir + name + ".p", "rb")
+        model, config = utils.load_model_and_config(
+            checkpoint_dir + model_name, 
+            dataset_dict, 
+            th1.observed_kernel_dict_induc_list, 
+            rng, 
         )
-        config = results["config"]
         obs_type = config.observations.split('-')[0]
         jitter = config.jitter
 
@@ -51,65 +54,15 @@ def regression(
         
         ys = observations[:, filter_length:]
         ys_filt = observations[:, :]
+        data = (timestamps, covs_t, ISIs, ys, ys_filt, filter_length)
         
-        # model
-        jax.config.update("jax_enable_x64", config.double_arrays)
-        obs_covs_dims = covs_t.shape[-1]
+        # train likelihoods and rate/time rescaling
+        train_ell = utils.likelihood_metric(
+            prng_state, data, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=False)
+        prng_state, _ = jr.split(prng_state)
         
-        model = template.build_model(
-            config, dataset_dict, th1.observed_kernel_dict_induc_list, rng, timestamps, obs_covs_dims)
-        model = eqx.tree_deserialise_leaves(checkpoint_dir + name + ".eqx", model)
-        
-        # rate/time rescaling
-        max_intervals = int(ys.sum(-1).max())
-        if obs_type == 'factorized_gp':
-            post_mean_rho = model.obs_model.posterior_mean(
-                prng_state, covs_t, ys_filt, jitter, sel_outdims)
-            rescaled_intervals = lib.utils.spikes.time_rescale(
-                ys.T, post_mean_rho.T, model.obs_model.likelihood.dt, max_intervals=max_intervals)
-
-            pp = lib.likelihoods.Exponential(
-                model.obs_model.likelihood.obs_dims, model.obs_model.likelihood.dt)
-            qs = np.array(pp.cum_density(rescaled_intervals))[:, 1:]
-            
-        elif obs_type == 'rate_renewal_gp':
-            post_mean_rho = model.obs_model.posterior_mean(
-                prng_state, covs_t, ys_filt, jitter, sel_outdims)
-            rescaled_intervals = lib.utils.spikes.time_rescale(
-                ys.T, post_mean_rho.T, model.obs_model.renewal.dt, max_intervals=max_intervals)
-
-            qs = np.array(jax.vmap(model.obs_model.renewal.cum_density)(rescaled_intervals.T).T)
-            
-        elif obs_type == 'nonparam_pp_gp':
-            post_mean_rho = model.obs_model.posterior_mean(
-                prng_state, covs_t, ISIs, jitter, sel_outdims)
-            rescaled_intervals = lib.utils.spikes.time_rescale(
-                ys.T, post_mean_rho.T, model.obs_model.likelihood.dt, max_intervals=max_intervals)
-
-            pp = lib.likelihoods.Exponential(
-                model.obs_model.likelihood.obs_dims, model.obs_model.likelihood.dt)
-            qs = np.array(pp.cum_density(rescaled_intervals))[:, 1:]
-            
-        else:
-            raise ValueError('Invalid observation model type')
-            
-        sort_cdfs, T_KSs, sign_KSs, p_KSs = [], [], [], []
-        for n in range(qs.shape[0]):
-            ul = np.where(qs[n, :] != qs[n, :])[0]
-            if len(ul) == 0:
-                sort_cdf, T_KS, sign_KS, p_KS = None, None, None, None
-            else:
-                sort_cdf, T_KS, sign_KS, p_KS = lib.utils.stats.KS_test(qs[n, :ul[0]], alpha=0.05)
-                
-            sort_cdfs.append(sort_cdf)
-            T_KSs.append(T_KS)
-            sign_KSs.append(sign_KS)
-            p_KSs.append(p_KS)
-
-        # train likelihoods
-        timesteps = len(timestamps)
-        train_ell, _ = model.obs_model.variational_expectation(
-            prng_state, jitter, covs_t[None, None], ys, ys_filt, False, timesteps, lik_int_method, False)
+        sort_cdfs, T_KSs, sign_KSs, p_KSs = utils.time_rescaling_statistics(
+            data, model.obs_model, obs_type, jitter, list(range(neurons)))
 
         # test data
         test_lpds, pred_log_intensities, test_spikes = [], [], []
@@ -120,56 +73,39 @@ def regression(
             
             test_ys = observations[:, filter_length:]
             test_ys_filt = observations
-
-            # test likelihoods
-            test_timesteps = len(timestamps)
-            test_xs = covs_t[None, None]  # (1, 1, ts, x_dims)
-            test_lpd, _ = model.obs_model.variational_expectation(
-                prng_state, jitter, test_xs, test_ys, test_ys_filt, 
-                False, test_timesteps, lik_int_method, False, 
-            )
+            data = (timestamps, covs_t, ISIs, test_ys, test_ys_filt, filter_length)
+            
+            test_lpd = utils.likelihood_metric(
+                prng_state, data, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=False)
+            prng_state, _ = jr.split(prng_state)
             test_lpds.append(test_lpd)
             
-            # predicted intensities and posterior sampling
-            num_samps = 10
-            pred_window, pred_window_filt = np.arange(10000), np.arange(10000 + filter_length)
-            x_eval = covs_t[None, None, pred_window].repeat(num_samps, axis=0)
-            ini_Y = test_ys_filt[None, :, pred_window_filt[:filter_length]].repeat(num_samps, axis=0)
-            ini_t_tilde = jnp.zeros((num_samps, neurons))
+            pred_log_intens = utils.conditional_intensity(
+                prng_state, 
+                data, 
+                model.obs_model, 
+                obs_type, 
+                pred_start, 
+                pred_end, 
+                jitter, 
+                list(range(neurons)), 
+                sampling=False, 
+            )
+            pred_log_intensities.append(pred_log_intens)
+            test_spikes.append(test_ys)
             
-            if obs_type == 'factorized_gp':
-                pred_log_intens, _, _ = model.obs_model.filtered_gp_posterior(
-                    prng_state, covs_t[None, None, pred_window], 
-                    ys_filt=test_ys_filt[None, :, pred_window_filt], 
-                    mean_only=True, diag_cov=True, 
-                    compute_KL=False, jitter=jitter, sel_outdims=None
-                )
-                
-                sample_ys, log_rho_ts = model.obs_model.sample_posterior(
-                    prng_state, x_eval, ini_Y=ini_Y, jitter=jitter)
-
-#             elif obs_type == 'rate_renewal_gp':
-#                 pred_log_intens = model.obs_model.log_conditional_intensity(
-#                     prng_state, ini_t_tilde, covs_t[None, None, pred_window], 
-#                     test_ys[None, :, pred_window], 
-#                     test_ys_filt[None, :, pred_window_filt], 
-#                     jitter, unroll=10
-#                 )
-                
-#                 sample_ys, log_rho_ts = model.obs_model.sample_posterior(
-#                     prng_state, x_eval, ini_spikes=ini_Y, ini_t_tilde=ini_t_tilde, jitter=jitter)
-
-#             elif obs_type == 'nonparam_pp_gp':
-#                 pred_log_intens, _ = model.obs_model.log_conditional_intensity(
-#                     covs_t[None, None, pred_window], test_deltas[None, pred_window], jitter, sel_outdims)
-                
-#                 sample_ys, log_rho_ts = model.obs_model.sample_posterior(
-#                     prng_state, x_eval, ini_t_since=ini_t_since, jitter=jitter)
-                
-#             pred_log_intensities.append(pred_log_intens)
-#             test_spikes.append(test_ys)
-#             sample_spikes.append(sample_ys)
-#             sample_log_rhos.append(log_rho_ts)
+            sample_ys, log_rho_ts = utils.sample_activity(
+                prng_state, 
+                num_samps, 
+                data, 
+                model.obs_model, 
+                obs_type, 
+                pred_start, 
+                pred_end, 
+                jitter, 
+            )
+            sample_spikes.append(sample_ys)
+            sample_log_rhos.append(log_rho_ts)
 
         # export
         results = {
@@ -177,92 +113,192 @@ def regression(
             "test_lpds": test_lpds,
             "pred_log_intensities": pred_log_intensities, 
             "test_spikes": test_spikes, 
-            "T_KS": T_KS,
-            "significance_KS": sign_KS,
-            "p_KS": p_KS,
+            "KS_quantiles": sort_cdfs, 
+            "KS_statistic": T_KSs,
+            "KS_significance": sign_KSs,
+            "KS_p_value": p_KSs,
         }
-        regression_dict[name] = results
+        regression_dict[model_name] = results
 
     return regression_dict
     
     
     
 def tuning(
-    checkpoint_dir, reg_config_names, subset_config_names, dataset_dict, prng_state, batch_size
+    checkpoint_dir, model_name, dataset_dict, rng, prng_state, batch_size
 ):
     """
     Compute tuning curves of BNPP model
     """
-    
-    ### evaluation ###
-    locs_eval = jnp.linspace(0, 2*np.pi, 30)[:, None]
+    tbin = dataset_dict["properties"]["tbin"]
+    neurons = dataset_dict["properties"]["neurons"]
 
-    n = 0
-    sel_outdims = jnp.array([n])
-    isi_cond = jnp.ones((len(sel_outdims), ISI_orders-1))
+    print('Analyzing tuning for {}...'.format(model_name))
 
-    def m(x_cond, n):
-        mean_ISI = model.obs_model.sample_conditional_ISI_expectation(
-            prng_state,
-            num_samps,
-            lambda x: x,
-            isi_cond, 
-            x_cond,
-            sel_outdims, 
-            int_eval_pts=1000,
-            f_num_quad_pts=100,
-            isi_num_quad_pts=100, 
-            prior=False,
-            jitter=jitter, 
-        )
-
-        secmom_ISI = model.obs_model.sample_conditional_ISI_expectation(
-            prng_state,
-            num_samps,
-            lambda x: x**2,
-            isi_cond, 
-            x_cond,
-            sel_outdims, 
-            int_eval_pts=1000,
-            f_num_quad_pts=100,
-            isi_num_quad_pts=100, 
-            prior=False,
-            jitter=jitter, 
-        )
-
-        var_ISI = (secmom_ISI - mean_ISI**2)
-        CV_ISI = jnp.sqrt(var_ISI) / (mean_ISI + 1e-12)
-
-    mean_ISI, var_ISI, CV_ISI = jax.vmap(m, (0, None))(locs_eval, sel_outdims)
-
-    # conditional ISI distribution
-    evalsteps = 120
-    covs_dims = covs_t.shape[-1]
-
-    cisi_t_eval = jnp.linspace(0.0, 5., evalsteps)
-    isi_cond = jnp.ones((neurons, ISI_orders-1))
-
-    x_cond = 1.*jnp.ones(covs_dims)
-    ISI_density = model.obs_model.sample_conditional_ISI(
-        prng_state,
-        num_samps,
-        cisi_t_eval,
-        isi_cond, 
-        x_cond,
-        sel_outdims=None, 
-        int_eval_pts=1000,
-        num_quad_pts=100,
-        prior=False,
-        jitter=jitter, 
+    # config
+    model, config = utils.load_model_and_config(
+        checkpoint_dir + model_name, 
+        dataset_dict, 
+        th1.observed_kernel_dict_induc_list, 
+        rng, 
     )
-
+    obs_type = config.observations.split('-')[0]
+    jitter = config.jitter
+    ISI_order = int(config.likelihood[3:])
     
+    # data
+    x = dataset_dict['covariates']['x']
+    y = dataset_dict['covariates']['y']
+    ISIs = dataset_dict['ISIs']
+    
+    ### tuning ###
+    num_samps = 30
+    
+    pos_x_locs = np.meshgrid(
+        np.linspace(x.min(), x.max(), 4), 
+        np.linspace(y.min(), y.max(), 4), 
+    )
+    pos_x_locs = np.stack(pos_x_locs, axis=-1)
+    or_shape = pos_x_locs.shape[:-1]
+    pos_x_locs = pos_x_locs.reshape(-1, covs_dims)  # (evals, x_dim)
+    eval_pts = pos_x_locs.shape[0]
+    
+    pos_isi_locs = np.ones((eval_pts, neurons, ISI_order-1))    
+    pos_mean_ISI, pos_CV_ISI = utils.compute_ISI_stats(
+        prng_state, 
+        num_samps, 
+        pos_x_locs, 
+        pos_isi_locs, 
+        model.obs_model, 
+        jitter, 
+        list(range(neurons)), 
+        int_eval_pts = 1000, 
+        num_quad_pts = 100, 
+        batch_size = 100, 
+    )
+    prng_state, _ = jr.split(prng_state)
+    
+    pos_x_locs = pos_x_locs.reshape(*or_shape, -1)
+    pos_isi_locs = pos_isi_locs.reshape(*or_shape, -1)
+    pos_mean_ISI = pos_mean_ISI.reshape(-1, *or_shape)
+    pos_CV_ISI = pos_CV_ISI.reshape(-1, *or_shape)
+    
+    ### conditional ISI distribution ###
+    evalsteps = 120
+    cisi_t_eval = jnp.linspace(0.0, 5., evalsteps)
+    
+    pts = 10
+    isi_conds = np.ones((pts, neurons, ISI_order-1))
+    x_conds = 1.*np.ones((pts, covs_dims))
+    
+    ISI_densities = []
+    for pn in range(pts):
+        
+        ISI_density = model.obs_model.sample_conditional_ISI(
+            prng_state,
+            num_samps,
+            cisi_t_eval,
+            jnp.array(isi_conds[pn]), 
+            jnp.array(x_conds[pn]),
+            sel_outdims=None, 
+            int_eval_pts=1000,
+            num_quad_pts=100,
+            prior=False,
+            jitter=jitter, 
+        )
+        prng_state, _ = jr.split(prng_state)
+        
+        ISI_densities.append(np.array(ISI_density))
+        
+    cisi_t_eval = np.array(cisi_t_eval)
+    ISI_densities = np.stack(ISI_densities, axis=0)
+    
+    # ISI kernel ARD
+    warp_tau = np.exp(model.obs_model.log_warp_tau)
+    len_tau = np.array(model.obs_model.gp.kernel.kernels[0].lengthscale[:, 0])
+    len_deltas = np.array(model.obs_model.gp.kernel.kernels[1].kernels[0].lengthscale[:, :ISI_order-1])
+    len_xs = np.array(model.obs_model.gp.kernel.kernels[1].kernels[0].lengthscale[:, -covs_dims:])
+    
+    # export
     tuning_dict = {
-        'mean_ISI': mean_ISI, 
-        'CV_ISI': CV_ISI, 
+        'pos_x_locs': pos_x_locs, 
+        'pos_isi_locs': pos_isi_locs, 
+        'pos_mean_ISI': pos_mean_ISI, 
+        'pos_CV_ISI': pos_CV_ISI, 
+        'ISI_t_eval': cisi_t_eval, 
+        'ISI_deltas_conds': isi_conds, 
+        'ISI_xs_conds': x_conds, 
+        'ISI_densities': ISI_densities, 
+        'warp_tau': warp_tau, 
+        'len_tau': len_tau, 
+        'len_deltas': len_deltas, 
+        'len_xs': len_xs, 
     }
     return tuning_dict
     
+
+    
+def variability(
+    checkpoint_dir, model_name, dataset_dict, rng, prng_state, batch_size
+):
+    tbin = dataset_dict["properties"]["tbin"]
+    neurons = dataset_dict["properties"]["neurons"]
+
+    print('Analyzing tuning for {}...'.format(model_name))
+
+    # config
+    model, config = utils.load_model_and_config(
+        checkpoint_dir + model_name, 
+        dataset_dict, 
+        th1.observed_kernel_dict_induc_list, 
+        rng, 
+    )
+    obs_type = config.observations.split('-')[0]
+    jitter = config.jitter
+    ISI_order = int(config.likelihood[3:])
+    
+    # data
+    timestamps, covs_t, ISIs, observations, filter_length = template.select_inputs(
+        dataset_dict, config)
+    
+    ### evaluation ###
+    num_samps = 30
+    dilation = 10
+    
+    x_locs = covs_t[::dilation, :]
+    isi_locs = ISIs[:, ::dilation, :]
+    eval_pts = x_locs.shape[0]
+    
+    isi_locs = np.ones((eval_pts, neurons, ISI_order-1))    
+    mean_ISI, CV_ISI = utils.compute_ISI_stats(
+        prng_state, 
+        num_samps, 
+        x_locs, 
+        isi_locs, 
+        model.obs_model, 
+        jitter, 
+        list(range(neurons)), 
+        int_eval_pts = 1000, 
+        num_quad_pts = 100, 
+        batch_size = 100, 
+    )  # (eval_pts, out_dims)
+    prng_state, _ = jr.split(prng_state)
+    
+    ### stats ###
+    X, Y = 1 / mean_ISI.T, CV_ISI.T
+    a, b = utils.linear_regression(X, Y)  # (out_dims, pts)
+    Y_fit = a[:, None] * X + b[:, None]
+    R2_lin = 1 - (Y - Y_fit).var(-1) / Y.var(-1)  # R^2 of fit (out_dims,)
+    
+    # export
+    variability_dict = {
+        'mean_ISI': mean_ISI, 
+        'CV_ISI': CV_ISI, 
+        'linear_slope': a, 
+        'linear_intercept': b, 
+        'linear_R2': R2_lin, 
+    }
+    return variability_dict
     
     
     
@@ -311,12 +347,10 @@ def main():
         'Mouse28_140313_wakeISI5sel0.0to0.5_gamma-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
         'Mouse28_140313_wakeISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
         'Mouse28_140313_wakeISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_isi4__nonparam_pp_gp-32-matern32-1000-12._X[hd]_Z[]', 
+        'Mouse28_140313_wakeISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-1000-12._X[hd]_Z[]', 
     ]
 
-    tuning_model_name = (
-        "th1_U-el-3_svgp-64_X[hd-omega-speed-x-y-time]_Z[]_40K11_0d0_10f-1"
-    )
+    tuning_model_name = reg_config_names[-1]
 
     ### load dataset ###
     session_name = 'Mouse28_140313_wake'

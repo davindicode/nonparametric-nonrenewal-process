@@ -10,6 +10,11 @@ from gaussneuro import utils
 
 
 
+
+# plot both mean and ISI tuning maps, and then show examples of individual conditional ISIs
+
+
+
 def ind_to_pair(ind, N):
     a = ind
     k = 1

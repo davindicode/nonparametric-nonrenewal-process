@@ -340,7 +340,7 @@ def build_spikefilters(rng, obs_dims, filter_type, array_type):
             w_h = (np.sqrt(ini_var) * rng.normal(size=(B, obs_dims)))[..., None]
 
         else:
-            raise ValueError
+            raise ValueError('Invalid filter coupling mode (self or full)')
 
         flt = lib.filters.RaisedCosineBumps(
             a,
@@ -368,7 +368,7 @@ def build_spikefilters(rng, obs_dims, filter_type, array_type):
             tau_r = tau_r * np.ones((D, 1))
             
         else:
-            raise ValueError
+            raise ValueError('Invalid filter coupling mode (self or full)')
 
         # qSVGP inducing points
         induc_locs = np.linspace(0, filter_length, num_induc)[None, :, None].repeat(D, axis=0)
@@ -393,7 +393,7 @@ def build_spikefilters(rng, obs_dims, filter_type, array_type):
         )
 
     else:
-        raise ValueError
+        raise ValueError('Invalid filter coupling type')
 
     return flt
 
@@ -657,7 +657,7 @@ def build_nonparametric(
         ss_kernel = lib.GP.kernels.Matern52(obs_dims, variance=var_t, lengthscale=len_t)
 
     else:
-        raise ValueError
+        raise ValueError('Invalid temporal kernel for nonparametric point process')
 
     isi_order = int(likelihood[3:])
     kernel, induc_locs = build_kernel(
@@ -898,7 +898,7 @@ def setup_observations(
 ### main functions ###
 def select_inputs(dataset_dict, config):
     """
-    Create the inputs to the model
+    Create the inputs to the model, all NumPy arrays
 
     Trim the spike train to match section of covariates
     """
@@ -1181,6 +1181,3 @@ def fit_and_save(parser_args, dataset_dict, observed_kernel_dict_induc_list, sav
             }
             with open(savefile + ".p", "wb") as f:
                 pickle.dump(savedata, f, pickle.HIGHEST_PROTOCOL)
-
-        # except (ValueError, RuntimeError) as e:
-        #    print(e)
