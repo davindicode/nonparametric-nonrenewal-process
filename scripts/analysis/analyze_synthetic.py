@@ -131,10 +131,10 @@ def tuning(
     )
     prng_state, _ = jr.split(prng_state)
     
-    pos_x_locs = pos_x_locs.reshape(*or_shape, -1)
-    pos_isi_locs = pos_isi_locs.reshape(*or_shape, -1)
-    pos_mean_ISI = pos_mean_ISI.reshape(-1, *or_shape)
-    pos_CV_ISI = pos_CV_ISI.reshape(-1, *or_shape)
+    pos_x_locs = pos_x_locs.reshape(*or_shape, *pos_x_locs.shape[1:])
+    pos_isi_locs = pos_isi_locs.reshape(*or_shape, *pos_isi_locs.shape[1:])
+    pos_mean_ISI = pos_mean_ISI.reshape(num_samps, -1, *or_shape)
+    pos_CV_ISI = pos_CV_ISI.reshape(num_samps, -1, *or_shape)
     
     ### conditional ISI distribution ###
     evalsteps = 120

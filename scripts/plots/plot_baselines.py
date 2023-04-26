@@ -37,7 +37,7 @@ def spike_history_filters(rng, prng_state, jitter, array_type):
         filter_length,
     )
     
-    glm_filter_t, _ = flt.sample_posterior(prng_state, 1, False, None, jitter)
+    glm_filter_t = flt.sample_prior(prng_state, 1, None, jitter)
     glm_filter_t = glm_filter_t[0]  # (filter_length, outs, 1)
     
     # GP
@@ -71,7 +71,7 @@ def spike_history_filters(rng, prng_state, jitter, array_type):
         filter_length,
     )
     
-    gp_filter_t, _ = flt.sample_posterior(prng_state, num_samps, False, None, jitter)
+    gp_filter_t = flt.sample_prior(prng_state, num_samps, None, jitter)
     
     
     # export

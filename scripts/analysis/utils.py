@@ -50,11 +50,14 @@ def compute_ISI_stats(
     :param np.ndarray x_locs: evaluation locations (pts, x_dims)
     :param np.ndarray isi_locs: evaluation locations (pts, neurons, x_dims)
     :return:
-        mean and CV of shape (out_dims, pts)
+        mean and CV of shape (num_samps, out_dims, pts)
     """
     num_pts = x_locs.shape[0]
     
     def m(prng_key, isi_cond, x_cond, n):
+        """
+        Compute statistics per neuron
+        """
         mean_ISI = obs_model.sample_conditional_ISI_expectation(
             prng_key,
             num_samps,
@@ -86,7 +89,7 @@ def compute_ISI_stats(
         var_ISI = (secmom_ISI - mean_ISI**2)
         CV_ISI = jnp.sqrt(var_ISI) / (mean_ISI + 1e-12)
 
-        return mean_ISI, CV_ISI
+        return mean_ISI[:, 0], CV_ISI[:, 0]  # (num_samps,)
 
     m_jit = jit(vmap(m, (0, 0, 0, None)))
 
@@ -106,10 +109,10 @@ def compute_ISI_stats(
             _mean_ISIs.append(mean_ISI)
             _CV_ISIs.append(CV_ISI)
             
-        mean_ISIs.append(np.array(jnp.concatenate(_mean_ISIs)))
-        CV_ISIs.append(np.array(jnp.concatenate(_CV_ISIs)))
+        mean_ISIs.append(np.array(jnp.concatenate(_mean_ISIs, axis=-1)))
+        CV_ISIs.append(np.array(jnp.concatenate(_CV_ISIs, axis=-1)))
         
-    mean_ISIs, CV_ISIs = np.stack(mean_ISIs), np.stack(CV_ISIs)
+    mean_ISIs, CV_ISIs = np.stack(mean_ISIs, axis=1), np.stack(CV_ISIs, axis=1)
     return mean_ISIs, CV_ISIs
 
 
@@ -250,7 +253,7 @@ def conditional_intensity(
 
     elif obs_type == 'nonparam_pp_gp':
         pred_log_intens = obs_model.log_conditional_intensity(
-            covs_t[None, None, pred_window], ISIs[None, pred_window], 
+            prng_state, covs_t[None, None, pred_window], ISIs[None, :, pred_window], 
             jitter, sel_outdims, sampling=sampling
         )
         
@@ -279,19 +282,22 @@ def sample_activity(
     pred_window_filt = pred_window + filter_length
     x_eval = covs_t[None, None, pred_window].repeat(num_samps, axis=0)
     ini_Y = ys_filt[None, :, pred_window_filt[:filter_length]].repeat(num_samps, axis=0)
-    ini_t_tilde = jnp.zeros((num_samps, neurons))
 
     if obs_type == 'factorized_gp':
         sample_ys, log_rho_ts = obs_model.sample_posterior(
             prng_state, x_eval, ini_Y=ini_Y, jitter=jitter)
 
     elif obs_type == 'rate_renewal_gp':
+        ini_t_tilde = jnp.zeros((num_samps, neurons))
         sample_ys, log_rho_ts = obs_model.sample_posterior(
             prng_state, x_eval, ini_spikes=ini_Y, ini_t_tilde=ini_t_tilde, jitter=jitter)
 
     elif obs_type == 'nonparam_pp_gp':
+        timesteps, ISI_order = x_eval.shape[2], ISIs.shape[-1]
+        ini_t_since = jnp.zeros((num_samps, neurons))
+        past_ISIs = jnp.zeros((num_samps, neurons, ISI_order - 1))
         sample_ys, log_rho_ts = obs_model.sample_posterior(
-            prng_state, x_eval, ini_t_since=ini_t_since, jitter=jitter)
+            prng_state, timesteps, x_eval, ini_t_since=ini_t_since, past_ISIs=past_ISIs, jitter=jitter)
         
     else:
         raise ValueError('Invalid observation model type')
