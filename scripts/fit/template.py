@@ -23,7 +23,7 @@ import gaussneuro as lib
 from gaussneuro.observations.base import Observations
 from gaussneuro.observations.svgp import (
     ModulatedFactorized,
-    #ModulatedRenewal,
+    ModulatedRenewal,
     RateRescaledRenewal,
 )
 from gaussneuro.observations.bnpp import NonparametricPointProcess
@@ -140,7 +140,7 @@ def covariate_kernel(kernel_dicts, f_dims, array_type):
                     f_dims, var_f, len_fx, scale_mixture, array_type=array_type
                 )
 
-            elif kernel_type == "Matern12":
+            elif kernel_type == "matern12":
                 krn = lib.GP.kernels.Matern12(
                     f_dims,
                     var_f,
@@ -148,7 +148,7 @@ def covariate_kernel(kernel_dicts, f_dims, array_type):
                     array_type=array_type,
                 )
 
-            elif kernel_type == "Matern32":
+            elif kernel_type == "matern32":
                 krn = lib.GP.kernels.Matern32(
                     f_dims,
                     var_f,
@@ -156,7 +156,7 @@ def covariate_kernel(kernel_dicts, f_dims, array_type):
                     array_type=array_type,
                 )
 
-            elif kernel_type == "Matern52":
+            elif kernel_type == "matern52":
                 krn = lib.GP.kernels.Matern52(
                     f_dims,
                     var_f,
@@ -172,7 +172,7 @@ def covariate_kernel(kernel_dicts, f_dims, array_type):
     return kernel_list, dims_list
 
 
-def ISI_kernel_dict_induc_list(rng, isi_order, num_induc, out_dims):
+def ISI_kernel_dict_induc_list(rng, isi_order, num_induc, out_dims, kernel_types):
     """
     Kernel for time since spike and ISI dimensions
 
@@ -183,15 +183,16 @@ def ISI_kernel_dict_induc_list(rng, isi_order, num_induc, out_dims):
 
     ones = np.ones(out_dims)
 
-    for _ in range(isi_order - 1):  # first time to spike separate
+    for k in range(isi_order):
         order_arr = rng.permuted(
             np.tile(np.arange(num_induc), out_dims).reshape(out_dims, num_induc), 
             axis=1, 
         )
-
+        len_t = (0.3 if k == 0 else 1.0) * np.ones((out_dims, 1))  # primary tuning to t since
+        
         induc_list += [np.linspace(0.0, 1.0, num_induc)[order_arr][..., None]]
         kernel_dicts += [
-            {"type": "SE", "in_dims": 1, "var": ones, "len": np.ones((out_dims, 1))}
+            {"type": kernel_types[k], "in_dims": 1, "var": ones, "len": len_t}
         ]
 
     return kernel_dicts, induc_list
@@ -254,6 +255,7 @@ def build_kernel(
     latent_covs,
     f_dims,
     isi_order,
+    ISI_kernel_types, 
     gen_obs_kernel_induc_func,
     array_type,
 ):
@@ -267,7 +269,7 @@ def build_kernel(
 
     if observations_comps[0] == "nonparam_pp_gp":  # ISIs
         kernel_dicts_isi, induc_list_isi = ISI_kernel_dict_induc_list(
-            rng, isi_order, num_induc, f_dims
+            rng, isi_order, num_induc, f_dims, ISI_kernel_types
         )
         kernel_dicts += kernel_dicts_isi
         induc_list += induc_list_isi
@@ -323,10 +325,14 @@ def build_spikefilters(rng, obs_dims, filter_type, array_type):
     elif filter_type_comps[0] == "rcb":
         strs = filter_type_comps[1:6]
         B, phi_lower, phi_upper, a, c = (
-            int(strs[0]), float(strs[1]), float(strs[2]), float(strs[3]), float(strs[4])
+            int(strs[0]), 
+            float(strs[1].replace("n", "-")), 
+            float(strs[2].replace("n", "-")), 
+            float(strs[3]), 
+            float(strs[4]), 
         )
 
-        ini_var = 1.0
+        ini_var = 0.01
         if filter_type_comps[6] == "full":
             a = a * np.ones((obs_dims, obs_dims))
             c = c * np.ones((obs_dims, obs_dims))
@@ -354,17 +360,17 @@ def build_spikefilters(rng, obs_dims, filter_type, array_type):
     elif filter_type_comps[0] == "svgp":
         strs = filter_type_comps[1:4]
         num_induc, a_r, tau_r = (
-            int(strs[0]), float(strs[1]), float(strs[2])
+            int(strs[0]), float(strs[1].replace("n", "-")), float(strs[2])
         )
 
         if filter_type_comps[4] == "full":
             D = obs_dims ** 2
-            a_r = -a_r * np.ones((D, D))
+            a_r = a_r * np.ones((D, D))
             tau_r = tau_r * np.ones((D, D))
 
         elif filter_type_comps[4] == "self":
             D = obs_dims
-            a_r = -a_r * np.ones((D, 1))
+            a_r = a_r * np.ones((D, 1))
             tau_r = tau_r * np.ones((D, 1))
             
         else:
@@ -377,11 +383,13 @@ def build_spikefilters(rng, obs_dims, filter_type, array_type):
 
         # kernel
         len_fx = filter_length / 4. * np.ones((D, 1))  # GP lengthscale
-        var_f = 1.0 * np.ones(D)  # kernel variance
+        beta = 0.0 * np.ones(D)
+        len_beta = 1.5 * len_fx
+        var_f = 0.1 * np.ones(D)  # kernel variance
         
         kern = lib.GP.kernels.DecayingSquaredExponential(
             D, variance=var_f, lengthscale=len_fx, 
-            beta=var_f, lengthscale_beta=1.5*len_fx, array_type=array_type)
+            beta=beta, lengthscale_beta=len_beta, array_type=array_type)
         gp = lib.GP.sparse.qSVGP(
             kern, induc_locs, u_mu, u_Lcov, RFF_num_feats=0, whitened=True)
 
@@ -490,6 +498,7 @@ def build_factorized_gp(
         latent_covs,
         f_dims,
         0,
+        None, 
         gen_obs_kernel_induc_func,
         array_type,
     )
@@ -499,8 +508,8 @@ def build_factorized_gp(
     # SVGP
     RFF_num_feats = int(observations.split("-")[2])
     num_induc = induc_locs.shape[1]
-    u_mu = 1.0 + 0.0 * rng.normal(size=(f_dims, num_induc, 1))
-    u_Lcov = 0.01 * np.eye(num_induc)[None, ...].repeat(f_dims, axis=0)
+    u_mu = 0.01 * rng.normal(size=(f_dims, num_induc, 1))
+    u_Lcov = 1.0 * np.eye(num_induc)[None, ...].repeat(f_dims, axis=0)
 
     gp_mean = np.zeros(f_dims)
     svgp = lib.GP.sparse.qSVGP(
@@ -525,6 +534,7 @@ def build_renewal_gp(
     obs_dims,
     obs_filter,
     model_type,
+    mean_ISIs, 
     array_type,
 ):
     """
@@ -537,7 +547,7 @@ def build_renewal_gp(
 
     if renewal_type == "gamma":
         alpha = np.ones(obs_dims)
-        renewal = lib.likelihoods.Gamma(
+        renewal = lib.likelihoods.GammaRenewal(
             obs_dims,
             dt,
             alpha,
@@ -547,7 +557,7 @@ def build_renewal_gp(
 
     elif renewal_type == "lognorm":
         sigma = np.ones(obs_dims)
-        renewal = lib.likelihoods.LogNormal(
+        renewal = lib.likelihoods.LogNormalRenewal(
             obs_dims,
             dt,
             sigma,
@@ -557,7 +567,7 @@ def build_renewal_gp(
 
     elif renewal_type == "invgauss":
         mu = np.ones(obs_dims)
-        renewal = lib.likelihoods.InverseGaussian(
+        renewal = lib.likelihoods.InverseGaussianRenewal(
             obs_dims,
             dt,
             mu,
@@ -566,7 +576,7 @@ def build_renewal_gp(
         )
         
     elif renewal_type == "expon":
-        renewal = lib.likelihoods.Exponential(
+        renewal = lib.likelihoods.ExponentialRenewal(
             obs_dims,
             dt,
             link_type,
@@ -584,6 +594,7 @@ def build_renewal_gp(
         latent_covs,
         obs_dims,
         0,
+        None, 
         gen_obs_kernel_induc_func,
         array_type,
     )
@@ -593,8 +604,8 @@ def build_renewal_gp(
     # SVGP
     RFF_num_feats = int(observations.split("-")[2])
     num_induc = induc_locs.shape[1]
-    u_mu = 1.0 + 0.0 * rng.normal(size=(f_dims, num_induc, 1))
-    u_Lcov = 0.01 * np.eye(num_induc)[None, ...].repeat(f_dims, axis=0)
+    u_mu = 0.01 * rng.normal(size=(f_dims, num_induc, 1))
+    u_Lcov = 1.0 * np.eye(num_induc)[None, ...].repeat(f_dims, axis=0)
 
     gp_mean = np.zeros(f_dims)
     svgp = lib.GP.sparse.qSVGP(
@@ -608,8 +619,10 @@ def build_renewal_gp(
         )
 
     elif model_type == "modulated":
+        scale_tau = mean_ISIs
+        
         model = ModulatedRenewal(
-            svgp, gp_mean, renewal, spikefilter=obs_filter
+            svgp, gp_mean, scale_tau, renewal, spikefilter=obs_filter
         )
 
     else:
@@ -627,6 +640,7 @@ def build_nonparametric(
     likelihood,
     dt,
     obs_dims,
+    mean_ISIs, 
     array_type,
 ):
     """
@@ -637,56 +651,28 @@ def build_nonparametric(
     """
     # kernels
     observations_comps = observations.split("-")
-    ss_type = observations_comps[2]
-    RFF_num_feats = int(observations_comps[3])
-    ini_refract_amp = float(observations_comps[4])
-
-    if ss_type == "matern12":
-        len_t = 1.0 * np.ones((obs_dims, 1))  # GP lengthscale
-        var_t = 1.0 * np.ones(obs_dims)  # GP variance
-        ss_kernel = lib.GP.kernels.Matern12(obs_dims, variance=var_t, lengthscale=len_t)
-
-    elif ss_type == "matern32":
-        len_t = 1.0 * np.ones((obs_dims, 1))  # GP lengthscale
-        var_t = 1.0 * np.ones(obs_dims)  # GP variance
-        ss_kernel = lib.GP.kernels.Matern32(obs_dims, variance=var_t, lengthscale=len_t)
-
-    elif ss_type == "matern52":
-        len_t = 1.0 * np.ones((obs_dims, 1))  # GP lengthscale
-        var_t = 1.0 * np.ones(obs_dims)  # GP variance
-        ss_kernel = lib.GP.kernels.Matern52(obs_dims, variance=var_t, lengthscale=len_t)
-
-    else:
-        raise ValueError('Invalid temporal kernel for nonparametric point process')
+    tau_kernel_type, ISI_kernel_type = observations_comps[2], observations_comps[3]
+    RFF_num_feats = int(observations_comps[4])
+    mean_amp = float(observations_comps[5].replace("n", "-"))
 
     isi_order = int(likelihood[3:])
-    kernel, induc_locs = build_kernel(
+    ISI_kernel_types = [tau_kernel_type] + [ISI_kernel_type] * (isi_order - 1)
+    st_kernel, induc_locs = build_kernel(
         rng,
         observations,
         observed_covs,
         latent_covs,
         obs_dims,
         isi_order,
+        ISI_kernel_types, 
         gen_obs_kernel_induc_func,
         array_type,
     )
 
     # SVGP
     num_induc = induc_locs.shape[1]
-
-    order_arr = rng.permuted(
-        np.tile(np.arange(num_induc), obs_dims).reshape(obs_dims, num_induc), 
-        axis=1, 
-    )
-
-    site_locs = np.linspace(0.0, 1.0, num_induc)[order_arr][..., None]
-    induc_locs = jnp.concatenate((site_locs, induc_locs), axis=-1)
-    st_kernel = lib.GP.kernels.Product(
-        [ss_kernel, kernel], [[0], list(range(1, induc_locs.shape[-1]))]
-    )
-
-    u_mu = 1.0 * rng.normal(size=(obs_dims, num_induc, 1))
-    u_Lcov = 0.1 * np.eye(num_induc)[None, ...].repeat(obs_dims, axis=0)
+    u_mu = 0.01 * rng.normal(size=(obs_dims, num_induc, 1))
+    u_Lcov = 1.0 * np.eye(num_induc)[None, ...].repeat(obs_dims, axis=0)
 
     gp = lib.GP.sparse.qSVGP(
         st_kernel,
@@ -698,13 +684,13 @@ def build_nonparametric(
     )
 
     # BNPP
-    wrap_tau = 1.0 * np.ones((obs_dims,))  # seconds
-    refract_tau = 1e-1 * np.ones((obs_dims,))
-    refract_amp = ini_refract_amp * np.ones((obs_dims,))
+    wrap_tau = mean_ISIs * np.ones((obs_dims,))  # seconds
+    mean_tau = mean_ISIs / 30. * np.ones((obs_dims,))
+    mean_amp = mean_amp * np.ones((obs_dims,))
     mean_bias = 0.0 * np.ones((obs_dims,))
 
     model = NonparametricPointProcess(
-        gp, wrap_tau, refract_tau, refract_amp, mean_bias, dt
+        gp, wrap_tau, mean_tau, mean_amp, mean_bias, dt
     )
     return model
 
@@ -820,6 +806,7 @@ def setup_observations(
     latent_covs,
     obs_dims,
     tbin,
+    mean_ISIs, 
     array_type,
 ):
     """
@@ -858,6 +845,7 @@ def setup_observations(
             obs_dims,
             obs_filter,
             "rescaled",
+            None, 
             array_type,
         )
 
@@ -873,6 +861,7 @@ def setup_observations(
             obs_dims,
             obs_filter,
             "modulated",
+            mean_ISIs, 
             array_type,
         )
 
@@ -886,6 +875,7 @@ def setup_observations(
             likelihood,
             tbin,
             obs_dims,
+            mean_ISIs, 
             array_type,
         )
 
@@ -900,7 +890,9 @@ def select_inputs(dataset_dict, config):
     """
     Create the inputs to the model, all NumPy arrays
 
-    Trim the spike train to match section of covariates
+    Select the spike train to match section of covariates
+    The spike history filter will add a buffer section at start
+    Note the entire spike train is retained here from the dataset
     """
     observed_covs, observations, likelihood = (
         config.observed_covs,
@@ -932,12 +924,13 @@ def select_inputs(dataset_dict, config):
     covs = np.stack(input_data, axis=-1)  # (ts, x_dims)
     ts = covs.shape[0]
 
-    # trim
     filter_length = (
         int(config.filter_type.split("H")[-1]) if config.filter_type != "" else 0
     )
     align_start_ind = dataset_dict["align_start_ind"]
     align_end_ind = align_start_ind + ts
+    if align_start_ind - filter_length < 0:
+        raise ValueError('Spike filter history exceeds available spike train')
     ttslice = slice(align_start_ind - filter_length, align_end_ind)
 
     ys = dataset_dict["spiketrains"][:, ttslice].astype(float)
@@ -970,6 +963,9 @@ def build_model(
 
     obs_dims = dataset_dict["properties"]["neurons"]
     tbin = float(dataset_dict["properties"]["tbin"])
+    
+    ISIs = dataset_dict["ISIs"]
+    mean_ISIs = np.array([np.unique(ISIs[:, n, 1]).mean() for n in range(ISIs.shape[1])])
 
     # create and initialize model
     inp_model = setup_latents(
@@ -990,6 +986,7 @@ def build_model(
         config.latent_covs,
         obs_dims,
         tbin,
+        mean_ISIs, 
         array_type,
     )
     model = GaussianTwoLayer(inp_model, obs_model)
@@ -1006,7 +1003,23 @@ def setup_jax(config):
 
     if config.double_arrays:
         jax.config.update("jax_enable_x64", True)
-        
+      
+    
+    
+
+def gen_name(parser_args, dataset_dict):
+
+    name = dataset_dict["properties"]["name"] + "_{}_{}_{}_X[{}]_Z[{}]_freeze[{}]".format(
+        parser_args.likelihood,
+        parser_args.filter_type,
+        parser_args.observations,
+        parser_args.observed_covs,
+        parser_args.latent_covs,
+        "-".join(parser_args.freeze_params).replace(".", "0"), 
+    )
+    return name
+
+    
 
 def fit_and_save(parser_args, dataset_dict, observed_kernel_dict_induc_list, save_name):
     """

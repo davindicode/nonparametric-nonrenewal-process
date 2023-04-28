@@ -52,7 +52,7 @@ def regression(
             dataset_dict, config)
         
         ys = observations[:, filter_length:]
-        ys_filt = observations[:, :]
+        ys_filt = observations[:, :-1]
         data = (timestamps, covs_t, ISIs, ys, ys_filt, filter_length)
         
         # train likelihoods and time rescaling

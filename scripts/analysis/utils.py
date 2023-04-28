@@ -135,7 +135,7 @@ def likelihood_metric(
     log_predictive, 
 ):
     timestamps, covs_t, ISIs, ys, ys_filt, filter_length = data
- 
+    
     timesteps = len(timestamps)
     if obs_type == 'factorized_gp':
         llm, _ = obs_model.variational_expectation(
@@ -173,7 +173,7 @@ def time_rescaling_statistics(data, obs_model, obs_type, jitter, sel_outdims):
         rescaled_intervals = lib.utils.spikes.time_rescale(
             ys.T, post_mean_rho.T, obs_model.likelihood.dt, max_intervals=max_intervals)
 
-        poisson_process = lib.likelihoods.Exponential(
+        poisson_process = lib.likelihoods.ExponentialRenewal(
             obs_model.likelihood.obs_dims, obs_model.likelihood.dt)
         qs = np.array(poisson_process.cum_density(rescaled_intervals))[:, 1:]
 
@@ -191,7 +191,7 @@ def time_rescaling_statistics(data, obs_model, obs_type, jitter, sel_outdims):
         rescaled_intervals = lib.utils.spikes.time_rescale(
             ys.T, post_mean_rho.T, obs_model.pp.dt, max_intervals=max_intervals)
 
-        poisson_process = lib.likelihoods.Exponential(
+        poisson_process = lib.likelihoods.ExponentialRenewal(
             obs_model.pp.obs_dims, obs_model.pp.dt)
         qs = np.array(poisson_process.cum_density(rescaled_intervals))[:, 1:]
 
@@ -233,8 +233,10 @@ def conditional_intensity(
     
     # predicted intensities and posterior sampling
     pred_window = np.arange(pred_start, pred_end)
-    pred_window_filt = pred_window + filter_length
+    pred_window_filt = np.arange(pred_start, pred_end + filter_length - 1)
     ini_t_tilde = jnp.zeros((1, neurons))
+    
+    pred_ys = ys[:, pred_window]
 
     if obs_type == 'factorized_gp':
         pred_log_intens = obs_model.log_conditional_intensity(
@@ -246,7 +248,7 @@ def conditional_intensity(
     elif obs_type == 'rate_renewal_gp':
         pred_log_intens = obs_model.log_conditional_intensity(
             prng_state, ini_t_tilde, covs_t[None, None, pred_window], 
-            ys[None, :, pred_window], 
+            pred_ys[None], 
             ys_filt[None, :, pred_window_filt], 
             jitter, sel_outdims, sampling=sampling, unroll=10
         )
@@ -260,7 +262,7 @@ def conditional_intensity(
     else:
         raise ValueError('Invalid observation model type')
         
-    return np.array(pred_log_intens)
+    return np.array(pred_ys), np.array(pred_log_intens)
 
 
 
@@ -279,7 +281,7 @@ def sample_activity(
     
     # predicted intensities and posterior sampling
     pred_window = np.arange(pred_start, pred_end)
-    pred_window_filt = pred_window + filter_length
+    pred_window_filt = np.arange(pred_start, pred_end + filter_length - 1)
     x_eval = covs_t[None, None, pred_window].repeat(num_samps, axis=0)
     ini_Y = ys_filt[None, :, pred_window_filt[:filter_length]].repeat(num_samps, axis=0)
 

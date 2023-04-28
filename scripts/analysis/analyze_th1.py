@@ -34,6 +34,7 @@ def regression(
 
     num_samps = 1
     pred_start, pred_end = 0, 10000
+    pred_ts = np.arange(pred_start, pred_end) * tbin
     regression_dict = {}
     for model_name in reg_config_names:
         print('Analyzing regression for {}...'.format(model_name))
@@ -53,7 +54,7 @@ def regression(
             dataset_dict, config)
         
         ys = observations[:, filter_length:]
-        ys_filt = observations[:, :]
+        ys_filt = observations[:, :-1]
         data = (timestamps, covs_t, ISIs, ys, ys_filt, filter_length)
         
         # train likelihoods and rate/time rescaling
@@ -61,26 +62,39 @@ def regression(
             prng_state, data, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=False)
         prng_state, _ = jr.split(prng_state)
         
+        train_lpd = None
+#         train_lpd = utils.likelihood_metric(
+#             prng_state, data, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=True)
+#         prng_state, _ = jr.split(prng_state)
+        
         sort_cdfs, T_KSs, sign_KSs, p_KSs = utils.time_rescaling_statistics(
             data, model.obs_model, obs_type, jitter, list(range(neurons)))
 
         # test data
-        test_lpds, pred_log_intensities, test_spikes = [], [], []
-        sample_spikes, sample_log_rhos = [], []
+        test_lpds, test_ells = [], []
+        pred_log_intensities, pred_spiketimes = [], []
+        sample_log_rhos, sample_spiketimes = [], []
         for test_dataset_dict in test_dataset_dicts:  # test
             timestamps, covs_t, ISIs, observations, filter_length = template.select_inputs(
                 test_dataset_dict, config)
             
             test_ys = observations[:, filter_length:]
-            test_ys_filt = observations
+            test_ys_filt = observations[:, :-1]
             data = (timestamps, covs_t, ISIs, test_ys, test_ys_filt, filter_length)
             
-            test_lpd = utils.likelihood_metric(
+            test_ell = utils.likelihood_metric(
                 prng_state, data, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=False)
             prng_state, _ = jr.split(prng_state)
+            
+            test_lpd = None
+#             test_lpd = utils.likelihood_metric(
+#                 prng_state, data, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=True)
+#             prng_state, _ = jr.split(prng_state)
+            
+            test_ells.append(test_ell)
             test_lpds.append(test_lpd)
             
-            pred_log_intens = utils.conditional_intensity(
+            pred_ys, pred_log_intens = utils.conditional_intensity(
                 prng_state, 
                 data, 
                 model.obs_model, 
@@ -91,8 +105,10 @@ def regression(
                 list(range(neurons)), 
                 sampling=False, 
             )
+            pred_spkts = np.where(pred_ys > 0)[0] + pred_start * tbin
+            
             pred_log_intensities.append(pred_log_intens)
-            test_spikes.append(test_ys)
+            pred_spiketimes.append(pred_spkts)
             
             sample_ys, log_rho_ts = utils.sample_activity(
                 prng_state, 
@@ -104,15 +120,25 @@ def regression(
                 pred_end, 
                 jitter, 
             )
-            sample_spikes.append(sample_ys)
+            sample_spkts = [
+                np.where(sample_ys[tr] > 0)[0] + pred_start * tbin 
+                for tr in range(num_samps)
+            ]
+            
+            sample_spiketimes.append(sample_spkts)
             sample_log_rhos.append(log_rho_ts)
 
         # export
         results = {
-            "train_ells": train_ell, 
+            "train_ell": train_ell, 
+            "train_lpd": train_lpd, 
+            "test_ells": test_ells,
             "test_lpds": test_lpds,
+            "pred_ts": pred_ts, 
             "pred_log_intensities": pred_log_intensities, 
-            "test_spikes": test_spikes, 
+            "pred_spiketimes": pred_spiketimes, 
+            "sample_log_rhos": sample_log_rhos, 
+            "sample_spiketimes": sample_spiketimes,
             "KS_quantiles": sort_cdfs, 
             "KS_statistic": T_KSs,
             "KS_significance": sign_KSs,

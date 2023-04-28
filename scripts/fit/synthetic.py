@@ -204,17 +204,6 @@ def observed_kernel_dict_induc_list(rng, observations, num_induc, out_dims, cova
     return kernel_dicts, induc_list
 
 
-def gen_name(parser_args, dataset_dict):
-
-    name = dataset_dict["properties"]["name"] + "_{}_{}_{}_X[{}]_Z[{}]".format(
-        parser_args.likelihood,
-        parser_args.filter_type,
-        parser_args.observations,
-        parser_args.observed_covs,
-        parser_args.latent_covs,
-    )
-    return name
-
 
 def main():
     parser = argparse.ArgumentParser("%(prog)s [options]", "Fit model to data")
@@ -256,7 +245,7 @@ def main():
         raise ValueError
 
     print("Setting up model...")
-    save_name = gen_name(args, dataset_dict)
+    save_name = template.gen_name(args, dataset_dict)
     template.fit_and_save(
         args, dataset_dict, observed_kernel_dict_induc_list, save_name
     )

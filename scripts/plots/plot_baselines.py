@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.special as sps
 
+import jax
+
 import sys
 sys.path.append("../../../GaussNeuro")
 from gaussneuro import utils
@@ -38,7 +40,7 @@ def spike_history_filters(rng, prng_state, jitter, array_type):
     )
     
     glm_filter_t = flt.sample_prior(prng_state, 1, None, jitter)
-    glm_filter_t = glm_filter_t[0]  # (filter_length, outs, 1)
+    glm_filter_t = np.array(glm_filter_t[0])  # (filter_length, outs, 1)
     
     # GP
     filter_length = 500
@@ -49,16 +51,18 @@ def spike_history_filters(rng, prng_state, jitter, array_type):
 
     # qSVGP inducing points
     induc_locs = np.linspace(0, 500, num_induc)[None, :, None].repeat(obs_dims, axis=0)
-    u_mu = 1.0*rng.normal(size=(obs_dims, num_induc, 1))
+    u_mu = 0.0*rng.normal(size=(obs_dims, num_induc, 1))
     u_Lcov = 1.0*np.eye(num_induc)[None, ...].repeat(obs_dims, axis=0)
 
     # kernel
     len_fx = 100.0*np.ones((obs_dims, x_dims))  # GP lengthscale
+    beta = 0.0 * np.ones(obs_dims)
+    len_beta = 1.5 * len_fx
     var_f = 1.0*np.ones(obs_dims)  # kernel variance
 
     kern = lib.GP.kernels.DecayingSquaredExponential(
         obs_dims, variance=var_f, lengthscale=len_fx, 
-        beta=var_f, lengthscale_beta=1.5*len_fx, array_type=array_type)
+        beta=beta, lengthscale_beta=len_beta, array_type=array_type)
     gp = lib.GP.sparse.qSVGP(kern, induc_locs, u_mu, u_Lcov, RFF_num_feats=0, whitened=False)
 
     a_r = -6.*np.ones((obs_dims, 1))
@@ -72,7 +76,7 @@ def spike_history_filters(rng, prng_state, jitter, array_type):
     )
     
     gp_filter_t = flt.sample_prior(prng_state, num_samps, None, jitter)
-    
+    gp_filter_t = np.array(gp_filter_t)
     
     # export
     filters_dict = {
@@ -96,7 +100,6 @@ def main():
         array_type = "float32"
 
     seed = 123
-    prng_state = jr.PRNGKey(seed)
     rng = np.random.default_rng(seed)
     
     
