@@ -1145,7 +1145,7 @@ def fit_and_save(parser_args, dataset_dict, observed_kernel_dict_induc_list, sav
                 loss_dict = {"train_loss_batches": loss}
                 for n, v in loss_dict.items():
                     loss_tracker[n].append(v)
-                lrs.append(learning_rate_schedule(epoch))
+                lrs.append(learning_rate_schedule(epoch).item())
 
                 iterator.set_postfix(**loss_dict)
 

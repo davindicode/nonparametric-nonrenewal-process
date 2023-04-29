@@ -22,58 +22,58 @@ import pickle
 
 
 
-def regression(
-    checkpoint_dir, reg_config_names, dataset_dict, rng, prng_state, batch_size
-):
-    tbin = dataset_dict["properties"]["tbin"]
-    neurons = dataset_dict["properties"]["neurons"]
+# def regression(
+#     checkpoint_dir, reg_config_names, dataset_dict, rng, prng_state, batch_size
+# ):
+#     tbin = dataset_dict["properties"]["tbin"]
+#     neurons = dataset_dict["properties"]["neurons"]
     
-    lik_int_method = {
-        "type": "GH", 
-        "approx_pts": 50, 
-    }
+#     lik_int_method = {
+#         "type": "GH", 
+#         "approx_pts": 50, 
+#     }
 
-    regression_dict = {}
-    for model_name in reg_config_names:
-        print('Analyzing regression for {}...'.format(model_name))
+#     regression_dict = {}
+#     for model_name in reg_config_names:
+#         print('Analyzing regression for {}...'.format(model_name))
 
-        # config
-        model, config = utils.load_model_and_config(
-            checkpoint_dir + model_name, 
-            dataset_dict, 
-            synthetic.observed_kernel_dict_induc_list, 
-            rng, 
-        )
-        obs_type = config.observations.split('-')[0]
-        jitter = config.jitter
+#         # config
+#         model, config = utils.load_model_and_config(
+#             checkpoint_dir + model_name, 
+#             dataset_dict, 
+#             synthetic.observed_kernel_dict_induc_list, 
+#             rng, 
+#         )
+#         obs_type = config.observations.split('-')[0]
+#         jitter = config.jitter
 
-        # data
-        timestamps, covs_t, ISIs, observations, filter_length = template.select_inputs(
-            dataset_dict, config)
+#         # data
+#         timestamps, covs_t, ISIs, observations, filter_length = template.select_inputs(
+#             dataset_dict, config)
         
-        ys = observations[:, filter_length:]
-        ys_filt = observations[:, :-1]
-        data = (timestamps, covs_t, ISIs, ys, ys_filt, filter_length)
+#         ys = observations[:, filter_length:]
+#         ys_filt = observations[:, :-1]
+#         data = (timestamps, covs_t, ISIs, ys, ys_filt, filter_length)
         
-        # train likelihoods and time rescaling
-        train_ell = utils.likelihood_metric(
-            prng_state, data, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=False)
-        prng_state, _ = jr.split(prng_state)
+#         # train likelihoods and time rescaling
+#         train_ell = utils.likelihood_metric(
+#             prng_state, data, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=False)
+#         prng_state, _ = jr.split(prng_state)
         
-        sort_cdfs, T_KSs, sign_KSs, p_KSs = utils.time_rescaling_statistics(
-            data, model.obs_model, obs_type, jitter, list(range(neurons)))
+#         sort_cdfs, T_KSs, sign_KSs, p_KSs = utils.time_rescaling_statistics(
+#             data, model.obs_model, obs_type, jitter, list(range(neurons)))
 
-        # export
-        results = {
-            "train_ells": np.array(train_ell), 
-            "KS_quantiles": sort_cdfs, 
-            "KS_statistic": T_KSs,
-            "KS_significance": sign_KSs,
-            "KS_p_value": p_KSs,
-        }
-        regression_dict[model_name] = results
+#         # export
+#         results = {
+#             "train_ell": np.array(train_ell), 
+#             "KS_quantiles": sort_cdfs, 
+#             "KS_statistic": T_KSs,
+#             "KS_significance": sign_KSs,
+#             "KS_p_value": p_KSs,
+#         }
+#         regression_dict[model_name] = results
 
-    return regression_dict
+#     return regression_dict
 
 
 def tuning(
@@ -168,9 +168,8 @@ def tuning(
     
     # ISI kernel ARD
     warp_tau = np.exp(model.obs_model.log_warp_tau)
-    len_tau = np.array(model.obs_model.gp.kernel.kernels[0].lengthscale[:, 0])
-    len_deltas = np.array(model.obs_model.gp.kernel.kernels[1].kernels[0].lengthscale[:, :ISI_order-1])
-    len_xs = np.array(model.obs_model.gp.kernel.kernels[1].kernels[0].lengthscale[:, -covs_dims:])
+    len_tau, len_deltas, len_xs = utils.extract_lengthscales(
+        model.obs_model.gp.kernel.kernels, ISI_order)
     
     # export
     tuning_dict = {
@@ -250,8 +249,8 @@ def main():
     dataset_dict = synthetic.spikes_dataset(session_name, data_path, max_ISI_order, select_fracs)
 
     ### analysis ###
-    regression_dict = regression(
-        checkpoint_dir, reg_config_names, dataset_dict, rng, prng_state, batch_size
+    regression_dict = utils.evaluate_regression_fits(
+        checkpoint_dir, reg_config_names, dataset_dict, [], rng, prng_state, batch_size
     )
 
     ### export ###

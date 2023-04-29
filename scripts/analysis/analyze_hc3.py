@@ -19,163 +19,19 @@ import numpy as np
 
 import pickle
 
-
-
-def regression(
-    checkpoint_dir, reg_config_names, dataset_dict, test_dataset_dicts, rng, prng_state, batch_size
-):
-    tbin = dataset_dict["properties"]["tbin"]
-    neurons = dataset_dict["properties"]["neurons"]
-    
-    lik_int_method = {
-        "type": "GH", 
-        "approx_pts": 50, 
-    }
-
-    regression_dict = {}
-    for name in reg_config_names:
-        print('Analyzing regression for {}...'.format(name))
-        
-        # config
-        results = pickle.load(
-            open(checkpoint_dir + name + ".p", "rb")
-        )
-        config = results["config"]
-        obs_type = config.observations.split('-')[0]
-        jitter = 1e-6
-
-        # data
-        timestamps, covs_t, ISIs, observations, filter_length = template.select_inputs(
-            dataset_dict, config)
-        
-        xs = covs_t  # (ts, x_dims)
-        deltas = ISIs[..., :ISI_orders] if ISIs is not None else ISIs
-        ys = observations[:, filter_length:]
-        ys_filt = observations[:, :]
-        
-        # model
-        jax.config.update("jax_enable_x64", config.double_arrays)
-        obs_covs_dims = covs_t.shape[-1]
-        
-        model = template.build_model(
-            config, dataset_dict, hc3.observed_kernel_dict_induc_list, rng, timestamps, obs_covs_dims)
-        model = eqx.tree_deserialise_leaves(checkpoint_dir + name + ".eqx", model)
-        
-        # rate/time rescaling
-        max_intervals = int(ys.sum(-1).max())
-        post_mean_rho = model.obs_model.evaluate_posterior_mean(
-            prng_state, xs, ys_filt, jitter, sel_outdims)
-        
-        if obs_type == 'factorized_gp' or obs_type == 'nonparam_pp_gp':
-            rescaled_intervals = lib.utils.spikes.time_rescale(
-                ys.T, post_mean_rho.T, model.obs_model.likelihood.dt, max_intervals=max_intervals)
-
-            pp = lib.likelihoods.Exponential(
-                model.obs_model.likelihood.obs_dims, model.obs_model.likelihood.dt)
-
-            qs = np.array(pp.cum_density(rescaled_intervals))[:, 1:]
-            
-        elif obs_type == 'rate_renewal_gp':
-            rescaled_intervals = lib.utils.spikes.time_rescale(
-                ys.T, post_mean_rho.T, model.obs_model.renewal.dt, max_intervals=max_intervals)
-
-            qs = np.array(jax.vmap(model.obs_model.renewal.cum_density)(rescaled_intervals.T).T)
-            
-        else:
-            raise ValueError('Invalid observation model type')
-            
-        sort_cdfs, T_KSs, sign_KSs, p_KSs = [], [], [], []
-        for n in range(qs.shape[0]):
-            ul = np.where(qs[n, :] != qs[n, :])[0]
-            if len(ul) == 0:
-                sort_cdf, T_KS, sign_KS, p_KS = None, None, None, None
-            else:
-                sort_cdf, T_KS, sign_KS, p_KS = lib.utils.stats.KS_test(qs[n, :ul[0]], alpha=0.05)
-            sort_cdfs.append(sort_cdf)
-            T_KSs.append(T_KS)
-            sign_KSs.append(sign_KS)
-            p_KSs.append(p_KS)
-
-        # train likelihoods
-        timesteps = len(timestamps)
-        train_ell, _ = model.obs_model.variational_expectation(
-            prng_state, jitter, xs[None, None], ys, ys_filt, False, timesteps, lik_int_method, False)
-
-        # test data
-        test_lpds, pred_log_intensities, test_spikes = [], [], []
-        sample_spikes, sample_log_rhos = [], []
-        for test_dataset_dict in test_dataset_dicts:  # test
-            timestamps, covs_t, ISIs, observations, filter_length = template.select_inputs(
-                test_dataset_dict, config)
-            
-            test_xs = covs_t
-            test_deltas = ISIs[:, st:, :ISI_orders] if ISIs is not None else ISIs
-            test_ys = observations[:, filter_length:]
-            test_ys_filt = observations
-
-            # test likelihoods
-            test_timesteps = len(timestamps)
-            test_lpd, _ = model.obs_model.variational_expectation(
-                prng_state, jitter, test_xs[None, None], test_ys, test_ys_filt, 
-                False, test_timesteps, lik_int_method, False, 
-            )
-            test_lpds.append(test_lpd)
-            
-            # predicted intensities and posterior sampling
-            num_samps = 10
-            if obs_type == 'factorized_gp':
-                pred_log_intens, _, _ = model.obs_model.filtered_gp_posterior(
-                    prng_state, test_xs[None, None], ys_filt=test_ys_filt, 
-                    mean_only=True, diag_cov=True, 
-                    compute_KL=False, jitter=jitter, sel_outdims=None
-                )
-                
-                x_eval = test_xs[None, None].repeat(num_samps, axis=0)
-                ini_Y = test_ys_filt[None, :, :filter_length].repeat(num_samps, axis=0)
-                sample_ys, log_rho_ts = model.obs_model.sample_posterior(
-                    prng_state, x_eval, ini_Y=ini_Y, jitter=jitter)
-
-            elif obs_type == 'rate_renewal_gp':
-                ini_t_tilde = jnp.zeros(neurons)
-                pred_log_intens = model.obs_model.sample_log_conditional_intensity(
-                    prng_state, ini_t_tilde, test_xs[None, None], test_ys, test_ys_filt, jitter, unroll=10
-                )
-                
-                ini_t_tilde = jnp.zeros((num_samps, neurons))
-                sample_ys, log_rho_ts = model.obs_model.sample_posterior(
-                    prng_state, x_eval, ini_spikes=None, ini_t_tilde=ini_t_tilde, jitter=jitter)
-
-            elif obs_type == 'nonparam_pp_gp':
-                pred_log_intens, _ = model.obs_model.evaluate_log_conditional_intensity(
-                    test_xs[None, None], test_deltas[None], jitter, sel_outdims)
-                
-                ini_t_tilde = jnp.zeros((num_samps, neurons))
-                y_samples, log_rho_ts = model.obs_model.sample_posterior(
-                    prng_state, x_eval, ini_t_since=ini_t_since, jitter=jitter)
-                
-            pred_log_intensities.append(pred_log_intens)
-            test_spikes.append(test_ys)
-            sample_spikes.append(sample_ys)
-            sample_log_rhos.append(log_rho_ts)
-
-        # export
-        results = {
-            "train_ells": train_ell, 
-            "test_lpds": test_lpds,
-            "pred_log_intensities": pred_log_intensities, 
-            "test_spikes": test_spikes, 
-            "T_KS": T_KS,
-            "significance_KS": sign_KS,
-            "p_KS": p_KS,
-        }
-        regression_dict[name] = results
-
-    return regression_dict
-    
     
     
 def tuning(
-    checkpoint_dir, reg_config_names, subset_config_names, dataset_dict, prng_state, batch_size
+    checkpoint_dir, 
+    model_name, 
+    dataset_dict, 
+    rng, 
+    prng_state, 
+    neuron_list, 
+    num_samps = 30, 
+    int_eval_pts = 1000, 
+    num_quad_pts = 100, 
+    batch_size = 1000, 
 ):
     """
     Compute tuning curves of BNPP model
