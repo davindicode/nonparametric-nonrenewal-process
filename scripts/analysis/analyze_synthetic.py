@@ -20,60 +20,8 @@ import numpy as np
 
 import pickle
 
+import utils
 
-
-# def regression(
-#     checkpoint_dir, reg_config_names, dataset_dict, rng, prng_state, batch_size
-# ):
-#     tbin = dataset_dict["properties"]["tbin"]
-#     neurons = dataset_dict["properties"]["neurons"]
-    
-#     lik_int_method = {
-#         "type": "GH", 
-#         "approx_pts": 50, 
-#     }
-
-#     regression_dict = {}
-#     for model_name in reg_config_names:
-#         print('Analyzing regression for {}...'.format(model_name))
-
-#         # config
-#         model, config = utils.load_model_and_config(
-#             checkpoint_dir + model_name, 
-#             dataset_dict, 
-#             synthetic.observed_kernel_dict_induc_list, 
-#             rng, 
-#         )
-#         obs_type = config.observations.split('-')[0]
-#         jitter = config.jitter
-
-#         # data
-#         timestamps, covs_t, ISIs, observations, filter_length = template.select_inputs(
-#             dataset_dict, config)
-        
-#         ys = observations[:, filter_length:]
-#         ys_filt = observations[:, :-1]
-#         data = (timestamps, covs_t, ISIs, ys, ys_filt, filter_length)
-        
-#         # train likelihoods and time rescaling
-#         train_ell = utils.likelihood_metric(
-#             prng_state, data, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=False)
-#         prng_state, _ = jr.split(prng_state)
-        
-#         sort_cdfs, T_KSs, sign_KSs, p_KSs = utils.time_rescaling_statistics(
-#             data, model.obs_model, obs_type, jitter, list(range(neurons)))
-
-#         # export
-#         results = {
-#             "train_ell": np.array(train_ell), 
-#             "KS_quantiles": sort_cdfs, 
-#             "KS_statistic": T_KSs,
-#             "KS_significance": sign_KSs,
-#             "KS_p_value": p_KSs,
-#         }
-#         regression_dict[model_name] = results
-
-#     return regression_dict
 
 
 def tuning(
@@ -117,7 +65,7 @@ def tuning(
     eval_pts = pos_x_locs.shape[0]
     
     pos_isi_locs = np.ones((eval_pts, neurons, ISI_order-1))    
-    pos_mean_ISI, pos_CV_ISI = utils.compute_ISI_stats(
+    pos_mean_ISI, pos_mean_invISI, pos_CV_ISI = utils.compute_ISI_stats(
         prng_state, 
         num_samps, 
         pos_x_locs, 
@@ -134,6 +82,7 @@ def tuning(
     pos_x_locs = pos_x_locs.reshape(*or_shape, *pos_x_locs.shape[1:])
     pos_isi_locs = pos_isi_locs.reshape(*or_shape, *pos_isi_locs.shape[1:])
     pos_mean_ISI = pos_mean_ISI.reshape(num_samps, -1, *or_shape)
+    pos_mean_invISI = pos_mean_invISI.reshape(num_samps, -1, *or_shape)
     pos_CV_ISI = pos_CV_ISI.reshape(num_samps, -1, *or_shape)
     
     ### conditional ISI distribution ###
@@ -176,6 +125,7 @@ def tuning(
         'pos_x_locs': pos_x_locs, 
         'pos_isi_locs': pos_isi_locs, 
         'pos_mean_ISI': pos_mean_ISI, 
+        'pos_mean_invISI': pos_mean_invISI, 
         'pos_CV_ISI': pos_CV_ISI, 
         'ISI_t_eval': cisi_t_eval, 
         'ISI_deltas_conds': isi_conds, 
@@ -235,10 +185,11 @@ def main():
     ### names ###
     ISI_order = 4
     reg_config_names = [
-        'syn_data_seed123ISI4sel0.0to1.0_PP-log__factorized_gp-16-1000_X[x-y]_Z[]', 
-        'syn_data_seed123ISI4sel0.0to1.0_isi4__nonparam_pp_gp-16-matern32-1000-1._X[x-y]_Z[]'.format(ISI_order), 
+        #'syn_data_seed123ISI4sel0.0to1.0_PP-log__factorized_gp-16-1000_X[x-y]_Z[]', 
+        'syn_data_seed123ISI4sel0.0to1.0_isi4__nonparam_pp_gp-48-matern32-matern32-1000-n2._' + \
+        'X[x-y]_Z[]_freeze[obs_model0log_warp_tau]', 
     ]
-    
+
     tuning_model_name = reg_config_names[-1]
 
     ### load dataset ###
@@ -250,12 +201,18 @@ def main():
 
     ### analysis ###
     regression_dict = utils.evaluate_regression_fits(
-        checkpoint_dir, reg_config_names, dataset_dict, [], rng, prng_state, batch_size
+        checkpoint_dir, reg_config_names, synthetic.observed_kernel_dict_induc_list, 
+        dataset_dict, [], rng, prng_state, batch_size
+    )
+    
+    tuning_dict = tuning(
+        checkpoint_dir, tuning_model_name, dataset_dict, rng, prng_state, batch_size
     )
 
     ### export ###
     data_run = {
         "regression": regression_dict,
+        "tuning": tuning_dict, 
     }
 
     pickle.dump(data_run, open(save_dir + "synthetic_results.p", "wb"))

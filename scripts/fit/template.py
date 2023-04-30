@@ -1012,7 +1012,7 @@ def gen_name(parser_args, dataset_dict):
     name = dataset_dict["properties"]["name"] + "_{}_{}_{}_X[{}]_Z[{}]_freeze[{}]".format(
         parser_args.likelihood,
         parser_args.filter_type,
-        parser_args.observations,
+        parser_args.observations + ('jointsamples' if parser_args.joint_samples else ''),
         parser_args.observed_covs,
         parser_args.latent_covs,
         "-".join(parser_args.freeze_params).replace(".", "0"), 

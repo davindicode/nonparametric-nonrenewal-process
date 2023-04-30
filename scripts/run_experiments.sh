@@ -18,7 +18,7 @@ python3 th1.py spikes --data_path ../../data/th1/ --session_name Mouse28_140313_
 
 python3 th1.py spikes --data_path ../../data/th1/ --session_name Mouse28_140313_wake_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs hd-x-y-speed --observations factorized_gp-32-1000 --likelihood PP-log --device 0
 
-python3 th1.py spikes --data_path ../../data/th1/ --session_name Mouse28_140313_wake_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs hd-x-y-speed --observations rate_renewal_gp-32-1000 --unroll 10 --likelihood gamma-log --device 0
+python3 th1.py spikes --data_path ../../data/th1/ --session_name Mouse28_140313_wake_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs hd-x-y-speed --observations rate_renewal_gp-32-1000 --unroll 10 --joint_samples --likelihood gamma-log --device 0
 
 python3 th1.py spikes --data_path ../../data/th1/ --session_name Mouse28_140313_wake_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs hd-x-y-speed --observations rate_renewal_gp-32-1000 --unroll 10 --likelihood lognorm-log --device 0
 
@@ -84,11 +84,19 @@ python3 th1.py spikes --data_path ../../data/th1/ --session_name Mouse28_140313_
 # exponential and rate-rescaled renewal
 python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations factorized_gp-32-1000 --likelihood PP-log --device 0
 
-python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations rate_renewal_gp-32-1000 --likelihood gamma-log --device 0
 
-python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations rate_renewal_gp-32-1000 --likelihood lognorm-log --device 0
+python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations rate_renewal_gp-32-1000 --likelihood gamma-log --device 1
 
-python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations rate_renewal_gp-32-1000 --likelihood invgauss-log --device 0
+python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations rate_renewal_gp-32-1000 --likelihood lognorm-log --device 1
+
+python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations rate_renewal_gp-32-1000 --likelihood invgauss-log --device 1
+
+
+python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations rate_renewal_gp-32-1000 --likelihood gamma-log --joint_samples --device 0
+
+python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations rate_renewal_gp-32-1000 --likelihood lognorm-log --joint_samples --device 1
+
+python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations rate_renewal_gp-32-1000 --likelihood invgauss-log --joint_samples --device 1
 
 
 
@@ -112,11 +120,21 @@ python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.
 
 
 # BNPP
-python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations nonparam_pp_gp-64-matern32-matern32-1000-n12. --likelihood isi4 --freeze_params obs_model.mean_amp --device 0
+python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations nonparam_pp_gp-64-matern32-matern32-1000-n6. --likelihood isi4 --freeze_params obs_model.mean_amp --device 1
 
-python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations nonparam_pp_gp-64-matern32-matern32-1000-n2. --likelihood isi4 --freeze_params obs_model.log_warp_tau --device 0
+python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations nonparam_pp_gp-64-matern32-matern32-1000-n2. --likelihood isi4 --freeze_params obs_model.log_warp_tau --device 1
 
-python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations nonparam_pp_gp-64-matern32-matern32-1000-n2. --likelihood isi4 --device 0
+python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations nonparam_pp_gp-64-matern32-matern32-1000-n2. --likelihood isi4 --device 1
+
+
+python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations nonparam_pp_gp-64-matern12-matern32-1000-n6. --likelihood isi4 --freeze_params obs_model.mean_amp --device 1
+
+python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations nonparam_pp_gp-64-matern12-matern32-1000-n2. --likelihood isi4 --freeze_params obs_model.log_warp_tau --device 1
+
+python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -10 --batch_size 10000 --observed_covs x-hd-theta --observations nonparam_pp_gp-64-matern12-matern32-1000-n2. --likelihood isi4 --device 1
+
+
+
 
 
 
@@ -131,11 +149,19 @@ python3 hc3.py spikes --data_path ../../data/hc3/ --session_name ec014.29_ec014.
 
 
 ### synthetic ###
-python3 synthetic.py spikes --data_path ../../data/synthetic/ --session_name syn_data_seed123 --select_frac 0.0 1.0 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.998 --lr_end 1e-4 --margin_epochs 100 --loss_margin -1 --batch_size 50000 --max_epochs 3000 --observed_covs x-y --observations factorized_gp-16-1000 --likelihood PP-log --jitter 1e-6 --device 0
+python3 synthetic.py spikes --data_path ../../data/synthetic/ --session_name syn_data_seed123 --select_frac 0.0 1.0 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.998 --lr_end 1e-4 --margin_epochs 100 --loss_margin -1 --batch_size 50000 --max_epochs 3000 --observed_covs x-y --observations factorized_gp-16-1000 --likelihood PP-log --device 0
 
 
-python3 synthetic.py spikes --data_path ../../data/synthetic/ --session_name syn_data_seed123 --select_frac 0.0 1.0 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.998 --lr_end 1e-4 --margin_epochs 100 --loss_margin -1 --batch_size 10000 --observed_covs x-y --observations nonparam_pp_gp-48-matern32-1000-1. --likelihood isi4 --device 0
+python3 synthetic.py spikes --data_path ../../data/synthetic/ --session_name syn_data_seed123 --select_frac 0.0 1.0 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.998 --lr_end 1e-4 --margin_epochs 100 --loss_margin -1 --batch_size 10000 --observed_covs x-y --observations nonparam_pp_gp-48-matern32-matern32-1000-n2. --likelihood isi4 --device 0
 
 
 
-python3 synthetic.py spikes --data_path ../../data/synthetic/ --session_name syn_data_seed123 --select_frac 0.0 1.0 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.998 --lr_end 1e-4 --margin_epochs 100 --loss_margin -1 --batch_size 10000 --observed_covs x-y --observations nonparam_pp_gp-48-matern32-1000-2. --likelihood isi4 --freeze_params obs_model.log_warp_tau --device 0
+python3 synthetic.py spikes --data_path ../../data/synthetic/ --session_name syn_data_seed123 --select_frac 0.0 1.0 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.998 --lr_end 1e-4 --margin_epochs 100 --loss_margin -1 --batch_size 10000 --observed_covs x-y --observations nonparam_pp_gp-48-matern32-matern32-1000-n2. --likelihood isi4 --freeze_params obs_model.log_warp_tau --device 0
+
+
+
+
+### analysis ###
+python3 analyze_synthetic.py --device 0
+python3 analyze_th1.py --device 0
+python3 analyze_hc3.py --device 0

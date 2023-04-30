@@ -74,7 +74,7 @@ def tuning(
     hd_x_locs = np.stack([
         np.linspace(0, 2*np.pi, pts)
     ], axis=1)  # (evals, x_dim)
-    hd_isi_locs = mean_ISIs[:, None] * np.ones((*grid_n, neurons, ISI_order-1))
+    hd_isi_locs = mean_ISIs[:, None] * np.ones((pts, neurons, ISI_order-1))
     
     hd_mean_ISI, hd_mean_invISI, hd_CV_ISI = utils.compute_ISI_stats(
         prng_state, 
@@ -178,7 +178,7 @@ def main():
     parser.add_argument("--datadir", default="../../data/th1/", type=str)
     parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
 
-    parser.add_argument("--batch_size", default=10000, type=int)
+    parser.add_argument("--batch_size", default=5000000, type=int)
     
     parser.add_argument("--device", default=0, type=int)
     parser.add_argument("--cpu", dest="cpu", action="store_true")
@@ -206,18 +206,27 @@ def main():
 
     ### names ###
     reg_config_names = [
-        'Mouse28_140313_wakeISI5sel0.0to0.5_PP-log__factorized_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_PP-log_rcb-8-3.-1.-1.-self-H500_factorized_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_gamma-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-1000-12._X[hd]_Z[]', 
+#         'Mouse28_140313_wakeISI5sel0.0to0.5_PP-log__factorized_gp-8-1000_X[hd]_Z[]', 
+#         'Mouse28_140313_wakeISI5sel0.0to0.5_gamma-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
+#         'Mouse28_140313_wakeISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
+#         'Mouse28_140313_wakeISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
+#         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-matern32-1000-n2._' + \
+#         'X[hd]_Z[]_freeze[obs_model0log_warp_tau]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_PP-log_rcb-16-17.-36.-6.-30.-self-H500_' + \
+        'factorized_gp-8-1000_X[hd]_Z[]_freeze[obs_model0spikefilter0a-' + \
+        'obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_lognorm-log_rcb-16-17.-36.-6.-30.-self-H500_' + \
+        'rate_renewal_gp-8-1000_X[hd]_Z[]_freeze[]',
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-matern32-1000-n2._' + \
+        'X[hd]_Z[]_freeze[obs_model0log_warp_tau]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-matern32-1000-n2._' + \
+        'X[hd]_Z[]_freeze[]', 
     ]
 
     tuning_model_name = reg_config_names[-1]
 
     ### load dataset ###
-    session_name = 'Mouse28_140313_wake'
+    session_name = 'Mouse28_140313_wake_isi5'
     max_ISI_order = 4
 
     select_fracs = [0.0, 0.5]
@@ -236,12 +245,30 @@ def main():
 
     ### analysis ###
     regression_dict = utils.evaluate_regression_fits(
-        checkpoint_dir, reg_config_names, dataset_dict, test_dataset_dicts, rng, prng_state, batch_size
+        checkpoint_dir, reg_config_names, th1.observed_kernel_dict_induc_list, 
+        dataset_dict, test_dataset_dicts, rng, prng_state, batch_size
+    )
+    
+    variability_dict = utils.analyze_variability_stats(
+        checkpoint_dir, tuning_model_name, th1.observed_kernel_dict_induc_list, 
+        dataset_dict, rng, prng_state, 
+        num_samps = 3,#30, 
+        dilation = 50000, 
+        int_eval_pts = 10,#1000, 
+        num_quad_pts = 3,#100, 
+        batch_size = 100, 
+        jitter = 1e-6, 
+    )
+    
+    tuning_dict = tuning(
+        checkpoint_dir, tuning_model_name, dataset_dict, rng, prng_state, batch_size
     )
 
     ### export ###
     data_run = {
         "regression": regression_dict,
+        "variability": variability_dict, 
+        "tuning": tuning_dict, 
     }
 
     pickle.dump(data_run, open(save_dir + "th1_results.p", "wb"))

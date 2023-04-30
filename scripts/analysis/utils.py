@@ -54,6 +54,8 @@ def extract_lengthscales(kernels, ISI_order):
                                   
             else:  # covariate dimensions
                 len_xs.append(lens[:, ldim_counter])
+                
+            dim_counter += 1
     
     len_deltas = np.stack(len_deltas, axis=-1)
     len_xs = np.stack(len_xs, axis=-1)
@@ -194,77 +196,103 @@ def compute_ISI_stats(
 
 def likelihood_metric(
     prng_state, 
-    data, 
+    dataloader, 
     obs_model, 
     obs_type, 
     lik_int_method, 
     jitter, 
+    unroll, 
+    joint_samples, 
     log_predictive, 
 ):
-    timestamps, covs_t, ISIs, ys, ys_filt, filter_length = data
+    timesteps = len(dataloader.timestamps)  # total time steps
     
-    timesteps = len(timestamps)
+    llms = []
+    for b in range(dataloader.batches):
+        timestamps, covs_t, ISIs, ys, ys_filt = dataloader.load_batch(b)
+
+        if obs_type == 'factorized_gp':
+            llm, _ = obs_model.variational_expectation(
+                prng_state, jitter, covs_t[None, None], ys, ys_filt, False, timesteps, 
+                lik_int_method, log_predictive=log_predictive
+            )
+
+        elif obs_type == 'rate_renewal_gp':
+            llm, _ = obs_model.variational_expectation(
+                prng_state, jitter, covs_t[None, None], ys, ys_filt, False, timesteps, 
+                lik_int_method, joint_samples=joint_samples, unroll=unroll, log_predictive=log_predictive
+            )
+
+        elif obs_type == 'nonparam_pp_gp':
+            llm, _ = obs_model.variational_expectation(
+                prng_state, jitter, covs_t[None, None], ISIs, ys, False, timesteps, 
+                lik_int_method, log_predictive=log_predictive
+            )
+
+        else:
+            raise ValueError('Invalid observation model type')
+            
+        llms.append(llm)
+        
+    return np.array(llms).mean(0)  # mean over subsampled estimates
+
+
+
+def time_rescaling_statistics(data, obs_model, obs_type, jitter, outdims_per_batch):
+    """
+    Perform time or rate rescaling over all neurons
+    """
+    timestamps, covs_t, ISIs, ys, ys_filt = data
+    
     if obs_type == 'factorized_gp':
-        llm, _ = obs_model.variational_expectation(
-            prng_state, jitter, covs_t[None, None], ys, ys_filt, False, timesteps, 
-            lik_int_method, log_predictive
-        )
-
-    elif obs_type == 'rate_renewal_gp':
-        llm, _ = obs_model.variational_expectation(
-            prng_state, jitter, covs_t[None, None], ys, ys_filt, False, timesteps, 
-            lik_int_method, log_predictive
-        )
-
+        obs_dims, dt = obs_model.likelihood.obs_dims, obs_model.likelihood.dt
+    elif obs_type == 'rate_renewal_gp':  # rate rescaling
+        obs_dims, dt = obs_model.renewal.obs_dims, obs_model.renewal.dt
     elif obs_type == 'nonparam_pp_gp':
-        llm, _ = obs_model.variational_expectation(
-            prng_state, jitter, covs_t[None, None], ISIs, ys, False, timesteps, 
-            lik_int_method, log_predictive
-        )
-
+        obs_dims, dt = obs_model.pp.obs_dims, obs_model.pp.dt
     else:
         raise ValueError('Invalid observation model type')
-        
-    return np.array(llm)
-
-
-
-def time_rescaling_statistics(data, obs_model, obs_type, jitter, sel_outdims):
-    timestamps, covs_t, ISIs, ys, ys_filt, filter_length = data
-    sel_outdims = jnp.array(sel_outdims) if sel_outdims is not None else None
+    outdims_list = list(range(obs_dims))
     
     max_intervals = int(ys.sum(-1).max())
-    if obs_type == 'factorized_gp':
-        post_mean_rho = obs_model.posterior_mean(
-            covs_t, ys_filt, jitter, sel_outdims)
-        rescaled_intervals = lib.utils.spikes.time_rescale(
-            ys.T, post_mean_rho.T, obs_model.likelihood.dt, max_intervals=max_intervals)
+    batches = int(np.ceil(len(outdims_list) / outdims_per_batch))
+    post_mean_rhos = []
+    iterator = tqdm(range(batches))
+    for b in iterator:
+        sel_outdims = jnp.array(outdims_list[b*outdims_per_batch:(b+1)*outdims_per_batch])
+        
+        if obs_type == 'factorized_gp':
+            post_mean_rho = obs_model.posterior_mean(
+                covs_t, ys_filt, jitter, sel_outdims)
 
-        poisson_process = lib.likelihoods.ExponentialRenewal(
-            obs_model.likelihood.obs_dims, obs_model.likelihood.dt)
-        qs = np.array(poisson_process.cum_density(rescaled_intervals))[:, 1:]
+        elif obs_type == 'rate_renewal_gp':  # rate rescaling
+            post_mean_rho = obs_model.posterior_mean(
+                covs_t, ys_filt, jitter, sel_outdims)
 
-    elif obs_type == 'rate_renewal_gp':
-        post_mean_rho = obs_model.posterior_mean(
-            covs_t, ys_filt, jitter, sel_outdims)
-        rescaled_intervals = lib.utils.spikes.time_rescale(
-            ys.T, post_mean_rho.T, obs_model.renewal.dt, max_intervals=max_intervals)
+        elif obs_type == 'nonparam_pp_gp':
+            post_mean_rho = obs_model.posterior_mean(
+                covs_t, ISIs, jitter, sel_outdims)
+
+        post_mean_rhos.append(post_mean_rho)
+        
+    post_mean_rhos = np.concatenate(post_mean_rhos)  # (out_dims, ts)
+    
+    if obs_type == 'factorized_gp' or obs_type == 'nonparam_pp_gp':
+        rescaled_intervals, exceeded = lib.utils.spikes.time_rescale(
+            ys.T, post_mean_rhos.T, dt, max_intervals=max_intervals)
+
+        poisson_process = lib.likelihoods.ExponentialRenewal(obs_dims, dt)
+        qs = np.array(poisson_process.cum_density(rescaled_intervals))
+
+    elif obs_type == 'rate_renewal_gp':  # rate rescaling
+        rescaled_intervals, exceeded = lib.utils.spikes.time_rescale(
+            ys.T, post_mean_rhos.T, dt, max_intervals=max_intervals)
 
         qs = np.array(vmap(obs_model.renewal.cum_density)(rescaled_intervals.T).T)
-
-    elif obs_type == 'nonparam_pp_gp':
-        post_mean_rho = obs_model.posterior_mean(
-            covs_t, ISIs, jitter, sel_outdims)
-        rescaled_intervals = lib.utils.spikes.time_rescale(
-            ys.T, post_mean_rho.T, obs_model.pp.dt, max_intervals=max_intervals)
-
-        poisson_process = lib.likelihoods.ExponentialRenewal(
-            obs_model.pp.obs_dims, obs_model.pp.dt)
-        qs = np.array(poisson_process.cum_density(rescaled_intervals))[:, 1:]
-
-    else:
-        raise ValueError('Invalid observation model type')
-         
+        
+    if exceeded.sum() > 0:
+        raise ValueError('Maximum number of intervals exceeded')
+        
     # KS statistics
     sort_cdfs, T_KSs, sign_KSs, p_KSs = [], [], [], []
     for n in range(qs.shape[0]):
@@ -290,11 +318,12 @@ def conditional_intensity(
     obs_type, 
     pred_start, 
     pred_end, 
+    filter_length, 
     jitter, 
     sel_outdims, 
     sampling, 
 ):
-    timestamps, covs_t, ISIs, ys, ys_filt, filter_length = data
+    timestamps, covs_t, ISIs, ys, ys_filt = data
     neurons = ys.shape[0]
     sel_outdims = jnp.array(sel_outdims) if sel_outdims is not None else None
     
@@ -304,11 +333,12 @@ def conditional_intensity(
     ini_t_tilde = jnp.zeros((1, neurons))
     
     pred_ys = ys[:, pred_window]
+    pred_ys_filt = ys_filt[None, :, pred_window_filt] if ys_filt is not None else None
 
     if obs_type == 'factorized_gp':
         pred_log_intens = obs_model.log_conditional_intensity(
             prng_state, covs_t[None, None, pred_window], 
-            ys_filt[None, :, pred_window_filt], 
+            pred_ys_filt, 
             jitter, sel_outdims, sampling=sampling
         )
 
@@ -316,7 +346,7 @@ def conditional_intensity(
         pred_log_intens = obs_model.log_conditional_intensity(
             prng_state, ini_t_tilde, covs_t[None, None, pred_window], 
             pred_ys[None], 
-            ys_filt[None, :, pred_window_filt], 
+            pred_ys_filt, 
             jitter, sel_outdims, sampling=sampling, unroll=10
         )
 
@@ -341,16 +371,18 @@ def sample_activity(
     obs_type, 
     pred_start, 
     pred_end, 
+    filter_length, 
     jitter, 
 ):
-    timestamps, covs_t, ISIs, ys, ys_filt, filter_length = data
+    timestamps, covs_t, ISIs, ys, ys_filt = data
     neurons = ys.shape[0]
     
     # predicted intensities and posterior sampling
     pred_window = np.arange(pred_start, pred_end)
     pred_window_filt = np.arange(pred_start, pred_end + filter_length - 1)
     x_eval = covs_t[None, None, pred_window].repeat(num_samps, axis=0)
-    ini_Y = ys_filt[None, :, pred_window_filt[:filter_length]].repeat(num_samps, axis=0)
+    ini_Y = ys_filt[None, :, pred_window_filt[:filter_length]].repeat(
+        num_samps, axis=0) if ys_filt is not None else None
 
     if obs_type == 'factorized_gp':
         sample_ys, log_rho_ts = obs_model.sample_posterior(
@@ -399,7 +431,7 @@ def gp_regression(
     lr_start = 1e-2, 
     lr_decay = 0.9995, 
     lr_end = 1e-3, 
-    loss_margin = 0., 
+    loss_margin = -1e-1, 
     margin_epochs = 100, 
     max_epochs = 3000, 
     jitter = 1e-6, 
@@ -572,7 +604,7 @@ def gp_regression(
 
 # processing
 def evaluate_regression_fits(
-    checkpoint_dir, reg_config_names, kernel_gen_func, dataset_dict, test_dataset_dicts, rng, prng_state
+    checkpoint_dir, reg_config_names, kernel_gen_func, dataset_dict, test_dataset_dicts, rng, prng_state, batch_size
 ):
     tbin = dataset_dict["properties"]["tbin"]
     neurons = dataset_dict["properties"]["neurons"]
@@ -603,58 +635,69 @@ def evaluate_regression_fits(
         timestamps, covs_t, ISIs, observations, filter_length = template.select_inputs(
             dataset_dict, config)
         
-        ys = observations[:, filter_length:]
-        ys_filt = observations[:, :-1]
-        data = (timestamps, covs_t, ISIs, ys, ys_filt, filter_length)
-        
+        if batch_size is None:  # full batch
+            batch_size = len(timestamps)
+            
         # train likelihoods and rate/time rescaling
         print('Training data...')
-#        train_ell = None
-        train_ell = likelihood_metric(
-            prng_state, data, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=False)
-        prng_state, _ = jr.split(prng_state)
+        dataloader = lib.utils.loaders.BatchedTimeSeries(
+            timestamps, covs_t, ISIs, observations, batch_size, filter_length)
+        
+        train_ell = None
+#         train_ell = likelihood_metric(
+#             prng_state, dataloader, model.obs_model, obs_type, lik_int_method, jitter, 
+#             joint_samples=True, log_predictive=False)
+#         prng_state, _ = jr.split(prng_state)
         
         train_lpd = None
 #         train_lpd = likelihood_metric(
-#             prng_state, data, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=True)
+#             prng_state, dataloader, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=True)
 #         prng_state, _ = jr.split(prng_state)
         
+        dataloader = lib.utils.loaders.BatchedTimeSeries(
+            timestamps, covs_t, ISIs, observations, len(timestamps), filter_length)
         sort_cdfs, T_KSs, sign_KSs, p_KSs = time_rescaling_statistics(
-            data, model.obs_model, obs_type, jitter, list(range(neurons)))
+            dataloader.load_batch(0), model.obs_model, obs_type, jitter, outdims_per_batch=1)
 
         # test data
         print('Test data...')
-        
         test_lpds, test_ells = [], []
         pred_log_intensities, pred_spiketimes = [], []
         sample_log_rhos, sample_spiketimes = [], []
-        for test_dataset_dict in test_dataset_dicts:  # test
+        
+        iterator = tqdm(range(len(test_dataset_dicts)))
+        for en in iterator:  # test
+            test_dataset_dict = test_dataset_dicts[en]
             timestamps, covs_t, ISIs, observations, filter_length = template.select_inputs(
                 test_dataset_dict, config)
             
-            test_ys = observations[:, filter_length:]
-            test_ys_filt = observations[:, :-1]
-            data = (timestamps, covs_t, ISIs, test_ys, test_ys_filt, filter_length)
+            dataloader = lib.utils.loaders.BatchedTimeSeries(
+                timestamps, covs_t, ISIs, observations, batch_size, filter_length)
             
             test_ell = likelihood_metric(
-                prng_state, data, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=False)
+                prng_state, dataloader, model.obs_model, obs_type, lik_int_method, jitter, 
+                unroll=10, joint_samples=True, log_predictive=False)
             prng_state, _ = jr.split(prng_state)
             
             test_lpd = None
-#             test_lpd = likelihood_metric(
-#                 prng_state, data, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=True)
-#             prng_state, _ = jr.split(prng_state)
+            #test_lpd = likelihood_metric(
+            #    prng_state, dataloader, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=True)
+            prng_state, _ = jr.split(prng_state)
             
             test_ells.append(test_ell)
             test_lpds.append(test_lpd)
             
+            dataloader = lib.utils.loaders.BatchedTimeSeries(
+                timestamps, covs_t, ISIs, observations, len(timestamps), filter_length)
+            
             pred_ys, pred_log_intens = conditional_intensity(
                 prng_state, 
-                data, 
+                dataloader.load_batch(0), 
                 model.obs_model, 
                 obs_type, 
                 pred_start, 
                 pred_end, 
+                filter_length, 
                 jitter, 
                 list(range(neurons)), 
                 sampling=False, 
@@ -669,11 +712,12 @@ def evaluate_regression_fits(
             sample_ys, log_rho_ts = sample_activity(
                 prng_state, 
                 num_samps, 
-                data, 
+                dataloader.load_batch(0), 
                 model.obs_model, 
                 obs_type, 
                 pred_start, 
                 pred_end, 
+                filter_length, 
                 jitter, 
             )
             prng_state, _ = jr.split(prng_state)
@@ -742,6 +786,7 @@ def analyze_variability_stats(
         dataset_dict, config)
     
     ### evaluation ###
+    print('Computing ISI statistics...')
     x_locs = covs_t[::dilation, :]
     isi_locs = ISIs[:, ::dilation, :]
     eval_pts = x_locs.shape[0]
@@ -754,13 +799,14 @@ def analyze_variability_stats(
         isi_locs, 
         model.obs_model, 
         jitter, 
-        list(range(2)), 
+        list(range(neurons)), 
         int_eval_pts = int_eval_pts, 
         num_quad_pts = num_quad_pts, 
         batch_size = batch_size, 
     )  # (mc, out_dims, eval_pts)
     
     ### stats ###
+    print('Analyzing ISI statistics...')
     X, Y = 1 / mean_ISI.mean(0).T, CV_ISI.mean(0).T  # (out_dims, pts)
     a, b, R2_lin = linear_regression(X, Y)
     gp_model, tracker, R2_gp = gp_regression(
