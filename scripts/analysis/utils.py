@@ -629,6 +629,7 @@ def evaluate_regression_fits(
             rng, 
         )
         obs_type = config.observations.split('-')[0]
+        joint_samples = config.joint_samples
         jitter = config.jitter
 
         # data
@@ -646,7 +647,7 @@ def evaluate_regression_fits(
         train_ell = None
 #         train_ell = likelihood_metric(
 #             prng_state, dataloader, model.obs_model, obs_type, lik_int_method, jitter, 
-#             joint_samples=True, log_predictive=False)
+#             joint_samples=joint_samples, log_predictive=False)
 #         prng_state, _ = jr.split(prng_state)
         
         train_lpd = None
@@ -676,7 +677,7 @@ def evaluate_regression_fits(
             
             test_ell = likelihood_metric(
                 prng_state, dataloader, model.obs_model, obs_type, lik_int_method, jitter, 
-                unroll=10, joint_samples=True, log_predictive=False)
+                unroll=10, joint_samples=joint_samples, log_predictive=False)
             prng_state, _ = jr.split(prng_state)
             
             test_lpd = None
