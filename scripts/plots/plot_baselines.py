@@ -50,9 +50,9 @@ def spike_history_filters(rng, prng_state, jitter, array_type):
     x_dims = 1
 
     # qSVGP inducing points
-    induc_locs = np.linspace(0, 500, num_induc)[None, :, None].repeat(obs_dims, axis=0)
+    induc_locs = np.linspace(0, filter_length, num_induc)[None, :, None].repeat(obs_dims, axis=0)
     u_mu = 0.0*rng.normal(size=(obs_dims, num_induc, 1))
-    u_Lcov = 1.0*np.eye(num_induc)[None, ...].repeat(obs_dims, axis=0)
+    u_Lcov = 0.1*np.eye(num_induc)[None, ...].repeat(obs_dims, axis=0)
 
     # kernel
     len_fx = 100.0*np.ones((obs_dims, x_dims))  # GP lengthscale
@@ -75,7 +75,7 @@ def spike_history_filters(rng, prng_state, jitter, array_type):
         filter_length,
     )
     
-    gp_filter_t, _ = flt.sample_posterior(prng_state, num_samps, None, jitter)
+    gp_filter_t, _ = flt.sample_posterior(prng_state, num_samps, False, None, jitter)
     gp_filter_t = np.array(gp_filter_t)
     
     # export

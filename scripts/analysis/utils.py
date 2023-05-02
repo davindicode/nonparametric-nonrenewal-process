@@ -669,6 +669,10 @@ def evaluate_regression_fits(
         joint_samples = config.joint_samples
         unroll = config.unroll
         jitter = config.jitter
+        
+        if model.obs_model.gp.kernel.out_dims != neurons:
+            print('INCOMPATIBLE MODEL')
+            continue
 
         # data
         timestamps, covs_t, ISIs, observations, filter_length = template.select_inputs(

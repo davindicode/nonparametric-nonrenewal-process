@@ -33,10 +33,12 @@ def tuning(
     dataset_dict, 
     rng, 
     prng_state, 
-    num_samps = 30, 
-    int_eval_pts = 100, 
-    num_quad_pts = 10, 
-    batch_size = 100, 
+    neuron_list, 
+    num_samps, 
+    int_eval_pts, 
+    num_quad_pts, 
+    batch_size, 
+    outdims_per_batch, 
 ):
     """
     Compute tuning curves of BNPP model
@@ -89,7 +91,7 @@ def tuning(
         pos_isi_locs, 
         model.obs_model, 
         jitter, 
-        list(range(neurons)), 
+        neuron_list, 
         int_eval_pts = int_eval_pts, 
         num_quad_pts = num_quad_pts, 
         batch_size = batch_size, 
@@ -117,28 +119,24 @@ def tuning(
     isi_conds = mean_ISIs[:, None] * np.ones((pts, neurons, ISI_order-1))
     x_conds = 1.*np.ones((pts, covs_dims))
     
-    GT_rate_conds = vmap(ratefunc)(x_conds)
+    ISI_densities = utils.compute_ISI_densities(
+        prng_state, 
+        num_samps, 
+        cisi_t_eval, 
+        isi_conds, 
+        x_conds, 
+        model.obs_model, 
+        jitter, 
+        outdims_list = neuron_list, 
+        int_eval_pts = int_eval_pts, 
+        num_quad_pts = num_quad_pts, 
+        outdims_per_batch = outdims_per_batch, 
+    )  # (eval_pts, mc, out_dims, ts)
     
-    ISI_densities, GT_ISI_densities = [], []
+    # ground truth conditional ISIs
+    GT_rate_conds = vmap(ratefunc)(x_conds)
+    GT_ISI_densities = []
     for pn in range(pts):
-        
-        ISI_density = model.obs_model.sample_conditional_ISI(
-            prng_state,
-            num_samps,
-            cisi_t_eval,
-            jnp.array(isi_conds[pn]), 
-            jnp.array(x_conds[pn]),
-            sel_outdims=None, 
-            int_eval_pts=int_eval_pts,
-            num_quad_pts=num_quad_pts,
-            prior=False,
-            jitter=jitter, 
-        )
-        prng_state, _ = jr.split(prng_state)
-        
-        ISI_densities.append(np.array(ISI_density))
-        
-        # ground truth conditional ISIs
         rate_cond  = GT_rate_conds[pn]
         gt_isi = []
         for rll in renewals_ll:
@@ -149,7 +147,6 @@ def tuning(
         
     # arrays
     cisi_t_eval = np.array(cisi_t_eval)
-    ISI_densities = np.stack(ISI_densities, axis=0)
     GT_ISI_densities = np.stack(GT_ISI_densities, axis=0)
     
     # ISI kernel ARD
@@ -263,10 +260,12 @@ def main():
                 dataset_dict, 
                 rng, 
                 prng_state, 
+                tuning_neuron_list, 
                 num_samps = 30, 
                 int_eval_pts = 1000, 
                 num_quad_pts = 100, 
-                batch_size = 1000, 
+                batch_size = 100, 
+                outdims_per_batch = 2, 
             )
 
         ### export ###

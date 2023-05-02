@@ -32,6 +32,7 @@ def tuning(
     int_eval_pts, 
     num_quad_pts, 
     batch_size, 
+    outdims_per_batch, 
 ):
     """
     Compute tuning curves of BNPP model
@@ -109,7 +110,7 @@ def tuning(
         outdims_list = neuron_list, 
         int_eval_pts = int_eval_pts, 
         num_quad_pts = num_quad_pts, 
-        outdims_per_batch = 2, 
+        outdims_per_batch = outdims_per_batch, 
     )  # (eval_pts, mc, out_dims, ts)
     
     ### ISI kernel ARD ###
@@ -227,7 +228,7 @@ def main():
     
     process_steps = 3
     for k in range(process_steps):  # save after finishing each dict
-        
+        k = 2- k
         if k == 0:
             regression_dict = utils.evaluate_regression_fits(
                 checkpoint_dir, reg_config_names, th1.observed_kernel_dict_induc_list, 

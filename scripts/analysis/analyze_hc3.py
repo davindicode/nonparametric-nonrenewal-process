@@ -161,7 +161,7 @@ def main():
     parser.add_argument("--datadir", default="../../data/hc3/", type=str)
     parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
 
-    parser.add_argument("--batch_size", default=50000, type=int)
+    parser.add_argument("--batch_size", default=100000, type=int)
     
     parser.add_argument("--device", default=0, type=int)
     parser.add_argument("--cpu", dest="cpu", action="store_true")
@@ -199,10 +199,10 @@ def main():
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_PP-log_rcb-8-17.-36.-6.-30.-self-H500_factorized_gp-32-1000_' + \
         'X[x-hd-theta]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
         # BNPP
-        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern32-1000-n2._' + \
-        'X[x-hd-theta]_Z[]_freeze[]', 
-        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern32-1000-n2._' + \
-        'X[x-hd-theta]_Z[]_freeze[obs_model0log_warp_tau]', 
+#         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern32-1000-n2._' + \
+#         'X[x-hd-theta]_Z[]_freeze[]', 
+#         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern32-1000-n2._' + \
+#         'X[x-hd-theta]_Z[]_freeze[obs_model0log_warp_tau]', 
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern32-matern32-1000-n2._' + \
         'X[x-hd-theta]_Z[]_freeze[]', 
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern32-matern32-1000-n2._' + \
