@@ -38,16 +38,16 @@ def generate_behaviour(prng_state, evalsteps, L):
     jitter = 1e-6
 
     var_x = 1.0*np.ones((x_dims))  # GP variance
-    len_x = 1.0*np.ones((x_dims, 1))  # GP lengthscale
+    len_x = 2.0*np.ones((x_dims, 1))  # GP lengthscale
 
     kernx = lib.GP.kernels.Matern52(
         x_dims, variance=var_x, lengthscale=len_x)
 
     # site_init
-    Tsteps = 4
-    site_locs = np.linspace(0.0, 1., Tsteps)  # s
-    site_obs = 0. * np.ones([Tsteps, x_dims, 1]) + 0*np.random.randn(Tsteps, x_dims, 1)
-    site_Lcov = 0.01 * np.eye(x_dims)[None, ...].repeat(Tsteps, axis=0)
+    Tsteps = 0
+    site_locs = np.empty(Tsteps)  # s
+    site_obs = np.zeros([Tsteps, x_dims, 1])
+    site_Lcov = np.eye(x_dims)[None, ...].repeat(Tsteps, axis=0)
 
     state_space = lib.GP.markovian.GaussianLTI(
         kernx, site_locs, site_obs, site_Lcov, diagonal_site=True, fixed_grid_locs=False)
@@ -60,12 +60,12 @@ def generate_behaviour(prng_state, evalsteps, L):
 
 
 
-def model_inputs(prng_state, evalsteps, L):
+def model_inputs(prng_state, rng, evalsteps, L):
     evals = np.arange(evalsteps)
     dt = 0.001
 
     t_eval = np.zeros(evalsteps)
-    y = (np.random.randn(evalsteps) > 2.)
+    y = (rng.normal(size=(evalsteps,)) > 2.2)
     spiketimes = np.where(y > 0)[0]
 
     pos_sample = generate_behaviour(prng_state, evalsteps, L)
@@ -115,9 +115,9 @@ def sample_conditional_ISI(
 
     # evaluation locs
     tau_tilde, log_dtilde_dt = vmap(
-        bnpp._log_time_transform_jac, (1, None, None), 1
+        bnpp._log_time_transform_jac, (1, None), 1
     )(
-        tau_eval[None, :], False, sel_outdims
+        tau_eval[None, :], False
     )  # (obs_dims, locs)
 
     log_rho_tilde, int_rho_tau_tilde, log_normalizer = bnpp._sample_log_ISI_tilde(

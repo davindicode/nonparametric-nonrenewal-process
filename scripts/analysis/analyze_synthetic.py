@@ -135,7 +135,7 @@ def tuning(
     
     # ground truth conditional ISIs
     GT_rate_conds = vmap(ratefunc)(x_conds)
-    GT_ISI_densities = []
+    GT_ISI_densities, GT_unit_renewals = [], []
     for pn in range(pts):
         rate_cond  = GT_rate_conds[pn]
         gt_isi = []
@@ -145,9 +145,14 @@ def tuning(
         gt_isi = np.concatenate(gt_isi, axis=1)  # (pts, obs_dims)
         GT_ISI_densities.append(gt_isi)
         
+    for rll in renewals_ll:
+        GT_unit_renewals.append(vmap(rll)(cisi_t_eval[:, None]))
+    GT_unit_renewals = np.concatenate(GT_unit_renewals, axis=1)  # (pts, obs_dims)
+        
     # arrays
     cisi_t_eval = np.array(cisi_t_eval)
     GT_ISI_densities = np.stack(GT_ISI_densities, axis=0)
+    GT_unit_renewals = np.stack(GT_unit_renewals, axis=0)
     
     # ISI kernel ARD
     warp_tau = np.exp(model.obs_model.log_warp_tau)
@@ -168,6 +173,7 @@ def tuning(
         'ISI_xs_conds': x_conds, 
         'ISI_densities': ISI_densities, 
         'GT_ISI_densities': GT_ISI_densities, 
+        'GT_unit_renewals': GT_unit_renewals, 
         'warp_tau': warp_tau, 
         'len_tau': len_tau, 
         'len_deltas': len_deltas, 
