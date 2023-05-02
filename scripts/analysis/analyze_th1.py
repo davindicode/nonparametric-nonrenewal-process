@@ -28,10 +28,10 @@ def tuning(
     rng, 
     prng_state, 
     neuron_list, 
-    num_samps = 30, 
-    int_eval_pts = 1000, 
-    num_quad_pts = 100, 
-    batch_size = 1000, 
+    num_samps, 
+    int_eval_pts, 
+    num_quad_pts, 
+    batch_size, 
 ):
     """
     Compute tuning curves of BNPP model
@@ -59,18 +59,14 @@ def tuning(
     speed = dataset_dict['covariates']['speed']
     ISIs = dataset_dict['ISIs']
     
-    mean_ISIs = []
-    for n in range(neurons):
-        _ISIs = ISIs[:, n, :]
-        uisi = np.unique(_ISIs[..., 1])
-        uisi = uisi[~np.isnan(uisi)]
-        mean_ISIs.append(uisi.mean())
-    mean_ISIs = np.array(mean_ISIs)
+    mean_ISIs = utils.mean_ISI(ISIs)
     
     ### tuning ###
     
     # head direction
-    pts = 10
+    print('Head direction tuning...')
+    
+    pts = 100
     hd_x_locs = np.stack([
         np.linspace(0, 2*np.pi, pts)
     ], axis=1)  # (evals, x_dim)
@@ -90,34 +86,13 @@ def tuning(
     )  # (mc, eval_pts, out_dims)
     prng_state, _ = jr.split(prng_state)
     
-    # position
-#     grid_n = [4, 4]
-#     pos_x_locs = np.meshgrid(
-#         np.linspace(x.min(), x.max(), grid_n[0]), 
-#         np.linspace(y.min(), y.max(), grid_n[1]), 
-#     )
-#     pos_x_locs = np.stack(pos_x_locs, axis=-1)
-#     pos_isi_locs = np.ones((*grid_n, neurons, ISI_order-1))
+    ### conditional ISI densities ###
+    print('Conditional ISI densities...')
     
-#     pos_mean_ISI, pos_mean_invISI, pos_CV_ISI = utils.compute_ISI_stats(
-#         prng_state, 
-#         num_samps, 
-#         pos_x_locs, 
-#         pos_isi_locs, 
-#         model.obs_model, 
-#         jitter, 
-#         neuron_list, 
-#         int_eval_pts = int_eval_pts, 
-#         num_quad_pts = num_quad_pts, 
-#         batch_size = batch_size, 
-#     )  # (mc, eval_pts, out_dims)
-#     prng_state, _ = jr.split(prng_state)
-    
-    ### conditional ISI distribution ###
-    evalsteps = 120
+    evalsteps = 100
     cisi_t_eval = np.linspace(0.0, 5., evalsteps)
     
-    pts = 10
+    pts = 8
     isi_conds = mean_ISIs[:, None] * np.ones((pts, neurons, ISI_order-1))
     x_conds = np.stack([
         np.linspace(0, 2*np.pi, pts), 
@@ -131,9 +106,10 @@ def tuning(
         x_conds, 
         model.obs_model, 
         jitter, 
-        sel_outdims = jnp.array(neuron_list), 
+        outdims_list = neuron_list, 
         int_eval_pts = int_eval_pts, 
         num_quad_pts = num_quad_pts, 
+        outdims_per_batch = 2, 
     )  # (eval_pts, mc, out_dims, ts)
     
     ### ISI kernel ARD ###
@@ -143,16 +119,12 @@ def tuning(
     
     # export
     tuning_dict = {
+        'neuron_list': neuron_list, 
         'hd_x_locs': hd_x_locs, 
         'hd_isi_locs': hd_isi_locs, 
         'hd_mean_ISI': hd_mean_ISI, 
         'hd_mean_invISI': hd_mean_invISI, 
         'hd_CV_ISI': hd_CV_ISI, 
-#         'pos_x_locs': pos_x_locs, 
-#         'pos_isi_locs': pos_isi_locs, 
-#         'pos_mean_ISI': pos_mean_ISI, 
-#         'pos_mean_invISI': pos_mean_invISI, 
-#         'pos_CV_ISI': pos_CV_ISI, 
         'ISI_t_eval': cisi_t_eval, 
         'ISI_deltas_conds': isi_conds, 
         'ISI_xs_conds': x_conds, 
@@ -178,7 +150,7 @@ def main():
     parser.add_argument("--datadir", default="../../data/th1/", type=str)
     parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
 
-    parser.add_argument("--batch_size", default=5000000, type=int)
+    parser.add_argument("--batch_size", default=100000, type=int)
     
     parser.add_argument("--device", default=0, type=int)
     parser.add_argument("--cpu", dest="cpu", action="store_true")
@@ -206,21 +178,26 @@ def main():
 
     ### names ###
     reg_config_names = [
-#         'Mouse28_140313_wakeISI5sel0.0to0.5_PP-log__factorized_gp-8-1000_X[hd]_Z[]', 
-#         'Mouse28_140313_wakeISI5sel0.0to0.5_gamma-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-#         'Mouse28_140313_wakeISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-#         'Mouse28_140313_wakeISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-#         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-matern32-1000-n2._' + \
-#         'X[hd]_Z[]_freeze[obs_model0log_warp_tau]', 
+        # exponential and renewal
+        'Mouse28_140313_wakeISI5sel0.0to0.5_PP-log__factorized_gp-8-1000_X[hd]_Z[]', 
+        'Mouse28_140313_wakeISI5sel0.0to0.5_gamma-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
+        'Mouse28_140313_wakeISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
+        'Mouse28_140313_wakeISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
+        # conditional
         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_PP-log_rcb-16-17.-36.-6.-30.-self-H500_' + \
         'factorized_gp-8-1000_X[hd]_Z[]_freeze[obs_model0spikefilter0a-' + \
         'obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_lognorm-log_rcb-16-17.-36.-6.-30.-self-H500_' + \
         'rate_renewal_gp-8-1000_X[hd]_Z[]_freeze[]',
-        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-matern32-1000-n2._' + \
+        # BNPP
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern12-matern32-1000-n2._' + \
+        'X[hd]_Z[]_freeze[]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern12-matern32-1000-n2._' + \
         'X[hd]_Z[]_freeze[obs_model0log_warp_tau]', 
         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-matern32-1000-n2._' + \
         'X[hd]_Z[]_freeze[]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-matern32-1000-n2._' + \
+        'X[hd]_Z[]_freeze[obs_model0log_warp_tau]', 
     ]
 
     tuning_model_name = reg_config_names[-1]
@@ -231,7 +208,8 @@ def main():
 
     select_fracs = [0.0, 0.5]
     dataset_dict = th1.spikes_dataset(session_name, data_path, max_ISI_order, select_fracs)
-
+    neurons = dataset_dict["properties"]["neurons"]
+    
     test_select_fracs = [
         [0.5, 0.6], 
         [0.6, 0.7], 
@@ -244,34 +222,53 @@ def main():
     ]
 
     ### analysis ###
-    regression_dict = utils.evaluate_regression_fits(
-        checkpoint_dir, reg_config_names, th1.observed_kernel_dict_induc_list, 
-        dataset_dict, test_dataset_dicts, rng, prng_state, batch_size
-    )
+    regression_dict, variability_dict, tuning_dict = {}, {}, {}
+    tuning_neuron_list = list(range(neurons))
     
-    variability_dict = utils.analyze_variability_stats(
-        checkpoint_dir, tuning_model_name, th1.observed_kernel_dict_induc_list, 
-        dataset_dict, rng, prng_state, 
-        num_samps = 3,#30, 
-        dilation = 50000, 
-        int_eval_pts = 10,#1000, 
-        num_quad_pts = 3,#100, 
-        batch_size = 100, 
-        jitter = 1e-6, 
-    )
-    
-    tuning_dict = tuning(
-        checkpoint_dir, tuning_model_name, dataset_dict, rng, prng_state, batch_size
-    )
+    process_steps = 3
+    for k in range(process_steps):  # save after finishing each dict
+        
+        if k == 0:
+            regression_dict = utils.evaluate_regression_fits(
+                checkpoint_dir, reg_config_names, th1.observed_kernel_dict_induc_list, 
+                dataset_dict, test_dataset_dicts, rng, prng_state, batch_size
+            )
+        
+        elif k == 1:
+            variability_dict = utils.analyze_variability_stats(
+                checkpoint_dir, tuning_model_name, th1.observed_kernel_dict_induc_list, 
+                dataset_dict, rng, prng_state, 
+                num_samps = 30, 
+                dilation = 100, 
+                int_eval_pts = 1000, 
+                num_quad_pts = 100, 
+                batch_size = 100, 
+                num_induc = 8, 
+                jitter = 1e-6, 
+            )
 
-    ### export ###
-    data_run = {
-        "regression": regression_dict,
-        "variability": variability_dict, 
-        "tuning": tuning_dict, 
-    }
+        elif k == 2:
+            tuning_dict = tuning(
+                checkpoint_dir, 
+                tuning_model_name, 
+                dataset_dict, 
+                rng, 
+                prng_state, 
+                tuning_neuron_list, 
+                num_samps = 30, 
+                int_eval_pts = 1000, 
+                num_quad_pts = 100, 
+                batch_size = 1000, 
+                outdims_per_batch = 2, 
+            )
 
-    pickle.dump(data_run, open(save_dir + "th1_results.p", "wb"))
+        ### export ###
+        data_run = {
+            "regression": regression_dict,
+            "variability": variability_dict, 
+            "tuning": tuning_dict, 
+        }
+        pickle.dump(data_run, open(save_dir + "results_th1.p", "wb"))
 
 
 if __name__ == "__main__":

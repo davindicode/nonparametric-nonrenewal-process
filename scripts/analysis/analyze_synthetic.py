@@ -10,6 +10,9 @@ import synthetic
 sys.path.append("../../../GaussNeuro")
 import gaussneuro as lib
 
+sys.path.append("../../data/synthetic")
+import generate
+
 import utils
 
 import jax
@@ -25,7 +28,15 @@ import utils
 
 
 def tuning(
-    checkpoint_dir, model_name, dataset_dict, rng, prng_state, batch_size
+    checkpoint_dir, 
+    model_name, 
+    dataset_dict, 
+    rng, 
+    prng_state, 
+    num_samps = 30, 
+    int_eval_pts = 100, 
+    num_quad_pts = 10, 
+    batch_size = 100, 
 ):
     """
     Compute tuning curves of BNPP model
@@ -52,19 +63,25 @@ def tuning(
     y = dataset_dict['covariates']['y']
     ISIs = dataset_dict['ISIs']
     
+    mean_ISIs = utils.mean_ISI(ISIs)
+    
     ### tuning ###
-    num_samps = 30
+    print('Position tuning...')
+    
+    # ground_truth
+    mdl = generate.model('Gaussian')
+    ratefunc, _, renewals_ll, _, _ = mdl.get_model()
     
     pos_x_locs = np.meshgrid(
-        np.linspace(x.min(), x.max(), 4), 
-        np.linspace(y.min(), y.max(), 4), 
+        np.linspace(x.min(), x.max(), 30), 
+        np.linspace(y.min(), y.max(), 30), 
     )
     pos_x_locs = np.stack(pos_x_locs, axis=-1)
     or_shape = pos_x_locs.shape[:-1]
     pos_x_locs = pos_x_locs.reshape(-1, covs_dims)  # (evals, x_dim)
     eval_pts = pos_x_locs.shape[0]
     
-    pos_isi_locs = np.ones((eval_pts, neurons, ISI_order-1))    
+    pos_isi_locs = mean_ISIs[:, None] * np.ones((eval_pts, neurons, ISI_order-1))    
     pos_mean_ISI, pos_mean_invISI, pos_CV_ISI = utils.compute_ISI_stats(
         prng_state, 
         num_samps, 
@@ -73,27 +90,36 @@ def tuning(
         model.obs_model, 
         jitter, 
         list(range(neurons)), 
-        int_eval_pts = 100, 
-        num_quad_pts = 10, 
-        batch_size = 100, 
+        int_eval_pts = int_eval_pts, 
+        num_quad_pts = num_quad_pts, 
+        batch_size = batch_size, 
     )
     prng_state, _ = jr.split(prng_state)
     
+    # ground truth rate maps
+    GT_rates = vmap(ratefunc)(jnp.array(pos_x_locs))
+    
+    # reshape
     pos_x_locs = pos_x_locs.reshape(*or_shape, *pos_x_locs.shape[1:])
     pos_isi_locs = pos_isi_locs.reshape(*or_shape, *pos_isi_locs.shape[1:])
     pos_mean_ISI = pos_mean_ISI.reshape(num_samps, -1, *or_shape)
     pos_mean_invISI = pos_mean_invISI.reshape(num_samps, -1, *or_shape)
     pos_CV_ISI = pos_CV_ISI.reshape(num_samps, -1, *or_shape)
+    GT_rates = np.array(GT_rates.reshape(*or_shape, -1))
     
     ### conditional ISI distribution ###
+    print('Conditional ISI densities...')
+    
     evalsteps = 120
     cisi_t_eval = jnp.linspace(0.0, 5., evalsteps)
     
     pts = 10
-    isi_conds = np.ones((pts, neurons, ISI_order-1))
+    isi_conds = mean_ISIs[:, None] * np.ones((pts, neurons, ISI_order-1))
     x_conds = 1.*np.ones((pts, covs_dims))
     
-    ISI_densities = []
+    GT_rate_conds = vmap(ratefunc)(x_conds)
+    
+    ISI_densities, GT_ISI_densities = [], []
     for pn in range(pts):
         
         ISI_density = model.obs_model.sample_conditional_ISI(
@@ -103,8 +129,8 @@ def tuning(
             jnp.array(isi_conds[pn]), 
             jnp.array(x_conds[pn]),
             sel_outdims=None, 
-            int_eval_pts=100,
-            num_quad_pts=10,
+            int_eval_pts=int_eval_pts,
+            num_quad_pts=num_quad_pts,
             prior=False,
             jitter=jitter, 
         )
@@ -112,14 +138,26 @@ def tuning(
         
         ISI_densities.append(np.array(ISI_density))
         
+        # ground truth conditional ISIs
+        rate_cond  = GT_rate_conds[pn]
+        gt_isi = []
+        for rll in renewals_ll:
+            gt_isi.append(vmap(rll)(rate_cond * cisi_t_eval[:, None]))
+            
+        gt_isi = np.concatenate(gt_isi, axis=1)  # (pts, obs_dims)
+        GT_ISI_densities.append(gt_isi)
+        
+    # arrays
     cisi_t_eval = np.array(cisi_t_eval)
     ISI_densities = np.stack(ISI_densities, axis=0)
+    GT_ISI_densities = np.stack(GT_ISI_densities, axis=0)
     
     # ISI kernel ARD
     warp_tau = np.exp(model.obs_model.log_warp_tau)
     len_tau, len_deltas, len_xs = utils.extract_lengthscales(
         model.obs_model.gp.kernel.kernels, ISI_order)
-    
+            
+            
     # export
     tuning_dict = {
         'pos_x_locs': pos_x_locs, 
@@ -127,14 +165,17 @@ def tuning(
         'pos_mean_ISI': pos_mean_ISI, 
         'pos_mean_invISI': pos_mean_invISI, 
         'pos_CV_ISI': pos_CV_ISI, 
+        'GT_rates': GT_rates, 
         'ISI_t_eval': cisi_t_eval, 
         'ISI_deltas_conds': isi_conds, 
         'ISI_xs_conds': x_conds, 
         'ISI_densities': ISI_densities, 
+        'GT_ISI_densities': GT_ISI_densities, 
         'warp_tau': warp_tau, 
         'len_tau': len_tau, 
         'len_deltas': len_deltas, 
         'len_xs': len_xs, 
+        
     }
     return tuning_dict
 
@@ -154,7 +195,7 @@ def main():
     parser.add_argument("--datadir", default="../../data/synthetic/", type=str)
     parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
 
-    parser.add_argument("--batch_size", default=10000, type=int)
+    parser.add_argument("--batch_size", default=100000, type=int)
     
     parser.add_argument("--device", default=0, type=int)
     parser.add_argument("--cpu", dest="cpu", action="store_true")
@@ -185,7 +226,9 @@ def main():
     ### names ###
     ISI_order = 4
     reg_config_names = [
-        #'syn_data_seed123ISI4sel0.0to1.0_PP-log__factorized_gp-16-1000_X[x-y]_Z[]', 
+        'syn_data_seed123ISI4sel0.0to1.0_PP-log__factorized_gp-16-1000_X[x-y]_Z[]', 
+        'syn_data_seed123ISI4sel0.0to1.0_isi4__nonparam_pp_gp-48-matern32-matern32-1000-n2._' + \
+        'X[x-y]_Z[]_freeze[]', 
         'syn_data_seed123ISI4sel0.0to1.0_isi4__nonparam_pp_gp-48-matern32-matern32-1000-n2._' + \
         'X[x-y]_Z[]_freeze[obs_model0log_warp_tau]', 
     ]
@@ -198,24 +241,40 @@ def main():
 
     select_fracs = [0.0, 1.0]
     dataset_dict = synthetic.spikes_dataset(session_name, data_path, max_ISI_order, select_fracs)
-
-    ### analysis ###
-    regression_dict = utils.evaluate_regression_fits(
-        checkpoint_dir, reg_config_names, synthetic.observed_kernel_dict_induc_list, 
-        dataset_dict, [], rng, prng_state, batch_size
-    )
+    neurons = dataset_dict["properties"]["neurons"]
     
-    tuning_dict = tuning(
-        checkpoint_dir, tuning_model_name, dataset_dict, rng, prng_state, batch_size
-    )
+    ### analysis ###
+    regression_dict, tuning_dict = {}, {}
+    tuning_neuron_list = list(range(neurons))
+    
+    process_steps = 2
+    for k in range(process_steps):  # save after finishing each dict
+        
+        if k == 0:
+            regression_dict = utils.evaluate_regression_fits(
+                checkpoint_dir, reg_config_names, synthetic.observed_kernel_dict_induc_list, 
+                dataset_dict, [], rng, prng_state, batch_size
+            )
 
-    ### export ###
-    data_run = {
-        "regression": regression_dict,
-        "tuning": tuning_dict, 
-    }
+        elif k == 1:
+            tuning_dict = tuning(
+                checkpoint_dir, 
+                tuning_model_name, 
+                dataset_dict, 
+                rng, 
+                prng_state, 
+                num_samps = 30, 
+                int_eval_pts = 1000, 
+                num_quad_pts = 100, 
+                batch_size = 1000, 
+            )
 
-    pickle.dump(data_run, open(save_dir + "synthetic_results.p", "wb"))
+        ### export ###
+        data_run = {
+            "regression": regression_dict,
+            "tuning": tuning_dict, 
+        }
+        pickle.dump(data_run, open(save_dir + "results_synthetic.p", "wb"))
 
 
 if __name__ == "__main__":

@@ -28,10 +28,11 @@ def tuning(
     rng, 
     prng_state, 
     neuron_list, 
-    num_samps = 30, 
-    int_eval_pts = 1000, 
-    num_quad_pts = 100, 
-    batch_size = 1000, 
+    num_samps, 
+    int_eval_pts, 
+    num_quad_pts, 
+    batch_size, 
+    outdims_per_batch, 
 ):
     """
     Compute tuning curves of BNPP model
@@ -45,79 +46,103 @@ def tuning(
     model, config = utils.load_model_and_config(
         checkpoint_dir + model_name, 
         dataset_dict, 
-        th1.observed_kernel_dict_induc_list, 
+        hc3.observed_kernel_dict_induc_list, 
         rng, 
     )
     obs_type = config.observations.split('-')[0]
     jitter = config.jitter
     ISI_order = int(config.likelihood[3:])
     
-    ### evaluation ###
-    locs_eval = jnp.linspace(0, 2*np.pi, 30)[:, None]
-
-    n = 0
-    sel_outdims = jnp.array([n])
-    isi_cond = jnp.ones((len(sel_outdims), ISI_order-1))
-
-    def m(x_cond, n):
-        mean_ISI = model.obs_model.sample_conditional_ISI_expectation(
-            prng_state,
-            num_samps,
-            lambda x: x,
-            isi_cond, 
-            x_cond,
-            sel_outdims, 
-            int_eval_pts=1000,
-            f_num_quad_pts=100,
-            isi_num_quad_pts=100, 
-            prior=False,
-            jitter=jitter, 
-        )
-
-        secmom_ISI = model.obs_model.sample_conditional_ISI_expectation(
-            prng_state,
-            num_samps,
-            lambda x: x**2,
-            isi_cond, 
-            x_cond,
-            sel_outdims, 
-            int_eval_pts=1000,
-            f_num_quad_pts=100,
-            isi_num_quad_pts=100, 
-            prior=False,
-            jitter=jitter, 
-        )
-
-        var_ISI = (secmom_ISI - mean_ISI**2)
-        CV_ISI = jnp.sqrt(var_ISI) / (mean_ISI + 1e-12)
-
-    mean_ISI, var_ISI, CV_ISI = jax.vmap(m, (0, None))(locs_eval, sel_outdims)
-
-    ### conditional ISI distribution ###
-    evalsteps = 120
-    covs_dims = covs_t.shape[-1]
-
-    cisi_t_eval = jnp.linspace(0.0, 5., evalsteps)
-    isi_cond = jnp.ones((neurons, ISI_order-1))
-
-    x_cond = 1.*jnp.ones(covs_dims)
-    ISI_density = model.obs_model.sample_conditional_ISI(
-        prng_state,
-        num_samps,
-        cisi_t_eval,
-        isi_cond, 
-        x_cond,
-        sel_outdims=None, 
-        int_eval_pts=1000,
-        num_quad_pts=100,
-        prior=False,
-        jitter=jitter, 
-    )
-
+    # data
+    hd = dataset_dict['covariates']['hd']
+    x = dataset_dict['covariates']['x']
+    y = dataset_dict['covariates']['y']
+    speed = dataset_dict['covariates']['speed']
+    ISIs = dataset_dict['ISIs']
     
+    mean_ISIs = utils.mean_ISI(ISIs)
+    
+    ### tuning ###
+    
+    # position-theta direction
+    print('Position-theta tuning...')
+    
+    grid_n = [60, 30]
+    pts = np.prod(grid_n)
+    xt_x_locs = np.meshgrid(
+        np.linspace(x.min(), x.max(), grid_n[0]), 
+        np.linspace(0, 2*np.pi, grid_n[1]), 
+    )
+    xt_x_locs = np.stack([
+        xt_x_locs[0], 
+        0. * np.ones_like(xt_x_locs[0]),  # L to R runs
+        xt_x_locs[1], 
+    ], axis=-1)  # (grid_x, grid_theta, in_dims)
+    xt_isi_locs = mean_ISIs[:, None] * np.ones((*grid_n, neurons, ISI_order-1))
+    
+    xt_mean_ISI, xt_mean_invISI, xt_CV_ISI = utils.compute_ISI_stats(
+        prng_state, 
+        num_samps, 
+        xt_x_locs, 
+        xt_isi_locs, 
+        model.obs_model, 
+        jitter, 
+        neuron_list, 
+        int_eval_pts = int_eval_pts, 
+        num_quad_pts = num_quad_pts, 
+        batch_size = batch_size, 
+    )  # (mc, eval_pts, out_dims)
+    prng_state, _ = jr.split(prng_state)
+    
+    ### conditional ISI densities ###
+    print('Conditional ISI densities...')
+    
+    evalsteps = 100
+    cisi_t_eval = np.linspace(0.0, 5., evalsteps)
+    
+    pts = 8
+    isi_conds = mean_ISIs[:, None] * np.ones((pts, neurons, ISI_order-1))
+    x_conds = np.stack([
+        (x.max() - x.min()) / 4. * np.ones(pts) + x.min(), 
+        0. * np.ones(pts),  # L to R runs
+        np.linspace(0, 2*np.pi, pts), 
+    ], axis=-1)
+    
+    ISI_densities = utils.compute_ISI_densities(
+        prng_state, 
+        num_samps, 
+        cisi_t_eval, 
+        isi_conds, 
+        x_conds, 
+        model.obs_model, 
+        jitter, 
+        outdims_list = neuron_list, 
+        int_eval_pts = int_eval_pts, 
+        num_quad_pts = num_quad_pts, 
+        outdims_per_batch = outdims_per_batch, 
+    )  # (eval_pts, mc, out_dims, ts)
+
+    ### ISI kernel ARD ###
+    warp_tau = np.exp(model.obs_model.log_warp_tau)
+    len_tau, len_deltas, len_xs = utils.extract_lengthscales(
+        model.obs_model.gp.kernel.kernels, ISI_order)
+    
+    # export
     tuning_dict = {
-        'mean_ISI': mean_ISI, 
-        'CV_ISI': CV_ISI, 
+        'neuron_list': neuron_list, 
+        'xt_x_locs': xt_x_locs, 
+        'xt_isi_locs': xt_isi_locs, 
+        'xt_mean_ISI': xt_mean_ISI, 
+        'xt_mean_invISI': xt_mean_invISI, 
+        'xt_CV_ISI': xt_CV_ISI, 
+        'ISI_t_eval': cisi_t_eval, 
+        'ISI_deltas_conds': isi_conds, 
+        'ISI_xs_conds': x_conds, 
+        'ISI_densities': ISI_densities, 
+        'warp_tau': warp_tau, 
+        'len_tau': len_tau, 
+        'len_deltas': len_deltas, 
+        'len_xs': len_xs, 
     }
     return tuning_dict
     
@@ -165,12 +190,21 @@ def main():
     
     ### names ###
     reg_config_names = [
+        # exponential and renewal
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_PP-log__factorized_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]', 
-        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_PP-log_rcb-8-17.-36.-6.-30.-self-H500_factorized_gp-32-1000_' + \
-        'X[x-hd-theta]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_gamma-log__rate_renewal_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]', 
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]', 
-        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]', 
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]',
+        # conditional
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_PP-log_rcb-8-17.-36.-6.-30.-self-H500_factorized_gp-32-1000_' + \
+        'X[x-hd-theta]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
+        # BNPP
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern32-1000-n2._' + \
+        'X[x-hd-theta]_Z[]_freeze[]', 
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern32-1000-n2._' + \
+        'X[x-hd-theta]_Z[]_freeze[obs_model0log_warp_tau]', 
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern32-matern32-1000-n2._' + \
+        'X[x-hd-theta]_Z[]_freeze[]', 
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern32-matern32-1000-n2._' + \
         'X[x-hd-theta]_Z[]_freeze[obs_model0log_warp_tau]', 
     ]
@@ -183,7 +217,8 @@ def main():
 
     select_fracs = [0.0, 0.5]
     dataset_dict = hc3.spikes_dataset(session_name, data_path, max_ISI_order, select_fracs)
-
+    neurons = dataset_dict["properties"]["neurons"]
+    
     test_select_fracs = [
         [0.5, 0.6], 
         [0.6, 0.7], 
@@ -196,34 +231,52 @@ def main():
     ]
 
     ### analysis ###
-    regression_dict = utils.evaluate_regression_fits(
-        checkpoint_dir, reg_config_names, hc3.observed_kernel_dict_induc_list, 
-        dataset_dict, test_dataset_dicts, rng, prng_state, batch_size
-    )
+    regression_dict, variability_dict, tuning_dict = {}, {}, {}
+    tuning_neuron_list = list(range(neurons))
     
-    variability_dict = utils.analyze_variability_stats(
-        checkpoint_dir, tuning_model_name, hc3.observed_kernel_dict_induc_list, 
-        dataset_dict, rng, prng_state, 
-        num_samps = 3,#30, 
-        dilation = 50000, 
-        int_eval_pts = 10,#1000, 
-        num_quad_pts = 3,#100, 
-        batch_size = 100, 
-        jitter = 1e-6, 
-    )
-    
-    tuning_dict = tuning(
-        checkpoint_dir, tuning_model_name, dataset_dict, rng, prng_state, batch_size
-    )
+    process_steps = 3
+    for k in range(process_steps):  # save after finishing each dict
+        if k == 0:
+            regression_dict = utils.evaluate_regression_fits(
+                checkpoint_dir, reg_config_names, hc3.observed_kernel_dict_induc_list, 
+                dataset_dict, test_dataset_dicts, rng, prng_state, batch_size
+            )
 
-    ### export ###
-    data_run = {
-        "regression": regression_dict,
-        "variability": variability_dict, 
-        "tuning": tuning_dict, 
-    }
+        elif k == 1:
+            variability_dict = utils.analyze_variability_stats(
+                checkpoint_dir, tuning_model_name, hc3.observed_kernel_dict_induc_list, 
+                dataset_dict, rng, prng_state, 
+                num_samps = 30, 
+                dilation = 100, 
+                int_eval_pts = 1000, 
+                num_quad_pts = 100, 
+                batch_size = 100, 
+                num_induc = 8, 
+                jitter = 1e-6, 
+            )
 
-    pickle.dump(data_run, open(save_dir + "hc3_results.p", "wb"))
+        elif k == 2:
+            tuning_dict = tuning(
+                checkpoint_dir, 
+                tuning_model_name, 
+                dataset_dict, 
+                rng, 
+                prng_state, 
+                tuning_neuron_list, 
+                num_samps = 30, 
+                int_eval_pts = 1000, 
+                num_quad_pts = 100, 
+                batch_size = 100, 
+                outdims_per_batch = 2, 
+            )
+
+        ### export ###
+        data_run = {
+            "regression": regression_dict,
+            "variability": variability_dict, 
+            "tuning": tuning_dict, 
+        }
+        pickle.dump(data_run, open(save_dir + "results_hc3.p", "wb"))
 
 
 if __name__ == "__main__":

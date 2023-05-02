@@ -58,7 +58,7 @@ def spike_history_filters(rng, prng_state, jitter, array_type):
     len_fx = 100.0*np.ones((obs_dims, x_dims))  # GP lengthscale
     beta = 0.0 * np.ones(obs_dims)
     len_beta = 1.5 * len_fx
-    var_f = 1.0*np.ones(obs_dims)  # kernel variance
+    var_f = 0.1*np.ones(obs_dims)  # kernel variance
 
     kern = lib.GP.kernels.DecayingSquaredExponential(
         obs_dims, variance=var_f, lengthscale=len_fx, 
@@ -75,7 +75,7 @@ def spike_history_filters(rng, prng_state, jitter, array_type):
         filter_length,
     )
     
-    gp_filter_t = flt.sample_prior(prng_state, num_samps, None, jitter)
+    gp_filter_t, _ = flt.sample_posterior(prng_state, num_samps, None, jitter)
     gp_filter_t = np.array(gp_filter_t)
     
     # export

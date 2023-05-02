@@ -41,6 +41,9 @@ def load_model_and_config(filename, dataset_dict, mapping_builder, rng):
 
 
 def extract_lengthscales(kernels, ISI_order):
+    """
+    Extract and sort kernel lengthscales from BNPP models
+    """
     dim_counter, len_deltas, len_xs = 0, [], []
     for k in kernels:  # sort kernel lengthscales
         lens = np.array(k.lengthscale)
@@ -63,16 +66,34 @@ def extract_lengthscales(kernels, ISI_order):
     return len_tau, len_deltas, len_xs
 
 
+def mean_ISI(ISIs):
+    """
+    Compute the mean ISI from the lagged ISIs array
+    """
+    neurons = ISIs.shape[1]
+    mean_ISIs = []
+    for n in range(neurons):
+        _ISIs = ISIs[:, n, :]
+        uisi = np.unique(_ISIs[..., 1])
+        uisi = uisi[~np.isnan(uisi)]
+        mean_ISIs.append(uisi.mean())
+    mean_ISIs = np.array(mean_ISIs)
+    return mean_ISIs  # (neurons,)
+
+
+
 def compute_ISI_densities(
     prng_state, 
     num_samps, 
     cisi_t_eval, 
     isi_conds, 
     x_conds, 
+    obs_model, 
     jitter, 
-    sel_outdims, 
+    outdims_list, 
     int_eval_pts = 1000, 
     num_quad_pts = 100, 
+    outdims_per_batch = 5, 
 ):
     """
     Computes conditional ISI distributions per input location
@@ -84,24 +105,31 @@ def compute_ISI_densities(
     """
     pts = isi_conds.shape[0]
     
+    batches = int(np.ceil(len(outdims_list) / outdims_per_batch))
+    iterator = tqdm(range(pts))
     ISI_densities = []
-    for pn in range(pts):
+    for pn in iterator:
         
-        ISI_density = obs_model.sample_conditional_ISI(
-            prng_state,
-            num_samps,
-            jnp.array(cisi_t_eval),
-            jnp.array(isi_conds[pn]), 
-            jnp.array(x_conds[pn]),
-            sel_outdims=sel_outdims, 
-            int_eval_pts=int_eval_pts,
-            num_quad_pts=num_quad_pts,
-            prior=False,
-            jitter=jitter, 
-        )
-        prng_state, _ = jr.split(prng_state)
+        ISI_density = []
+        for b in range(batches):
+            sel_outdims = jnp.array(outdims_list[b*outdims_per_batch:(b+1)*outdims_per_batch])
+            ISI_density.append(
+                obs_model.sample_conditional_ISI(
+                    prng_state,
+                    num_samps,
+                    jnp.array(cisi_t_eval),
+                    jnp.array(isi_conds[pn]), 
+                    jnp.array(x_conds[pn]),
+                    sel_outdims=sel_outdims, 
+                    int_eval_pts=int_eval_pts,
+                    num_quad_pts=num_quad_pts,
+                    prior=False,
+                    jitter=jitter, 
+                )
+            )
+            prng_state, _ = jr.split(prng_state)
         
-        ISI_densities.append(np.array(ISI_density))
+        ISI_densities.append(np.concatenate(ISI_density, axis=1))
         
     return np.stack(ISI_densities, axis=0)
 
@@ -205,6 +233,9 @@ def likelihood_metric(
     joint_samples, 
     log_predictive, 
 ):
+    """
+    Compute likelihood metrics of Bayesian neural encoding models
+    """
     timesteps = len(dataloader.timestamps)  # total time steps
     
     llms = []
@@ -323,6 +354,9 @@ def conditional_intensity(
     sel_outdims, 
     sampling, 
 ):
+    """
+    Compute the mean log conditional intensity values given observed spike trains
+    """
     timestamps, covs_t, ISIs, ys, ys_filt = data
     neurons = ys.shape[0]
     sel_outdims = jnp.array(sel_outdims) if sel_outdims is not None else None
@@ -374,6 +408,9 @@ def sample_activity(
     filter_length, 
     jitter, 
 ):
+    """
+    Sample spike trains from the posterior predictive distributions
+    """
     timestamps, covs_t, ISIs, ys, ys_filt = data
     neurons = ys.shape[0]
     
@@ -630,6 +667,7 @@ def evaluate_regression_fits(
         )
         obs_type = config.observations.split('-')[0]
         joint_samples = config.joint_samples
+        unroll = config.unroll
         jitter = config.jitter
 
         # data
@@ -644,16 +682,15 @@ def evaluate_regression_fits(
         dataloader = lib.utils.loaders.BatchedTimeSeries(
             timestamps, covs_t, ISIs, observations, batch_size, filter_length)
         
-        train_ell = None
-#         train_ell = likelihood_metric(
-#             prng_state, dataloader, model.obs_model, obs_type, lik_int_method, jitter, 
-#             joint_samples=joint_samples, log_predictive=False)
-#         prng_state, _ = jr.split(prng_state)
+        train_ell = likelihood_metric(
+            prng_state, dataloader, model.obs_model, obs_type, lik_int_method, jitter, 
+            unroll=unroll, joint_samples=joint_samples, log_predictive=False)
+        prng_state, _ = jr.split(prng_state)
         
-        train_lpd = None
-#         train_lpd = likelihood_metric(
-#             prng_state, dataloader, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=True)
-#         prng_state, _ = jr.split(prng_state)
+        train_lpd = likelihood_metric(
+            prng_state, dataloader, model.obs_model, obs_type, lik_int_method, jitter, 
+            unroll=unroll, joint_samples=joint_samples, log_predictive=True)
+        prng_state, _ = jr.split(prng_state)
         
         dataloader = lib.utils.loaders.BatchedTimeSeries(
             timestamps, covs_t, ISIs, observations, len(timestamps), filter_length)
@@ -677,12 +714,12 @@ def evaluate_regression_fits(
             
             test_ell = likelihood_metric(
                 prng_state, dataloader, model.obs_model, obs_type, lik_int_method, jitter, 
-                unroll=10, joint_samples=joint_samples, log_predictive=False)
+                unroll=unroll, joint_samples=joint_samples, log_predictive=False)
             prng_state, _ = jr.split(prng_state)
             
-            test_lpd = None
-            #test_lpd = likelihood_metric(
-            #    prng_state, dataloader, model.obs_model, obs_type, lik_int_method, jitter, log_predictive=True)
+            test_lpd = likelihood_metric(
+                prng_state, dataloader, model.obs_model, obs_type, lik_int_method, jitter, 
+                unroll=unroll, joint_samples=joint_samples, log_predictive=True)
             prng_state, _ = jr.split(prng_state)
             
             test_ells.append(test_ell)
@@ -764,12 +801,13 @@ def analyze_variability_stats(
     int_eval_pts = 1000, 
     num_quad_pts = 100, 
     batch_size = 10, 
+    num_induc = 8, 
     jitter = 1e-6, 
 ):
     tbin = dataset_dict["properties"]["tbin"]
     neurons = dataset_dict["properties"]["neurons"]
 
-    print('Analyzing tuning for {}...'.format(model_name))
+    print('Analyzing spiking variability for {}...'.format(model_name))
 
     # config
     model, config = load_model_and_config(
@@ -815,8 +853,14 @@ def analyze_variability_stats(
         Y, 
         rng, 
         ini_len_fx = X.mean(-1) / 3., 
-        num_induc = 10, 
+        num_induc = num_induc, 
     )
+    
+    xx = np.array([np.linspace(0., x.max() * 1.2, 100) for x in X])
+    post_mean, _, _, _ = gp_model.gp.evaluate_posterior(
+        jnp.array(xx[None, ..., None]), mean_only=True, diag_cov=True, 
+        compute_KL=False, compute_aux=False, jitter=1e-6)
+    post_mean = np.array(post_mean[0, ..., 0] + gp_model.gp_mean[:, None])  # (out_dims, eval_pts)
     
     # export
     variability_dict = {
@@ -826,7 +870,8 @@ def analyze_variability_stats(
         'linear_intercept': b, 
         'linear_R2': R2_lin, 
         'GP_tracker': tracker, 
-        'GP_model': gp_model, 
+        'GP_post_locs': xx, 
+        'GP_post_mean': post_mean, 
         'GP_R2': R2_gp, 
     }
     return variability_dict
