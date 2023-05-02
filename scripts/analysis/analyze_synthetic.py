@@ -139,20 +139,19 @@ def tuning(
     for pn in range(pts):
         rate_cond  = GT_rate_conds[pn]
         gt_isi = []
-        for rll in renewals_ll:
-            gt_isi.append(vmap(rll)(rate_cond * cisi_t_eval[:, None]))
+        for ne, rll in enumerate(renewals_ll):
+            gt_isi.append(rate_cond[ne] * np.exp(vmap(rll)(rate_cond[ne] * cisi_t_eval[:, None])))
             
         gt_isi = np.concatenate(gt_isi, axis=1)  # (pts, obs_dims)
         GT_ISI_densities.append(gt_isi)
         
     for rll in renewals_ll:
-        GT_unit_renewals.append(vmap(rll)(cisi_t_eval[:, None]))
+        GT_unit_renewals.append(np.exp(vmap(rll)(cisi_t_eval[:, None])))
     GT_unit_renewals = np.concatenate(GT_unit_renewals, axis=1)  # (pts, obs_dims)
         
     # arrays
     cisi_t_eval = np.array(cisi_t_eval)
     GT_ISI_densities = np.stack(GT_ISI_densities, axis=0)
-    GT_unit_renewals = np.stack(GT_unit_renewals, axis=0)
     
     # ISI kernel ARD
     warp_tau = np.exp(model.obs_model.log_warp_tau)

@@ -31,14 +31,14 @@ def log_time_transform(t, inverse, warp_tau):
     return t_
 
 
-def generate_behaviour(prng_state, evalsteps, L):
+def generate_behaviour(prng_state, evalsteps, len_x, L):
     # animal position
     x_dims = 2
     num_samps = 1
     jitter = 1e-6
 
-    var_x = 1.0*np.ones((x_dims))  # GP variance
-    len_x = 2.0*np.ones((x_dims, 1))  # GP lengthscale
+    var_x = np.ones((x_dims))  # GP variance
+    len_x = len_x * np.ones((x_dims, 1))  # GP lengthscale
 
     kernx = lib.GP.kernels.Matern52(
         x_dims, variance=var_x, lengthscale=len_x)
@@ -68,7 +68,7 @@ def model_inputs(prng_state, rng, evalsteps, L):
     y = (rng.normal(size=(evalsteps,)) > 2.2)
     spiketimes = np.where(y > 0)[0]
 
-    pos_sample = generate_behaviour(prng_state, evalsteps, L)
+    pos_sample = generate_behaviour(prng_state, evalsteps, 1.0, L)
 
     ISIs = lib.utils.spikes.get_lagged_ISIs(y[:, None], 4, dt)
     uisi = np.unique(ISIs[..., 1])

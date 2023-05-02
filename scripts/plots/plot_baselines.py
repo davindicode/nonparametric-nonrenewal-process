@@ -75,7 +75,8 @@ def spike_history_filters(rng, prng_state, jitter, array_type):
         filter_length,
     )
     
-    gp_filter_t, _ = flt.sample_posterior(prng_state, num_samps, False, None, jitter)
+    #gp_filter_t, _ = flt.sample_posterior(prng_state, num_samps, False, None, jitter)
+    gp_filter_t = flt.sample_prior(prng_state, num_samps, None, jitter)
     gp_filter_t = np.array(gp_filter_t)
     
     # export
@@ -84,6 +85,29 @@ def spike_history_filters(rng, prng_state, jitter, array_type):
         'glm_filter': glm_filter_t,
     }
     return filters_dict
+
+
+
+def rate_rescaling(rng, dt = 0.001, p = 0.003, ts = 3000):
+    spikes_at = rng.binomial(1, p, size=(ts,))
+    spike_times = np.where(spikes_at > 0)[0]
+
+    time_t = np.arange(ts) * dt
+    rates_t = 30. * (np.sin(time_t * (1 + np.exp( -1.5 * (time_t - time_t[-1]/2.) ** 2 )))**2 + \
+        np.exp( -0.5 * (time_t - time_t[-1]/3.) ** 2 ))
+
+
+    rtime_t = np.cumsum(rates_t * dt)
+    rspike_times = np.ceil(rtime_t[spike_times] / dt).astype(int)
+    
+    data_dict = {
+        'time': time_t, 
+        'rates': rates_t, 
+        'spike_times': spike_times, 
+        'rescaled_spike_times': rspike_times, 
+        'rescaled_time': rtime_t, 
+    }
+    return data_dict
 
 
 
