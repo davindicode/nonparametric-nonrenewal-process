@@ -123,7 +123,7 @@ def tuning(
     ### conditional ISI densities ###
     print('Conditional ISI densities...')
     
-    evalsteps = 100
+    evalsteps = 200
     cisi_t_eval = np.linspace(0.0, 5., evalsteps)
     
     pts = 8
@@ -278,7 +278,7 @@ def main():
             variability_dict = utils.analyze_variability_stats(
                 checkpoint_dir, tuning_model_name, hc3.observed_kernel_dict_induc_list, 
                 dataset_dict, rng, prng_state, 
-                num_samps = 30, 
+                num_samps = 50, 
                 dilation = 100, 
                 int_eval_pts = 1000, 
                 num_quad_pts = 100, 
@@ -295,7 +295,7 @@ def main():
                 rng, 
                 prng_state, 
                 tuning_neuron_list, 
-                num_samps = 30, 
+                num_samps = 50, 
                 int_eval_pts = 1000, 
                 num_quad_pts = 100, 
                 batch_size = 100, 

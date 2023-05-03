@@ -112,26 +112,32 @@ def tuning(
     ### conditional ISI distribution ###
     print('Conditional ISI densities...')
     
-    evalsteps = 120
-    cisi_t_eval = jnp.linspace(0.0, 5., evalsteps)
+    evalsteps = 200
+    uisi_t_eval = jnp.linspace(0.0, 5., evalsteps)
+    cisi_t_eval = jnp.linspace(0.0, 1., evalsteps)
     
-    pts = 10
-    isi_conds = mean_ISIs[:, None] * np.ones((pts, neurons, ISI_order-1))
-    x_conds = 1.*np.ones((pts, covs_dims))
+    pts = 3
+    neuron_conds = [2, 5, 8]
+    isi_conds = [mean_ISIs[:, None] * np.ones((neurons, ISI_order-1))] * pts
+    x_conds = [np.array([400., 300.]), np.array([300., 200.]), np.array([250., 250.])]  # (cov_dims,)
     
-    ISI_densities = utils.compute_ISI_densities(
-        prng_state, 
-        num_samps, 
-        cisi_t_eval, 
-        isi_conds, 
-        x_conds, 
-        model.obs_model, 
-        jitter, 
-        outdims_list = neuron_list, 
-        int_eval_pts = int_eval_pts, 
-        num_quad_pts = num_quad_pts, 
-        outdims_per_batch = outdims_per_batch, 
-    )  # (eval_pts, mc, out_dims, ts)
+    ISI_densities = []
+    for pn in range(pts):
+        ISI_density = utils.compute_ISI_densities(
+            prng_state, 
+            num_samps, 
+            cisi_t_eval, 
+            isi_conds[pn][None], 
+            x_conds[pn][None], 
+            model.obs_model, 
+            jitter, 
+            outdims_list = [neuron_conds[pn]], 
+            int_eval_pts = int_eval_pts, 
+            num_quad_pts = num_quad_pts, 
+            outdims_per_batch = outdims_per_batch, 
+        )  # (1, mc, 1, ts)
+        ISI_densities.append(ISI_density[0])
+    ISI_densities = np.concatenate(ISI_densities, axis=1)  # (mc, pts, ts))
     
     # ground truth conditional ISIs
     GT_rate_conds = vmap(ratefunc)(x_conds)
@@ -146,7 +152,7 @@ def tuning(
         GT_ISI_densities.append(gt_isi)
         
     for rll in renewals_ll:
-        GT_unit_renewals.append(np.exp(vmap(rll)(cisi_t_eval[:, None])))
+        GT_unit_renewals.append(np.exp(vmap(rll)(uisi_t_eval[:, None])))
     GT_unit_renewals = np.concatenate(GT_unit_renewals, axis=1)  # (pts, obs_dims)
         
     # arrays
@@ -168,8 +174,10 @@ def tuning(
         'pos_CV_ISI': pos_CV_ISI, 
         'GT_rates': GT_rates, 
         'ISI_t_eval': cisi_t_eval, 
+        'unit_ISI_t_eval': uisi_t_eval, 
         'ISI_deltas_conds': isi_conds, 
         'ISI_xs_conds': x_conds, 
+        'ISI_neuron_conds': neuron_conds, 
         'ISI_densities': ISI_densities, 
         'GT_ISI_densities': GT_ISI_densities, 
         'GT_unit_renewals': GT_unit_renewals, 

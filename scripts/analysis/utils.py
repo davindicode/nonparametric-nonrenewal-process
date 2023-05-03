@@ -415,6 +415,7 @@ def sample_activity(
     pred_start, 
     pred_end, 
     filter_length, 
+    mean_ISIs, 
     jitter, 
 ):
     """
@@ -442,7 +443,7 @@ def sample_activity(
     elif obs_type == 'nonparam_pp_gp':
         timesteps, ISI_order = x_eval.shape[2], ISIs.shape[-1]
         ini_t_since = jnp.zeros((num_samps, neurons))
-        past_ISIs = jnp.zeros((num_samps, neurons, ISI_order - 1))
+        past_ISIs = mean_ISIs[:, None] * jnp.ones((num_samps, neurons, ISI_order - 1))
         sample_ys, log_rho_ts = obs_model.sample_posterior(
             prng_state, timesteps, x_eval, ini_t_since=ini_t_since, past_ISIs=past_ISIs, jitter=jitter)
         
@@ -654,6 +655,8 @@ def evaluate_regression_fits(
 ):
     tbin = dataset_dict["properties"]["tbin"]
     neurons = dataset_dict["properties"]["neurons"]
+    ISIs = dataset_dict['ISIs']
+    mean_ISIs = mean_ISI(ISIs)
     
     lik_int_method = {
         "type": "GH", 
@@ -755,7 +758,11 @@ def evaluate_regression_fits(
             )
             prng_state, _ = jr.split(prng_state)
             
-            pred_spkts = np.where(pred_ys > 0)[0] + pred_start * tbin
+            pred_spkts = []
+            for n in range(neurons):
+                pred_spkts.append(
+                    np.where(pred_ys[n] > 0)[0] + pred_start
+                )
             
             pred_log_intensities.append(pred_log_intens)
             pred_spiketimes.append(pred_spkts)
@@ -769,14 +776,17 @@ def evaluate_regression_fits(
                 pred_start, 
                 pred_end, 
                 filter_length, 
+                mean_ISIs, 
                 jitter, 
             )
             prng_state, _ = jr.split(prng_state)
             
-            sample_spkts = [
-                np.where(sample_ys[tr] > 0)[0] + pred_start * tbin 
-                for tr in range(num_samps)
-            ]
+            sample_spkts = []
+            for n in range(neurons):
+                sample_spkts.append([
+                    np.where(sample_ys[tr, n] > 0)[0] + pred_start
+                    for tr in range(num_samps)
+                ])
             
             sample_spiketimes.append(sample_spkts)
             sample_log_rhos.append(log_rho_ts)
@@ -861,7 +871,7 @@ def analyze_variability_stats(
     
     ### stats ###
     print('Analyzing ISI statistics...')
-    X, Y = 1 / mean_ISI.mean(0).T, CV_ISI.mean(0).T  # (out_dims, pts)
+    X, Y = 1 / mean_ISI.mean(0), CV_ISI.mean(0)  # (out_dims, pts), analytical expressions
     a, b, R2_lin = linear_regression(X, Y)
     gp_model, tracker, R2_gp = gp_regression(
         X, 
@@ -880,6 +890,7 @@ def analyze_variability_stats(
     # export
     variability_dict = {
         'mean_ISI': mean_ISI, 
+        'mean_invISI': mean_invISI, 
         'CV_ISI': CV_ISI, 
         'linear_slope': a, 
         'linear_intercept': b, 

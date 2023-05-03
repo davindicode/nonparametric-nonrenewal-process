@@ -90,55 +90,55 @@ def tuning(
     prng_state, _ = jr.split(prng_state)
     
     # position tuning
-    print('Position tuning...')
+#     print('Position tuning...')
     
-    grid_n = [40, 40]
-    pts = np.prod(grid_n)
-    plot_pos_x_locs = np.meshgrid(
-        np.linspace(x.min(), x.max(), grid_n[0]), 
-        np.linspace(y.min(), y.max(), grid_n[1]), 
-    )
+#     grid_n = [40, 40]
+#     pts = np.prod(grid_n)
+#     plot_pos_x_locs = np.meshgrid(
+#         np.linspace(x.min(), x.max(), grid_n[0]), 
+#         np.linspace(y.min(), y.max(), grid_n[1]), 
+#     )
     
-    pos_x_locs = np.stack([
-        pref_hd * np.ones_like(plot_pos_x_locs[0]), 
-        plot_pos_x_locs[0], 
-        plot_pos_x_locs[1], 
-        mean_speed * np.ones_like(plot_pos_x_locs[0]), 
-    ], axis=-1)  # (neurons, grid_x, grid_theta, in_dims)
-    pos_isi_locs = mean_ISIs[:, None] * np.ones((*grid_n, neurons, ISI_order-1))
+#     pos_x_locs = np.stack([
+#         pref_hd * np.ones_like(plot_pos_x_locs[0]), 
+#         plot_pos_x_locs[0], 
+#         plot_pos_x_locs[1], 
+#         mean_speed * np.ones_like(plot_pos_x_locs[0]), 
+#     ], axis=-1)  # (neurons, grid_x, grid_theta, in_dims)
+#     pos_isi_locs = mean_ISIs[:, None] * np.ones((*grid_n, neurons, ISI_order-1))
     
-    pos_mean_ISI, pos_mean_invISI, pos_CV_ISI = [], [], []
-    for n in neuron_list:
-        pos_mean_ISI_, pos_mean_invISI_, pos_CV_ISI_ = utils.compute_ISI_stats(
-            prng_state, 
-            num_samps, 
-            xtLR_x_locs, 
-            xtLR_isi_locs, 
-            model.obs_model, 
-            jitter, 
-            [n], 
-            int_eval_pts = int_eval_pts, 
-            num_quad_pts = num_quad_pts, 
-            batch_size = batch_size, 
-        )  # (mc, eval_pts, 1)
+#     pos_mean_ISI, pos_mean_invISI, pos_CV_ISI = [], [], []
+#     for n in neuron_list:
+#         pos_mean_ISI_, pos_mean_invISI_, pos_CV_ISI_ = utils.compute_ISI_stats(
+#             prng_state, 
+#             num_samps, 
+#             pos_x_locs, 
+#             pos_isi_locs, 
+#             model.obs_model, 
+#             jitter, 
+#             [n], 
+#             int_eval_pts = int_eval_pts, 
+#             num_quad_pts = num_quad_pts, 
+#             batch_size = batch_size, 
+#         )  # (mc, eval_pts, 1)
         
-        pos_mean_ISI.append(pos_mean_ISI_)
-        pos_mean_invISI.append(pos_mean_invISI_)
-        pos_CV_ISI.append(pos_CV_ISI_)
+#         pos_mean_ISI.append(pos_mean_ISI_)
+#         pos_mean_invISI.append(pos_mean_invISI_)
+#         pos_CV_ISI.append(pos_CV_ISI_)
         
-    pos_mean_ISI, pos_mean_invISI, pos_CV_ISI = (
-        np.concatenate(pos_mean_ISI, axis=-1), 
-        np.concatenate(pos_mean_invISI, axis=-1), 
-        np.concatenate(pos_CV_ISI, axis=-1), 
-    )
+#     pos_mean_ISI, pos_mean_invISI, pos_CV_ISI = (
+#         np.concatenate(pos_mean_ISI, axis=-1), 
+#         np.concatenate(pos_mean_invISI, axis=-1), 
+#         np.concatenate(pos_CV_ISI, axis=-1), 
+#     )
         
-    prng_state, _ = jr.split(prng_state)
+#     prng_state, _ = jr.split(prng_state)
     
     
     ### conditional ISI densities ###
     print('Conditional ISI densities...')
     
-    evalsteps = 100
+    evalsteps = 200
     cisi_t_eval = np.linspace(0.0, 5., evalsteps)
     
     pts = 8
@@ -175,11 +175,12 @@ def tuning(
         'hd_mean_ISI': hd_mean_ISI, 
         'hd_mean_invISI': hd_mean_invISI, 
         'hd_CV_ISI': hd_CV_ISI, 
-        'pos_x_locs': hd_x_locs, 
-        'pos_isi_locs': hd_isi_locs, 
-        'pos_mean_ISI': hd_mean_ISI, 
-        'pos_mean_invISI': hd_mean_invISI, 
-        'pos_CV_ISI': hd_CV_ISI, 
+#         'plot_pos_x_locs': plot_pos_x_locs, 
+#         'pos_x_locs': pos_x_locs, 
+#         'pos_isi_locs': pos_isi_locs, 
+#         'pos_mean_ISI': pos_mean_ISI, 
+#         'pos_mean_invISI': pos_mean_invISI, 
+#         'pos_CV_ISI': pos_CV_ISI, 
         'ISI_t_eval': cisi_t_eval, 
         'ISI_deltas_conds': isi_conds, 
         'ISI_xs_conds': x_conds, 
@@ -282,7 +283,6 @@ def main():
     
     process_steps = 3
     for k in range(process_steps):  # save after finishing each dict
-        k = 2- k
         if k == 0:
             regression_dict = utils.evaluate_regression_fits(
                 checkpoint_dir, reg_config_names, th1.observed_kernel_dict_induc_list, 
@@ -293,7 +293,7 @@ def main():
             variability_dict = utils.analyze_variability_stats(
                 checkpoint_dir, tuning_model_name, th1.observed_kernel_dict_induc_list, 
                 dataset_dict, rng, prng_state, 
-                num_samps = 30, 
+                num_samps = 50, 
                 dilation = 100, 
                 int_eval_pts = 1000, 
                 num_quad_pts = 100, 
@@ -310,7 +310,7 @@ def main():
                 rng, 
                 prng_state, 
                 tuning_neuron_list, 
-                num_samps = 30, 
+                num_samps = 50, 
                 int_eval_pts = 1000, 
                 num_quad_pts = 100, 
                 batch_size = 1000, 
