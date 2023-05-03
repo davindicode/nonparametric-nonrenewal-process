@@ -65,26 +65,28 @@ def tuning(
     ### tuning ###
     
     # position-theta direction
-    print('Position-theta tuning...')
+    print('Position-theta left-to-right tuning...')
     
     grid_n = [60, 30]
     pts = np.prod(grid_n)
-    xt_x_locs = np.meshgrid(
+    plot_xt_x_locs = np.meshgrid(
         np.linspace(x.min(), x.max(), grid_n[0]), 
         np.linspace(0, 2*np.pi, grid_n[1]), 
     )
-    xt_x_locs = np.stack([
-        xt_x_locs[0], 
-        0. * np.ones_like(xt_x_locs[0]),  # L to R runs
-        xt_x_locs[1], 
-    ], axis=-1)  # (grid_x, grid_theta, in_dims)
-    xt_isi_locs = mean_ISIs[:, None] * np.ones((*grid_n, neurons, ISI_order-1))
     
-    xt_mean_ISI, xt_mean_invISI, xt_CV_ISI = utils.compute_ISI_stats(
+    # L to R
+    xtLR_x_locs = np.stack([
+        plot_xt_x_locs[0], 
+        0. * np.ones_like(plot_xt_x_locs[0]),  # L to R runs
+        plot_xt_x_locs[1], 
+    ], axis=-1)  # (grid_x, grid_theta, in_dims)
+    xtLR_isi_locs = mean_ISIs[:, None] * np.ones((*grid_n, neurons, ISI_order-1))
+    
+    xtLR_mean_ISI, xtLR_mean_invISI, xtLR_CV_ISI = utils.compute_ISI_stats(
         prng_state, 
         num_samps, 
-        xt_x_locs, 
-        xt_isi_locs, 
+        xtLR_x_locs, 
+        xtLR_isi_locs, 
         model.obs_model, 
         jitter, 
         neuron_list, 
@@ -93,6 +95,30 @@ def tuning(
         batch_size = batch_size, 
     )  # (mc, eval_pts, out_dims)
     prng_state, _ = jr.split(prng_state)
+    
+    print('Position-theta right-to-left tuning...')
+    
+    xtRL_x_locs = np.stack([
+        plot_xt_x_locs[0], 
+        np.pi * np.ones_like(plot_xt_x_locs[0]),  # R to L runs
+        plot_xt_x_locs[1], 
+    ], axis=-1)  # (grid_x, grid_theta, in_dims)
+    xtRL_isi_locs = mean_ISIs[:, None] * np.ones((*grid_n, neurons, ISI_order-1))
+    
+    xtRL_mean_ISI, xtRL_mean_invISI, xtRL_CV_ISI = utils.compute_ISI_stats(
+        prng_state, 
+        num_samps, 
+        xtRL_x_locs, 
+        xtRL_isi_locs, 
+        model.obs_model, 
+        jitter, 
+        neuron_list, 
+        int_eval_pts = int_eval_pts, 
+        num_quad_pts = num_quad_pts, 
+        batch_size = batch_size, 
+    )  # (mc, eval_pts, out_dims)
+    prng_state, _ = jr.split(prng_state)
+    
     
     ### conditional ISI densities ###
     print('Conditional ISI densities...')
@@ -130,11 +156,17 @@ def tuning(
     # export
     tuning_dict = {
         'neuron_list': neuron_list, 
-        'xt_x_locs': xt_x_locs, 
-        'xt_isi_locs': xt_isi_locs, 
-        'xt_mean_ISI': xt_mean_ISI, 
-        'xt_mean_invISI': xt_mean_invISI, 
-        'xt_CV_ISI': xt_CV_ISI, 
+        'plot_xt_x_locs': plot_xt_x_locs, 
+        'xtLR_x_locs': xtLR_x_locs, 
+        'xtLR_isi_locs': xtLR_isi_locs, 
+        'xtLR_mean_ISI': xtLR_mean_ISI, 
+        'xtLR_mean_invISI': xtLR_mean_invISI, 
+        'xtLR_CV_ISI': xtLR_CV_ISI, 
+        'xtRL_x_locs': xtRL_x_locs, 
+        'xtRL_isi_locs': xtRL_isi_locs, 
+        'xtRL_mean_ISI': xtRL_mean_ISI, 
+        'xtRL_mean_invISI': xtRL_mean_invISI, 
+        'xtRL_CV_ISI': xtRL_CV_ISI, 
         'ISI_t_eval': cisi_t_eval, 
         'ISI_deltas_conds': isi_conds, 
         'ISI_xs_conds': x_conds, 

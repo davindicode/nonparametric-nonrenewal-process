@@ -229,6 +229,9 @@ def main():
     ISI_order = 4
     reg_config_names = [
         'syn_data_seed123ISI4sel0.0to1.0_PP-log__factorized_gp-16-1000_X[x-y]_Z[]', 
+        'syn_data_seed123ISI4sel0.0to1.0_gamma-log__rate_renewal_gp-16-1000_X[x-y]_Z[]_freeze[]', 
+        'syn_data_seed123ISI4sel0.0to1.0_PP-log_rcb-8-17.-36.-6.-30.-self-H500_factorized_gp-16-1000_' + \
+        'X[x-y]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
         'syn_data_seed123ISI4sel0.0to1.0_isi4__nonparam_pp_gp-48-matern32-matern32-1000-n2._' + \
         'X[x-y]_Z[]_freeze[]', 
         'syn_data_seed123ISI4sel0.0to1.0_isi4__nonparam_pp_gp-48-matern32-matern32-1000-n2._' + \

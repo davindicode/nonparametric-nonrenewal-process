@@ -94,6 +94,7 @@ def compute_ISI_densities(
     int_eval_pts = 1000, 
     num_quad_pts = 100, 
     outdims_per_batch = 5, 
+    joint_samples = True, 
 ):
     """
     Computes conditional ISI distributions per input location
@@ -127,7 +128,8 @@ def compute_ISI_densities(
                     jitter=jitter, 
                 )
             )
-            prng_state, _ = jr.split(prng_state)
+            if joint_samples is False:
+                prng_state, _ = jr.split(prng_state)
         
         ISI_densities.append(np.concatenate(ISI_density, axis=1))
         
@@ -145,6 +147,7 @@ def compute_ISI_stats(
     int_eval_pts = 1000, 
     num_quad_pts = 100, 
     batch_size = 100, 
+    joint_samples = True, 
 ):
     """
     Computes tuning from conditional ISIs per neuron
@@ -183,7 +186,11 @@ def compute_ISI_stats(
             fs_ISI += (f_ISI[:, 0],)  # (num_samps,)
         return fs_ISI
 
-    m_jit = jit(vmap(m, (0, 0, 0, None), (1, 1, 1)))
+    if joint_samples:
+        m_jit = jit(vmap(m, (None, 0, 0, None), (1, 1, 1)))
+        prng_keys = prng_state
+    else:
+        m_jit = jit(vmap(m, (0, 0, 0, None), (1, 1, 1)))
 
     mean_ISIs, mean_invISIs, CV_ISIs = [], [], []
     batches = int(np.ceil(num_pts / batch_size))
@@ -192,11 +199,13 @@ def compute_ISI_stats(
         _mean_ISIs, _mean_invISIs, _CV_ISIs = [], [], []
         iterator = tqdm(range(batches))
         for en in iterator:
-            prng_key, prng_state = jr.split(prng_state)
+            if joint_samples is False:
+                prng_key, prng_state = jr.split(prng_state)
+                prng_keys = jr.split(prng_key, x_eval.shape[0])
+            
             x_eval = jnp.array(x_locs[en*batch_size:(en+1)*batch_size, :])
             isi_eval = jnp.array(isi_locs[en*batch_size:(en+1)*batch_size, ...])
             
-            prng_keys = jr.split(prng_key, x_eval.shape[0])
             mean_ISI, mean_invISI, secmom_ISI = m_jit(
                 prng_keys, isi_eval, x_eval, n)  # (num_samps, pts)
             
@@ -670,10 +679,6 @@ def evaluate_regression_fits(
         unroll = config.unroll
         jitter = config.jitter
         
-        if model.obs_model.gp.kernel.out_dims != neurons:
-            print('INCOMPATIBLE MODEL')
-            continue
-
         # data
         timestamps, covs_t, ISIs, observations, filter_length = template.select_inputs(
             dataset_dict, config)
@@ -685,6 +690,8 @@ def evaluate_regression_fits(
         print('Training data...')
         dataloader = lib.utils.loaders.BatchedTimeSeries(
             timestamps, covs_t, ISIs, observations, batch_size, filter_length)
+        
+        train_data_ts = len(timestamps)
         
         train_ell = likelihood_metric(
             prng_state, dataloader, model.obs_model, obs_type, lik_int_method, jitter, 
@@ -703,7 +710,7 @@ def evaluate_regression_fits(
 
         # test data
         print('Test data...')
-        test_lpds, test_ells = [], []
+        test_lpds, test_ells, test_datas_ts = [], [], []
         pred_log_intensities, pred_spiketimes = [], []
         sample_log_rhos, sample_spiketimes = [], []
         
@@ -712,6 +719,8 @@ def evaluate_regression_fits(
             test_dataset_dict = test_dataset_dicts[en]
             timestamps, covs_t, ISIs, observations, filter_length = template.select_inputs(
                 test_dataset_dict, config)
+            
+            test_datas_ts.append(len(timestamps))
             
             dataloader = lib.utils.loaders.BatchedTimeSeries(
                 timestamps, covs_t, ISIs, observations, batch_size, filter_length)
@@ -776,8 +785,10 @@ def evaluate_regression_fits(
         results = {
             "train_ell": train_ell, 
             "train_lpd": train_lpd, 
+            "train_data_ts": train_data_ts, 
             "test_ells": test_ells,
             "test_lpds": test_lpds,
+            "test_datas_ts": test_datas_ts, 
             "pred_ts": pred_ts, 
             "pred_log_intensities": pred_log_intensities, 
             "pred_spiketimes": pred_spiketimes, 
