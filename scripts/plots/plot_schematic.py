@@ -14,7 +14,7 @@ from gaussneuro import utils
 import gaussneuro as lib
 
 
-
+# computation functions
 def log_time_transform(t, inverse, warp_tau):
     """
     Inverse transform is from tau [0, 1] to t in R
@@ -198,13 +198,8 @@ def BNPP_samples(prng_state, rng, num_samps, evalsteps, L):
     return np.array(cisi_t_eval), ISI_densities, np.array(tau_tilde[0]), log_rho_tildes
 
 
-
-def plot_inputs(fig):
-    Tst = 500
-    T = 1200
-    Te = 1500
-
-
+# plotting functions
+def plot_inputs(fig, Tst, T, Te, evals, spiketimes, pos_sample, ISIs):
     widths = [1]
     heights = [0.3, 1, 1, 1]
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
@@ -286,7 +281,7 @@ def plot_inputs(fig):
 
     
     
-def plot_time_warping(fig):
+def plot_time_warping(fig, Tst, Te, evals, ISIs, tISI, tuISIs, tau, tau_tilde):
     ### time warping ###
     widths = [1, 0.4]
     heights = [1, 1]
@@ -355,7 +350,7 @@ def plot_time_warping(fig):
     
     
     
-def plot_intensities(fig):
+def plot_intensities(fig, cisi_t_eval, ISI_densities, cisi_tau_tilde, log_rho_tildes):
     ### log intensity and ISI ###
     n = 0
     f_dim = 0
@@ -415,38 +410,42 @@ def main():
         os.makedirs(save_dir)
     plt.style.use(["paper.mplstyle"])
 
-        
+    ### data ###
+    
     # seed everything
     seed = 123
     prng_state = jr.PRNGKey(seed)
     rng = np.random.default_rng(seed)
-
-    ### data ###
+    
     evalsteps = 10000
     L = 100.
 
-    evals, spiketimes, pos_sample, ISIs, tISI, tuISIs, tau, tau_tilde = plot_schematic.model_inputs(
+    evals, spiketimes, pos_sample, ISIs, tISI, tuISIs, tau, tau_tilde = model_inputs(
         prng_state, rng, evalsteps, L)
 
     num_samps = 10
     evalsteps = 500
     L = 3.0
 
-    cisi_t_eval, ISI_densities, cisi_tau_tilde, log_rho_tildes = plot_schematic.BNPP_samples(
+    cisi_t_eval, ISI_densities, cisi_tau_tilde, log_rho_tildes = BNPP_samples(
         prng_state, rng, num_samps, evalsteps, L)
+    
+    Tst = 500
+    T = 1200
+    Te = 1500
     
     ### plot ###
     fig = plt.figure(figsize=(10, 2))
     fig.set_facecolor('white')
 
-    fig.text(-0.03, 1.05, 'A', fontsize=15, ha='center')
-    plot_inputs(fig)
+    fig.text(-0.03, 1.05, 'A', fontsize=15, ha='center', fontweight='bold')
+    plot_inputs(fig, Tst, T, Te, evals, spiketimes, pos_sample, ISIs)
     
-    fig.text(0.245, 1.05, 'B', fontsize=15, ha='center')
-    plot_time_warping(fig)
+    fig.text(0.245, 1.05, 'B', fontsize=15, ha='center', fontweight='bold')
+    plot_time_warping(fig, Tst, Te, evals, ISIs, tISI, tuISIs, tau, tau_tilde)
     
-    fig.text(0.555, 1.05, 'C', fontsize=15, ha='center')
-    plot_intensities(fig)
+    fig.text(0.555, 1.05, 'C', fontsize=15, ha='center', fontweight='bold')
+    plot_intensities(fig, cisi_t_eval, ISI_densities, cisi_tau_tilde, log_rho_tildes)
     
     fig.text(1.03, 1.05, 'S', fontsize=15, alpha=0., ha='center')  # space
 

@@ -13,12 +13,23 @@ import gaussneuro as lib
 
 
 
-def spike_history_filters(rng, prng_state, jitter, array_type):
+def spike_history_filters(rng, prng_state, jitter, array_type, filter_conf=0):
     # GLM
-    a, c = 6., 30.  # inverse width of the bumps, uniformity of the bump placement
-    phi_lower, phi_upper = 17., 36.
-    B = 16
-    filter_length = 500
+    if filter_conf == 0:
+        a, c = 4.5, 9.  # inverse width of the bumps, uniformity of the bump placement
+        phi_lower, phi_upper = 10., 20.
+        B = 8
+        filter_length = 150
+        
+    elif filter_conf == 1:
+        a, c = 6., 30.  # inverse width of the bumps, uniformity of the bump placement
+        phi_lower, phi_upper = 17., 36.
+        B = 16
+        filter_length = 500
+        
+    else:
+        raise ValueError
+        
     obs_dims = B
     num_samps = 10
     
@@ -43,7 +54,6 @@ def spike_history_filters(rng, prng_state, jitter, array_type):
     glm_filter_t = np.array(glm_filter_t[0])  # (filter_length, outs, 1)
     
     # GP
-    filter_length = 500
     obs_dims = 9
 
     num_induc = 10
@@ -55,8 +65,8 @@ def spike_history_filters(rng, prng_state, jitter, array_type):
     u_Lcov = 0.1*np.eye(num_induc)[None, ...].repeat(obs_dims, axis=0)
 
     # kernel
-    len_fx = 100.0*np.ones((obs_dims, x_dims))  # GP lengthscale
-    beta = 0.0 * np.ones(obs_dims)
+    len_fx = filter_length / 4. * np.ones((obs_dims, x_dims))  # GP lengthscale
+    beta = 0.0 * np.ones((obs_dims, x_dims))
     len_beta = 1.5 * len_fx
     var_f = 0.1*np.ones(obs_dims)  # kernel variance
 
@@ -65,7 +75,7 @@ def spike_history_filters(rng, prng_state, jitter, array_type):
         beta=beta, lengthscale_beta=len_beta, array_type=array_type)
     gp = lib.GP.sparse.qSVGP(kern, induc_locs, u_mu, u_Lcov, RFF_num_feats=0, whitened=False)
 
-    a_r = -6.*np.ones((obs_dims, 1))
+    a_r = 0.*np.ones((obs_dims, 1))
     tau_r = 10.*np.ones((obs_dims, 1))
 
     flt = lib.filters.GaussianProcess(

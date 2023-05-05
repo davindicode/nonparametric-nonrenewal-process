@@ -305,7 +305,7 @@ def main():
                 dilation = 100, 
                 int_eval_pts = 1000, 
                 num_quad_pts = 100, 
-                batch_size = 100, 
+                batch_size = 30, 
                 num_induc = 8, 
                 jitter = 1e-6, 
             )
@@ -321,7 +321,7 @@ def main():
                 num_samps = 50, 
                 int_eval_pts = 1000, 
                 num_quad_pts = 100, 
-                batch_size = 1000, 
+                batch_size = 300, 
                 outdims_per_batch = 2, 
             )
 

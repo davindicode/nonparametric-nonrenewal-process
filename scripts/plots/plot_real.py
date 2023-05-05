@@ -4,18 +4,31 @@ import pickle
 import matplotlib.pyplot as plt
 import numpy as np
 
+import sys
 sys.path.append("../../../GaussNeuro")
 from gaussneuro import utils
 
 
+# computation functions
+def get_tuning_curves(samples, percentiles, sm_filter, padding_modes):
+    percentiles = utils.stats.percentiles_from_samples(
+        samples, percentiles=percentiles)
+    
+    return [
+        utils.stats.smooth_histogram(p, sm_filter, padding_modes) for p in percentiles
+    ]
 
-def plot_fit_stats(fig):
-    ### KS and likelihood statistics ###
+
+# plot functions
+def plot_fit_stats(fig, X, Y, regression_dict, use_reg_config_names, use_names, cs):
+    """
+    KS and likelihood statistics
+    """
     widths = [1, 1]
     heights = [1]
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
-                            height_ratios=heights, top=1.0, bottom=0.5, 
-                            left=0.03, right=0.3, wspace=0.1) 
+                            height_ratios=heights, top=1.0 + Y, bottom=0.5 + Y, 
+                            left=0.03 + X, right=0.3 + X, wspace=0.1) 
 
     mdls = len(use_reg_config_names)
     p_vals = [regression_dict[n]['KS_p_value'] for n in use_reg_config_names]
@@ -76,14 +89,14 @@ def plot_fit_stats(fig):
     
     
     
-def plot_QQ(fig):
+def plot_QQ(fig, X, Y, regression_dict, use_reg_config_names, cs):
     ### QQ plots ###
     widths = [1] * len(use_reg_config_names)
     heights = [1]
 
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
-                            height_ratios=heights, top=1.0, bottom=0.81, 
-                            left=0.35, right=1.0, wspace=0.1)    
+                            height_ratios=heights, top=1.0 + Y, bottom=0.81 + Y, 
+                            left=0.35 + X, right=1.0 + X, wspace=0.1)    
 
     for en, name in enumerate(use_reg_config_names):
         quantiles = regression_dict[name]['KS_quantiles']
@@ -97,25 +110,26 @@ def plot_QQ(fig):
         ax.set_aspect(1.)
 
         if en == 0:
-            ax.set_xlabel('quantile', fontsize=11, labelpad=-8)
+            ax.set_xlabel('quantile', fontsize=11, labelpad=-10)
             ax.set_ylabel('EDF', fontsize=11, labelpad=-8)
         else:
             ax.set_xticklabels([])
             ax.set_yticklabels([])
     
     
-def plot_posteriors(fig):
-    ### posterior visualizations ###
-    widths = [1] * (len(visualize_names))
-    heights = [0.2, 1, 1]
-
-    spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
-                            height_ratios=heights, top=0.70, bottom=0.45, 
-                            left=0.35, right=1.0, hspace=0.02, wspace=0.3)
-
+def plot_posteriors(fig, X, Y, regression_dict, visualize_names, visualize_inds, cs):
     test_fold = 0
     ne = 7
     Ts, Te = 5000, 8000
+    
+    ### posterior visualizations ###
+    widths = [1] * (len(visualize_names))
+    heights = [0.1, 1, 1]
+
+    spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
+                            height_ratios=heights, top=0.725 + Y, bottom=0.44 + Y, 
+                            left=0.35 + X, right=1.0 + X, hspace=0.02, wspace=0.3)
+
     for en, n in enumerate(visualize_names):
         pred_ts = regression_dict[n]['pred_ts']
 
@@ -130,10 +144,10 @@ def plot_posteriors(fig):
         ax = fig.add_subplot(spec[1, en])
         ax.plot(pred_ts, pred_lint[test_fold][0, ne, :], c=cs[visualize_inds[en]])
         ax.set_xlim([pred_ts[Ts], pred_ts[Te]])
-        ax.set_ylim([-3.5, 3.5])
+        ax.set_ylim([-3., 4.])
         ax.set_yticks([])
         if en == 0:
-            ax.set_ylabel('log CIF')
+            ax.set_ylabel('log CIF', labelpad=2)
         ax.set_xticks([])
 
         stss = regression_dict[n]['sample_spiketimes'][test_fold][ne]
@@ -146,28 +160,41 @@ def plot_posteriors(fig):
         ax.spines[['left', 'bottom']].set_visible(False)
         ax.set_xticks([])
         if en == 0:
-            ax.set_xlabel('time', labelpad=0)
+            ax.set_xlabel('time', labelpad=2)
+            ax.set_ylabel('trials', labelpad=2)
 
     widths = [1]
     heights = [1]
 
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
-                            height_ratios=heights, top=0.5, bottom=0.4, 
-                            left=0.35, right=0.5)
+                            height_ratios=heights, top=0.42 + Y, bottom=0.41 + Y, 
+                            left=0.485 + X, right=0.52 + X)
 
     ax = fig.add_subplot(spec[0, 0])
-    ax.text(1.0, 0.0, '1 s')
-    ax.plot([0.0, 0.8], [0.0, 0.0], lw=2, c='k')
+    ax.text(1.2, 0.0, '1 s', va='center', fontsize=11)
+    ax.plot([0.0, 1.0], [0.0, 0.0], lw=2, c='k')
+    ax.axis('off')
     
     
     
-def plot_kernel_lens(fig):
-    ### kernel lengthscales ###
+def plot_kernel_lens(fig, X, Y, tuning_dict):
+    """
+    kernel lengthscales
+    """
+    warp_tau = tuning_dict['warp_tau']
+    len_tau = tuning_dict['len_tau']
+    len_deltas = tuning_dict['len_deltas']
+
+    ARD_order = []
+    for n in range(len_deltas.shape[0]):
+        ARD_order.append(np.sum(len_deltas[n] < 3.) + 1)
+
+    # plot
     widths = [1, 0.2]
     heights = [1]
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
-                            height_ratios=heights, top=0.3, bottom=0.0, 
-                            left=0.0, right=0.27, wspace=0.2)
+                            height_ratios=heights, top=0.3 + Y, bottom=0.0 + Y, 
+                            left=0.0 + X, right=0.27 + X, wspace=0.2)
 
     markers = ['o', 's', 'x', '+']
     N = len(len_deltas)
@@ -202,14 +229,49 @@ def plot_kernel_lens(fig):
             
             
             
-def plot_instantaneous(fig):
-    ### moment-by-moment ###
+def plot_instantaneous(fig, X, Y, rng, variability_dict, plot_units):
+    """
+    moment-by-moment spike train statistics
+    """
+    imISI = 1 / variability_dict["mean_ISI"].mean(0)
+    #imISI = variability_dict["mean_invISI"].mean(0)
+    cvISI = variability_dict["CV_ISI"].mean(0)
+
+    # plot
+    widths = [1, 0.2]
+    heights = [0.2, 1]
+
+    spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
+                            height_ratios=heights, top=0.3 + Y, bottom=0.0 + Y, 
+                            left=0.35 + X, right=0.45 + X, wspace=0.02, hspace=0.02)
+
+    ax = fig.add_subplot(spec[1, 0])
+    ax.scatter(variability_dict["mean_ISI"].mean(0).mean(1), variability_dict["CV_ISI"].mean(0).mean(1), 
+               marker='.', s=8, c='gray')
+
+    ax = fig.add_subplot(spec[0, 0])
+    ax.hist(variability_dict["mean_ISI"].mean(0).mean(1))
+    ax.set_xticks([])
+    ax.set_yticks([])
+    
+    ax = fig.add_subplot(spec[1, 1])
+    ax.hist(variability_dict["mean_ISI"].mean(0).mean(1), orientation='vertical')
+    ax.set_xticks([])
+    ax.set_yticks([])
+    
+#     ax = fig.add_subplot(spec[0, 1])
+#     ax.scatter(variability_dict["linear_slope"], variability_dict["linear_R2"], 
+#                marker='.', s=8, c='gray')#variability_dict["linear_slope"])
+
+
+    #ax = fig.add_subplot(spec[0, 2])
+
     widths = [1] * len(plot_units)
     heights = [1]
 
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
-                            height_ratios=heights, top=0.3, bottom=0.2, 
-                            left=0.75, right=1.0, wspace=0.3, hspace=0.8)
+                            height_ratios=heights, top=0.3 + Y, bottom=0.2 + Y, 
+                            left=0.48 + X, right=0.6 + X, wspace=0.3, hspace=0.8)
 
     skip = 10
     for en, ne in enumerate(plot_units):
@@ -219,26 +281,14 @@ def plot_instantaneous(fig):
         ax.set_ylim([0, cvISI.max() * 1.1])
         ax.set_yticks([0, 1, 2])
 
-
-    widths = [1, 1, 1]
+        
+    widths = [1]
     heights = [1]
-
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
-                            height_ratios=heights, top=0.15, bottom=0.0, 
-                            left=0.75, right=1.0, wspace=0.3, hspace=0.8)
+                            height_ratios=heights, top=0.15 + Y, bottom=0.0 + Y, 
+                            left=0.48 + X, right=0.55 + X)
 
     ax = fig.add_subplot(spec[0, 0])
-    ax.scatter(variability_dict["mean_ISI"].mean(0).mean(1), variability_dict["CV_ISI"].mean(0).mean(1), 
-               marker='.', s=8, c='gray')
-
-
-    ax = fig.add_subplot(spec[0, 1])
-    ax.scatter(variability_dict["linear_slope"], variability_dict["linear_R2"], 
-               marker='.', s=8, c='gray')#variability_dict["linear_slope"])
-
-
-    ax = fig.add_subplot(spec[0, 2])
-
     R2 = [variability_dict["linear_R2"], variability_dict["GP_R2"]]
     ax.violinplot(R2, np.arange(2), points=20, widths=0.9,
         showmeans=True, showextrema=True, showmedians=True, 
@@ -250,13 +300,31 @@ def plot_instantaneous(fig):
             
             
 
-def plot_th1_tuning(fig):
-    ### tuning ###
+def plot_th1_tuning(fig, X, Y, tuning_dict, plot_units):
+    """
+    tuning of th1 head direction cells
+    """
+    percentiles = [0.025, 0.5, 0.975]
+    sm_filter = np.ones(5) / 5
+    padding_modes = ['periodic']
+    
+    eval_locs = tuning_dict["hd_x_locs"]
+    
+    rsamples = 1 / tuning_dict["hd_mean_ISI"]
+    #rsamples = tuning_dict["hd_mean_invISI"]
+    cvsamples = tuning_dict["hd_CV_ISI"]
+
+    rlower, rmedian, rupper = get_tuning_curves(
+        rsamples, percentiles, sm_filter, padding_modes)
+    cvlower, cvmedian, cvupper = get_tuning_curves(
+        cvsamples, percentiles, sm_filter, padding_modes)
+    
+    # plot
     widths = [1] * len(plot_units)
     heights = [1, 1]
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
-                            height_ratios=heights, top=0.3, bottom=0.0, 
-                            left=0.35, right=0.55)
+                            height_ratios=heights, top=0.3 + Y, bottom=0.0 + Y, 
+                            left=0.7 + X, right=0.85 + X)
 
     for en, n in enumerate(plot_units):
         ax = fig.add_subplot(spec[0, en])
@@ -275,8 +343,8 @@ def plot_th1_tuning(fig):
     widths = [1]
     heights = [1, 1]
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
-                            height_ratios=heights, top=0.3, bottom=0.0, 
-                            left=0.6, right=0.7)
+                            height_ratios=heights, top=0.3 + Y, bottom=0.0 + Y, 
+                            left=0.9 + X, right=1.0 + X)
 
     ne_inds = [20, 27]
     pts_inds = [0, 2]
@@ -287,13 +355,16 @@ def plot_th1_tuning(fig):
                 alpha=0.02, color='k')
 
 
-def plot_hc3_tuning(fig):
-    ### tuning ###
+        
+def plot_hc3_tuning(fig, X, Y):
+    """
+    tuning of hc3 linear track cells
+    """
     widths = [1] * len(plot_units)
     heights = [1, 1]
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
-                            height_ratios=heights, top=0.3, bottom=0.0, 
-                            left=0.35, right=0.55)
+                            height_ratios=heights, top=0.3 + Y, bottom=0.0 + Y, 
+                            left=0.35 + X, right=0.55 + X)
 
     for en, n in enumerate(plot_units):
         ax = fig.add_subplot(spec[0, en])
@@ -307,8 +378,8 @@ def plot_hc3_tuning(fig):
     widths = [1]
     heights = [1, 1]
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
-                            height_ratios=heights, top=0.3, bottom=0.0, 
-                            left=0.6, right=0.7)
+                            height_ratios=heights, top=0.3 + Y, bottom=0.0 + Y, 
+                            left=0.6 + X, right=0.7 + X)
 
     ne_inds = [20, 27]
     pts_inds = [0, 2]

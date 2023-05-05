@@ -3,6 +3,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import jax.numpy as jnp
+import jax.random as jr
 
 import sys
 sys.path.append("../../../GaussNeuro")

@@ -3,14 +3,19 @@ import pickle
 
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy.stats as scstats
 
+import sys
 sys.path.append("../../../GaussNeuro")
 from gaussneuro import utils
+import gaussneuro as lib
 
 
 
-def plot_ground_truth(fig):
+def plot_ground_truth(fig, tuning_dict, cs):
+    unit_ISI_t_eval = tuning_dict["unit_ISI_t_eval"]
+    GT_unit_renewals = tuning_dict["GT"]["GT_unit_renewals"]
+    GT_rates = tuning_dict["GT"]["GT_rates"]
+    
     ### ground truth ###
     fig.text(0.1, 1.04, 'true rate maps', fontsize=13, ha='center')
 
@@ -61,7 +66,15 @@ def plot_ground_truth(fig):
 
 
 
-def plot_tuning_and_ISIs(fig):
+def plot_tuning_and_ISIs(fig, tuning_dict, name, cs):
+    pos_mean_ISI = tuning_dict[name]["pos_mean_ISI"]
+    pos_est_rate = 1 / pos_mean_ISI.mean(0)
+
+    ISI_t_eval = tuning_dict["ISI_t_eval"]
+    ISI_densities = tuning_dict[name]["ISI_densities"]
+    ISI_neuron_conds = tuning_dict["ISI_neuron_conds"]
+    GT_ISI_densities = tuning_dict["GT"]["GT_ISI_densities"]
+    
     ### tuning curves ###
     fig.text(0.37, 1.04, 'inferred rates', fontsize=13, ha='center')
 
@@ -134,7 +147,15 @@ def plot_tuning_and_ISIs(fig):
     ax.axis('off')
 
 
-def plot_kernel_lens(fig):
+def plot_kernel_lens(fig, data_dict, cs):
+    warp_tau = data_dict['warp_tau']
+    len_tau = data_dict['len_tau']
+    len_deltas = data_dict['len_deltas']
+    
+    ARD_order = []
+    for n in range(len_deltas.shape[0]):
+        ARD_order.append(np.sum(len_deltas[n] < 3.) + 1)
+    
     ### kernel lengthscales ###
     widths = [1, 0.5]
     heights = [1]
@@ -174,7 +195,7 @@ def plot_kernel_lens(fig):
 
     
 
-def plot_QQ(fig):
+def plot_QQ(fig, use_reg_config_names, use_names, regression_dict, cs):
     ### KS statistics ###
     widths = [1, 1]
     heights = [1, 1]
@@ -182,13 +203,6 @@ def plot_QQ(fig):
                             height_ratios=heights, top=1.0, bottom=0.05, 
                             left=0.85, right=1.2, hspace=0.3, wspace=0.1)
 
-    use_reg_config_names = [reg_config_names[k] for k in [0, 1, 2, 4]]
-    use_names = [
-        'Poisson', 
-        'conditional Poisson', 
-        'rescaled gamma', 
-        'nonparametric', 
-    ]
     for en, n in enumerate(use_reg_config_names):
         ax = fig.add_subplot(spec[en // 2, en % 2])
         ax.set_title(use_names[en], fontsize=12, fontweight='bold')
@@ -230,37 +244,21 @@ def main():
         open(datadir + name + ".p", "rb")
     )
 
-
     regression_dict = results["regression"]
     reg_config_names = list(regression_dict.keys())
 
     name = reg_config_names[-1]
-
     tuning_dict = results["tuning"]
 
-    pos_x_locs = tuning_dict["pos_x_locs"]
-    GT_rates = tuning_dict["GT"]["GT_rates"]
-    pos_mean_ISI = tuning_dict[name]["pos_mean_ISI"]
-    pos_est_rate = 1 / pos_mean_ISI.mean(0)
-
-    ISI_t_eval = tuning_dict["ISI_t_eval"]
-    unit_ISI_t_eval = tuning_dict["unit_ISI_t_eval"]
-
-    ISI_densities = tuning_dict[name]["ISI_densities"]
-    ISI_neuron_conds = tuning_dict["ISI_neuron_conds"]
-    GT_unit_renewals = tuning_dict["GT"]["GT_unit_renewals"]
-    GT_ISI_densities = tuning_dict["GT"]["GT_ISI_densities"]
-
-
-    warp_tau = tuning_dict[name]['warp_tau']
-    len_tau = tuning_dict[name]['len_tau']
-    len_deltas = tuning_dict[name]['len_deltas']
-
-    ARD_order = []
-    for n in range(len_deltas.shape[0]):
-        ARD_order.append(np.sum(len_deltas[n] < 3.) + 1)
-
     ### plot ###
+    use_reg_config_names = [reg_config_names[k] for k in [0, 1, 2, 4]]
+    use_names = [
+        'Poisson', 
+        'conditional Poisson', 
+        'rescaled gamma', 
+        'nonparametric', 
+    ]
+    
     cs = [
         'tab:blue',
         'tab:orange', 
@@ -276,15 +274,15 @@ def main():
     
     fig = plt.figure(figsize=(8, 3))
 
-    fig.text(-0.03, 1.05, 'A', fontsize=15, ha='center')
-    plot_ground_truth(fig)
+    fig.text(-0.03, 1.05, 'A', fontsize=15, ha='center', fontweight='bold')
+    plot_ground_truth(fig, tuning_dict, cs)
     
-    fig.text(0.26, 1.05, 'B', fontsize=15, ha='center')
-    plot_tuning_and_ISIs(fig)
-    plot_kernel_lens(fig)
+    fig.text(0.26, 1.05, 'B', fontsize=15, ha='center', fontweight='bold')
+    plot_tuning_and_ISIs(fig, tuning_dict, name, cs)
+    plot_kernel_lens(fig, tuning_dict[name], cs)
     
-    fig.text(0.81, 1.05, 'C', fontsize=15, ha='center')
-    plot_QQ(fig)
+    fig.text(0.81, 1.05, 'C', fontsize=15, ha='center', fontweight='bold')
+    plot_QQ(fig, use_reg_config_names, use_names, regression_dict, cs)
 
     fig.text(1.23, 1.05, 'S', fontsize=15, alpha=0., ha='center')  # space
 

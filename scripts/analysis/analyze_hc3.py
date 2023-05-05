@@ -193,7 +193,7 @@ def main():
     parser.add_argument("--datadir", default="../../data/hc3/", type=str)
     parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
 
-    parser.add_argument("--batch_size", default=100000, type=int)
+    parser.add_argument("--batch_size", default=50000, type=int)
     
     parser.add_argument("--device", default=0, type=int)
     parser.add_argument("--cpu", dest="cpu", action="store_true")

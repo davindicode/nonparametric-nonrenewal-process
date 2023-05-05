@@ -379,11 +379,11 @@ def build_spikefilters(rng, obs_dims, filter_type, array_type):
         # qSVGP inducing points
         induc_locs = np.linspace(0, filter_length, num_induc)[None, :, None].repeat(D, axis=0)
         u_mu = 0.0 * rng.normal(size=(D, num_induc, 1))
-        u_Lcov = 0.1 * np.eye(num_induc)[None, ...].repeat(D, axis=0)
+        u_Lcov = 1.0 * np.eye(num_induc)[None, ...].repeat(D, axis=0)
 
         # kernel
         len_fx = filter_length / 4. * np.ones((D, 1))  # GP lengthscale
-        beta = 0.0 * np.ones(D)
+        beta = 0.0 * np.ones((D, 1))
         len_beta = 1.5 * len_fx
         var_f = 0.1 * np.ones(D)  # kernel variance
         
