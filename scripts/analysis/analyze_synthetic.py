@@ -29,7 +29,7 @@ import utils
 
 def tuning(
     checkpoint_dir, 
-    model_name, 
+    reg_config_names, 
     dataset_dict, 
     rng, 
     prng_state, 
@@ -43,102 +43,45 @@ def tuning(
     """
     Compute tuning curves of BNPP model
     """
+    # data
     tbin = dataset_dict["properties"]["tbin"]
     neurons = dataset_dict["properties"]["neurons"]
 
-    print('Analyzing tuning for {}...'.format(model_name))
-
-    # config
-    model, config = utils.load_model_and_config(
-        checkpoint_dir + model_name, 
-        dataset_dict, 
-        synthetic.observed_kernel_dict_induc_list, 
-        rng, 
-    )
-    obs_type = config.observations.split('-')[0]
-    covs_dims = len(config.observed_covs.split('-'))
-    jitter = config.jitter
-    ISI_order = int(config.likelihood[3:])
-    
-    # data
+    covs_dims = 2
     x = dataset_dict['covariates']['x']
     y = dataset_dict['covariates']['y']
     ISIs = dataset_dict['ISIs']
-    
+
     mean_ISIs = utils.mean_ISI(ISIs)
     
-    ### tuning ###
-    print('Position tuning...')
-    
-    # ground_truth
-    mdl = generate.model('Gaussian')
-    ratefunc, _, renewals_ll, _, _ = mdl.get_model()
-    
+    ### plotting mesh ###
     pos_x_locs = np.meshgrid(
         np.linspace(x.min(), x.max(), 30), 
         np.linspace(y.min(), y.max(), 30), 
     )
-    pos_x_locs = np.stack(pos_x_locs, axis=-1)
+    pos_x_locs = np.stack(pos_x_locs, axis=-1) 
     or_shape = pos_x_locs.shape[:-1]
     pos_x_locs = pos_x_locs.reshape(-1, covs_dims)  # (evals, x_dim)
     eval_pts = pos_x_locs.shape[0]
     
-    pos_isi_locs = mean_ISIs[:, None] * np.ones((eval_pts, neurons, ISI_order-1))    
-    pos_mean_ISI, pos_mean_invISI, pos_CV_ISI = utils.compute_ISI_stats(
-        prng_state, 
-        num_samps, 
-        pos_x_locs, 
-        pos_isi_locs, 
-        model.obs_model, 
-        jitter, 
-        neuron_list, 
-        int_eval_pts = int_eval_pts, 
-        num_quad_pts = num_quad_pts, 
-        batch_size = batch_size, 
-    )
-    prng_state, _ = jr.split(prng_state)
-    
-    # ground truth rate maps
-    GT_rates = vmap(ratefunc)(jnp.array(pos_x_locs))
-    
-    # reshape
-    pos_x_locs = pos_x_locs.reshape(*or_shape, *pos_x_locs.shape[1:])
-    pos_isi_locs = pos_isi_locs.reshape(*or_shape, *pos_isi_locs.shape[1:])
-    pos_mean_ISI = pos_mean_ISI.reshape(num_samps, -1, *or_shape)
-    pos_mean_invISI = pos_mean_invISI.reshape(num_samps, -1, *or_shape)
-    pos_CV_ISI = pos_CV_ISI.reshape(num_samps, -1, *or_shape)
-    GT_rates = np.array(GT_rates.reshape(*or_shape, -1))
-    
-    ### conditional ISI distribution ###
-    print('Conditional ISI densities...')
-    
+    # conditional ISIs
     evalsteps = 200
-    uisi_t_eval = jnp.linspace(0.0, 5., evalsteps)
-    cisi_t_eval = jnp.linspace(0.0, 1., evalsteps)
+    uisi_t_eval = np.linspace(0.0, 5., evalsteps)
+    cisi_t_eval = np.linspace(0.0, 1., evalsteps)
     
     pts = 3
     neuron_conds = [2, 5, 8]
-    isi_conds = [mean_ISIs[:, None] * np.ones((neurons, ISI_order-1))] * pts
-    x_conds = [np.array([400., 300.]), np.array([300., 200.]), np.array([250., 250.])]  # (cov_dims,)
+    x_conds = [np.array([400., 300.]), np.array([300., 200.]), np.array([250., 250.])]  # (covs_dims,)
+
+    tunings = {}
     
-    ISI_densities = []
-    for pn in range(pts):
-        ISI_density = utils.compute_ISI_densities(
-            prng_state, 
-            num_samps, 
-            cisi_t_eval, 
-            isi_conds[pn][None], 
-            x_conds[pn][None], 
-            model.obs_model, 
-            jitter, 
-            outdims_list = [neuron_conds[pn]], 
-            int_eval_pts = int_eval_pts, 
-            num_quad_pts = num_quad_pts, 
-            outdims_per_batch = outdims_per_batch, 
-        )  # (1, mc, 1, ts)
-        ISI_densities.append(ISI_density[0])
-    ISI_densities = np.concatenate(ISI_densities, axis=1)  # (mc, pts, ts))
-    
+    ### ground truth ###
+    mdl = generate.model('Gaussian')
+    ratefunc, _, renewals_ll, _, _ = mdl.get_model()
+
+    GT_rates = vmap(ratefunc)(jnp.array(pos_x_locs))
+    GT_rates = np.array(GT_rates.reshape(*or_shape, -1))
+
     # ground truth conditional ISIs
     GT_rate_conds = vmap(ratefunc)(x_conds)
     GT_ISI_densities, GT_unit_renewals = [], []
@@ -146,46 +89,140 @@ def tuning(
         rate_cond  = GT_rate_conds[pn]
         gt_isi = []
         for ne, rll in enumerate(renewals_ll):
-            gt_isi.append(rate_cond[ne] * np.exp(vmap(rll)(rate_cond[ne] * cisi_t_eval[:, None])))
-            
+            gt_isi.append(rate_cond[ne] * np.exp(vmap(rll)(rate_cond[ne] * jnp.array(cisi_t_eval)[:, None])))
+
         gt_isi = np.concatenate(gt_isi, axis=1)  # (pts, obs_dims)
         GT_ISI_densities.append(gt_isi)
+
+    GT_ISI_densities = np.stack(GT_ISI_densities, axis=0)
         
     for rll in renewals_ll:
-        GT_unit_renewals.append(np.exp(vmap(rll)(uisi_t_eval[:, None])))
+        GT_unit_renewals.append(np.exp(vmap(rll)(jnp.array(uisi_t_eval)[:, None])))
     GT_unit_renewals = np.concatenate(GT_unit_renewals, axis=1)  # (pts, obs_dims)
-        
-    # arrays
-    cisi_t_eval = np.array(cisi_t_eval)
-    GT_ISI_densities = np.stack(GT_ISI_densities, axis=0)
     
-    # ISI kernel ARD
-    warp_tau = np.exp(model.obs_model.log_warp_tau)
-    len_tau, len_deltas, len_xs = utils.extract_lengthscales(
-        model.obs_model.gp.kernel.kernels, ISI_order)
+    tunings['GT'] = {
+        'GT_unit_renewals': GT_unit_renewals, 
+        'GT_rates': GT_rates, 
+        'GT_ISI_densities': GT_ISI_densities, 
+    }
+    
+    for model_name in reg_config_names:
+        print('Analyzing tuning for {}...'.format(model_name))
+
+        # config
+        model, config = utils.load_model_and_config(
+            checkpoint_dir + model_name, 
+            dataset_dict, 
+            synthetic.observed_kernel_dict_induc_list, 
+            rng, 
+        )
+        obs_type = config.observations.split('-')[0]
+        jitter = config.jitter
+
+        if obs_type == 'factorized_gp' or obs_type == 'rate_renewal_gp':
+            ### tuning ###
+            print('Position tuning...')
             
+            pos_rates, _, _ = model.obs_model.gp_posterior(
+                pos_x_locs[None, None], 
+                mean_only = True, 
+                diag_cov = True, 
+                compute_KL = False, 
+                jitter = jitter, 
+                sel_outdims = jnp.array(neuron_list), 
+            )  # (1, out_dims, eval_locs)
+            pos_rates = np.array(pos_rates.reshape(-1, *or_shape))
+            len_xs = np.array(model.obs_model.gp.kernel.kernels[0].lengthscale)
             
-    # export
+            # export
+            results = {
+                'pose_rates': pos_rates, 
+                'len_xs': len_xs, 
+            }
+            tunings[model_name] = results
+            
+        elif obs_type == 'nonparam_pp_gp':
+            ISI_order = int(config.likelihood[3:])
+            pos_isi_locs = mean_ISIs[:, None] * np.ones((eval_pts, neurons, ISI_order-1))
+            
+            ### tuning ###
+            print('Position tuning...')
+  
+            pos_mean_ISI, pos_mean_invISI, pos_CV_ISI = utils.compute_ISI_stats(
+                prng_state, 
+                num_samps, 
+                pos_x_locs, 
+                pos_isi_locs, 
+                model.obs_model, 
+                jitter, 
+                neuron_list, 
+                int_eval_pts = int_eval_pts, 
+                num_quad_pts = num_quad_pts, 
+                batch_size = batch_size, 
+            )
+            prng_state, _ = jr.split(prng_state)
+
+            # reshape
+            pos_mean_ISI = pos_mean_ISI.reshape(num_samps, -1, *or_shape)
+            pos_mean_invISI = pos_mean_invISI.reshape(num_samps, -1, *or_shape)
+            pos_CV_ISI = pos_CV_ISI.reshape(num_samps, -1, *or_shape)
+            
+
+            ### conditional ISI distribution ###
+            print('Conditional ISI densities...')
+            
+            isi_conds = [mean_ISIs[:, None] * np.ones((neurons, ISI_order-1))] * pts
+            ISI_densities = []
+            for pn in range(pts):
+                ISI_density = utils.compute_ISI_densities(
+                    prng_state, 
+                    num_samps, 
+                    cisi_t_eval, 
+                    isi_conds[pn][None], 
+                    x_conds[pn][None], 
+                    model.obs_model, 
+                    jitter, 
+                    outdims_list = [neuron_conds[pn]], 
+                    int_eval_pts = int_eval_pts, 
+                    num_quad_pts = num_quad_pts, 
+                    outdims_per_batch = outdims_per_batch, 
+                )  # (1, mc, 1, ts)
+                ISI_densities.append(ISI_density[0])
+                
+            ISI_densities = np.concatenate(ISI_densities, axis=1)  # (mc, pts, ts))
+
+            # ISI kernel ARD
+            warp_tau = np.exp(model.obs_model.log_warp_tau)
+            len_tau, len_deltas, len_xs = utils.extract_lengthscales(
+                model.obs_model.gp.kernel.kernels, ISI_order)
+            
+            # export
+            results = {
+                'pos_isi_locs': pos_isi_locs, 
+                'pos_mean_ISI': pos_mean_ISI, 
+                'pos_mean_invISI': pos_mean_invISI, 
+                'pos_CV_ISI': pos_CV_ISI, 
+                'ISI_densities': ISI_densities, 
+                'ISI_deltas_conds': isi_conds, 
+                'warp_tau': warp_tau, 
+                'len_tau': len_tau, 
+                'len_deltas': len_deltas, 
+                'len_xs': len_xs, 
+
+            }
+            tunings[model_name] = results
+        
+    # reshape
+    pos_x_locs = pos_x_locs.reshape(*or_shape, *pos_x_locs.shape[1:])
+    pos_isi_locs = pos_isi_locs.reshape(*or_shape, *pos_isi_locs.shape[1:])
+    
     tuning_dict = {
         'pos_x_locs': pos_x_locs, 
-        'pos_isi_locs': pos_isi_locs, 
-        'pos_mean_ISI': pos_mean_ISI, 
-        'pos_mean_invISI': pos_mean_invISI, 
-        'pos_CV_ISI': pos_CV_ISI, 
-        'GT_rates': GT_rates, 
-        'ISI_t_eval': cisi_t_eval, 
-        'unit_ISI_t_eval': uisi_t_eval, 
-        'ISI_deltas_conds': isi_conds, 
         'ISI_xs_conds': x_conds, 
         'ISI_neuron_conds': neuron_conds, 
-        'ISI_densities': ISI_densities, 
-        'GT_ISI_densities': GT_ISI_densities, 
-        'GT_unit_renewals': GT_unit_renewals, 
-        'warp_tau': warp_tau, 
-        'len_tau': len_tau, 
-        'len_deltas': len_deltas, 
-        'len_xs': len_xs, 
-        
+        'ISI_t_eval': cisi_t_eval, 
+        'unit_ISI_t_eval': uisi_t_eval, 
+        **tunings, 
     }
     return tuning_dict
 
@@ -246,8 +283,6 @@ def main():
         'X[x-y]_Z[]_freeze[obs_model0log_warp_tau]', 
     ]
 
-    tuning_model_name = reg_config_names[-1]
-
     ### load dataset ###
     session_name = 'syn_data_seed{}'.format(data_seed)
     max_ISI_order = 4
@@ -260,19 +295,18 @@ def main():
     regression_dict, tuning_dict = {}, {}
     tuning_neuron_list = list(range(neurons))
     
-    process_steps = 2
-    for k in range(process_steps):  # save after finishing each dict
-        
+    process_steps = [0, 1]
+    for k in process_steps:  # save after finishing each dict
         if k == 0:
             regression_dict = utils.evaluate_regression_fits(
                 checkpoint_dir, reg_config_names, synthetic.observed_kernel_dict_induc_list, 
-                dataset_dict, [], rng, prng_state, batch_size
+                dataset_dict, [], rng, prng_state, batch_size, 0
             )
 
         elif k == 1:
             tuning_dict = tuning(
                 checkpoint_dir, 
-                tuning_model_name, 
+                reg_config_names, 
                 dataset_dict, 
                 rng, 
                 prng_state, 

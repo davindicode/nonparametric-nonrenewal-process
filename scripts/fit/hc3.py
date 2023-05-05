@@ -119,9 +119,6 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
     y_t = data["y_t"][subselect]
     theta_t = data["theta_t"][subselect]
     hd_t = data["hd_t"][subselect]
-    
-    # binary L or R
-    LR_t = ((hd_t % (2 * np.pi)) <= np.pi / 2.) | ((hd_t % (2 * np.pi)) > 3 * np.pi / 2.)
 
     # compute velocities
     w_t = (hd_t[1:] - hd_t[:-1]) / tbin

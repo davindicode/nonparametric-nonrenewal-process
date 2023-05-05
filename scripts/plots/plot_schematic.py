@@ -2,7 +2,6 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy.special as sps
 
 import jax
 import jax.numpy as jnp
@@ -151,7 +150,7 @@ def BNPP_samples(prng_state, rng, num_samps, evalsteps, L):
     x_cond, isi_cond = None, None
     
     ISI_densities, log_rho_tildes = [], []
-    for a_r, m_b in zip([0., -6.], [-1., 0.]):
+    for a_m, b_m in zip([0., -6.], [-1., 0.]):
         # SVGP
         len_t = 1.0 * np.ones((obs_dims, 1))  # GP lengthscale
         var_t = 0.5 * np.ones(obs_dims)  # GP variance
@@ -173,8 +172,8 @@ def BNPP_samples(prng_state, rng, num_samps, evalsteps, L):
         # parameters
         wrap_tau = 1.0 * np.ones((obs_dims,))
         mean_tau = 3e-2 * np.ones((obs_dims,))
-        mean_amp = a_r * np.ones((obs_dims,))
-        mean_bias = m_b * np.ones((obs_dims,))
+        mean_amp = a_m * np.ones((obs_dims,))
+        mean_bias = b_m * np.ones((obs_dims,))
         
         bnpp = lib.observations.bnpp.NonparametricPointProcess(
             svgp, wrap_tau, mean_tau, mean_amp, mean_bias, dt)
@@ -200,22 +199,262 @@ def BNPP_samples(prng_state, rng, num_samps, evalsteps, L):
 
 
 
+def plot_inputs(fig):
+    Tst = 500
+    T = 1200
+    Te = 1500
+
+
+    widths = [1]
+    heights = [0.3, 1, 1, 1]
+    spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
+                            height_ratios=heights, top=1.0, bottom=0.5, 
+                            left=0.0, right=0.2, wspace=0.1)
+
+
+    ax = fig.add_subplot(spec[0, 0])
+    spkts = spiketimes[(spiketimes > Tst) & (spiketimes < T)]
+    for st in spkts:
+        ax.plot(evals[st]*np.ones(2), np.linspace(0, 1, 2), c='k')
+        spkts = spiketimes[(T <= spiketimes) & (spiketimes < Te)]
+    for st in spkts:
+        ax.plot(evals[st]*np.ones(2), np.linspace(0, 1, 2), c='k', alpha=0.3)
+    ax.set_xlim([evals[Tst], evals[Te]])
+    ax.set_ylim([0, 1])
+    ax.axis('off')
+
+
+    ax = fig.add_subplot(spec[1, 0])
+
+    ax.plot(evals[Tst:T], ISIs[Tst:T, 0, 0], c='gray')
+    ax.plot(evals[T:Te], ISIs[T:Te, 0, 0], c='gray', alpha=0.3)
+    ax.set_xlim([evals[Tst], evals[Te]])
+    ax.set_ylabel(r'$\tau$')
+    ax.set_yticks([])
+    ax.set_xticks([])
+
+
+    for k in range(2):
+        ax = fig.add_subplot(spec[k + 2, 0])
+        ax.plot(evals[Tst:T], ISIs[Tst:T, 0, k+1], c='gray')
+        ax.plot(evals[T:Te], ISIs[T:Te, 0, k+1], c='gray', alpha=0.3)
+        ax.set_xlim([evals[Tst], evals[Te]])
+        ax.set_xticks([])
+        ax.set_ylim(0)
+        ax.set_yticks([])
+        ax.set_ylabel('$\Delta_{}$'.format(k+1))
+
+
+    widths = [1]
+    heights = [1]
+    spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
+                            height_ratios=heights, top=0.475, bottom=0.375, 
+                            left=0.0, right=0.2, wspace=0.0)
+    ax = fig.add_subplot(spec[0, 0])
+    ax.scatter(np.zeros(3), np.arange(3), c='k', marker='.')
+    ax.set_ylim([-0.5, 3.5])
+    ax.axis('off')
+
+
+    widths = [1]
+    heights = [1, 1]
+    spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
+                            height_ratios=heights, top=0.35, bottom=0.1, 
+                            left=0.0, right=0.2, wspace=0.0)
+
+    for d in range(2):
+        ax = fig.add_subplot(spec[d, 0])
+        ax.plot(evals[Tst:T], pos_sample[0, Tst:T, d, 0], c='gray')
+        ax.plot(evals[T:Te], pos_sample[0, T:Te, d, 0], alpha=0.3, c='gray')
+        ax.set_xlim([evals[Tst], evals[Te]])
+        ax.set_ylabel('$x_{}$'.format(d+1))
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    ax.set_xlabel('time', labelpad=20)
+
+
+    widths = [1]
+    heights = [1]
+    spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
+                            height_ratios=heights, top=0.1, bottom=0.0, 
+                            left=0.0, right=0.2, wspace=0.0)
+    ax = fig.add_subplot(spec[0, 0])
+    ax.scatter(np.zeros(3), np.arange(3), c='k', marker='.')
+    ax.set_ylim([-0.5, 3.5])
+    ax.axis('off')
+
+    
+    
+def plot_time_warping(fig):
+    ### time warping ###
+    widths = [1, 0.4]
+    heights = [1, 1]
+    spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
+                            height_ratios=heights, top=1.0, bottom=0.0, 
+                            left=0.29, right=0.49, hspace=2.1)
+
+    ax = fig.add_subplot(spec[0, 0])
+    ax.plot(evals[Tst:Te], 1e-3 * ISIs[Tst:Te, 0, 0] * 1e3, c='gray')
+    ax.set_xticks([])
+    ax.set_xlim([evals[Tst], evals[Te]])
+    ax.set_xlabel('time', labelpad=4)
+    ax.set_ylabel(r'$\tau$ (s)', labelpad=-2)
+    ax.set_ylim([0, .3])
+    ax.set_yticks([0, .3])
+
+    ax = fig.add_subplot(spec[0, 1])
+    ax.hist(ISIs[:, 0, 0], orientation='horizontal', color='lightgray', density=True)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_ylim(0)
+    ax.set_xlabel('density', labelpad=3)
+
+
+    ax = fig.add_subplot(spec[1, 0])
+    ax.plot(evals[Tst:Te], tISI[Tst:Te, 0], c='gray')
+    ax.set_xticks([])
+    ax.set_xlim([evals[Tst], evals[Te]])
+    ax.set_xlabel('time', labelpad=4)
+    ax.set_ylabel(r'$\tilde{\tau}$ (a.u.)', labelpad=5)
+    ax.set_ylim([0, 1])
+    ax.set_yticks([0, 1])
+
+    ax = fig.add_subplot(spec[1, 1])
+    ax.hist(tISI[:, 0], orientation='horizontal', color='lightgray', density=True)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_ylim([0, 1])
+    ax.set_xlim([0, 3])
+    ax.set_xlabel('density', labelpad=3)
+
+
+    widths = [1]
+    heights = [1]
+    spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
+                            height_ratios=heights, top=0.6, bottom=0.35, 
+                            left=0.31, right=0.39)
+
+    ax = fig.add_subplot(spec[0, 0])
+    ax.plot(tau[:, 0], tau_tilde[:, 0], c='k', alpha=0.3)
+    ax.set_xticks([])
+    ax.set_yticks([0, 1])
+    ax.set_xlim([tau[0, 0], tau[-1, 0]])
+    ax.set_ylim([0, 1])
+    ax.set_xlabel(r'$\tau$', labelpad=4, alpha=0.3)
+    ax.set_ylabel(r'$\tilde{\tau}$', labelpad=-5, alpha=0.3)
+
+    ax.tick_params(color='gray', labelcolor='gray')
+    for spine in ax.spines.values():
+        spine.set_edgecolor('gray')
+
+    ax.text(0.57, 0.5, r"$\tau_w = \langle$" + "ISI" + r"$\rangle$", fontsize=12, va='center', alpha=0.4)
+    ax.annotate("", xy=(1.33, -0.2), xytext=(1.33, 1.2), rotation=np.pi/2., xycoords='axes fraction', 
+        arrowprops=dict(arrowstyle="simple, head_width=1.6, head_length=1.0, tail_width=0.5", alpha=0.2, color='gray'), 
+        annotation_clip=False)
+    
+    
+    
+def plot_intensities(fig):
+    ### log intensity and ISI ###
+    n = 0
+    f_dim = 0
+
+    widths = [1, 1]
+    heights = [1, 1]
+    spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
+                            height_ratios=heights, top=0.93, bottom=0.0, 
+                            left=0.6, right=1.0, hspace=0.6, wspace=0.3)
+
+    ax = fig.add_subplot(spec[0, 0])
+    ax.set_title(r"non-refractory prior" + "\n" + r"( $a_m = 0$ )", fontsize=12, fontweight='bold')
+    ax.plot(cisi_tau_tilde, log_rho_tildes[0][:, f_dim, :].T, c='k', alpha=0.3)
+    ax.set_ylim([-3.5, 0.5])
+    ax.set_yticks([-3, 0])
+    ax.set_ylabel('log CIF', labelpad=1)
+    ax.set_xlabel(r'$\tilde{\tau}$ (a.u.)', labelpad=-11)
+    ax.set_xlim([0, 1])
+    ax.set_xticks([0, 1])
+
+    ax = fig.add_subplot(spec[0, 1])
+    ax.set_title(r"refractory prior" + "\n" + r"( $a_m = -6$ )", fontsize=12, fontweight='bold')
+    ax.plot(cisi_tau_tilde, log_rho_tildes[1][:, f_dim, :].T, c='k', alpha=0.3)
+    ax.set_xticks([0, 1])
+    ax.set_xlim([0, 1])
+
+    ax = fig.add_subplot(spec[1, 0])
+    ax.plot(cisi_t_eval, ISI_densities[0][:, f_dim, :].T, c='k', alpha=0.3)
+    ax.set_xticks([0, 3])
+    ax.set_yticks([])
+    ax.set_ylabel('ISI distribution', labelpad=10)
+    ax.set_xlabel(r'$\tau$ (s)', labelpad=-11)
+    ax.set_xlim([cisi_t_eval[0], cisi_t_eval[-1]])
+    ax.set_ylim(0)
+
+    ax.annotate("", xy=(0.5, 0.8), xytext=(0.5, 1.2), rotation=np.pi/2., xycoords='axes fraction', 
+        arrowprops=dict(arrowstyle="simple, head_width=1.0, head_length=0.7, tail_width=0.3", color='gray'), 
+        annotation_clip=False)
+
+
+    ax = fig.add_subplot(spec[1, 1])
+    ax.plot(cisi_t_eval, ISI_densities[1][:, f_dim, :].T, c='k', alpha=0.3)
+    ax.set_xticks([0, 3])
+    ax.set_yticks([])
+    ax.set_xlim([cisi_t_eval[0], cisi_t_eval[-1]])
+    ax.set_ylim(0)
+
+    ax.annotate("", xy=(0.5, 0.8), xytext=(0.5, 1.2), rotation=np.pi/2., xycoords='axes fraction', 
+        arrowprops=dict(arrowstyle="simple, head_width=1.0, head_length=0.7, tail_width=0.3", color='gray'), 
+        annotation_clip=False)
+
+
 
 def main():
-    jax.config.update('jax_platform_name', 'cpu')
-    #jax.config.update('jax_disable_jit', True)
+    save_dir = "../saves/"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    plt.style.use(["paper.mplstyle"])
 
-    double_arrays = True
-
-    if double_arrays:
-        jax.config.update("jax_enable_x64", True)
-        array_type = "float64"
-    else:
-        array_type = "float32"
-
+        
+    # seed everything
     seed = 123
     prng_state = jr.PRNGKey(seed)
     rng = np.random.default_rng(seed)
+
+    ### data ###
+    evalsteps = 10000
+    L = 100.
+
+    evals, spiketimes, pos_sample, ISIs, tISI, tuISIs, tau, tau_tilde = plot_schematic.model_inputs(
+        prng_state, rng, evalsteps, L)
+
+    num_samps = 10
+    evalsteps = 500
+    L = 3.0
+
+    cisi_t_eval, ISI_densities, cisi_tau_tilde, log_rho_tildes = plot_schematic.BNPP_samples(
+        prng_state, rng, num_samps, evalsteps, L)
+    
+    ### plot ###
+    fig = plt.figure(figsize=(10, 2))
+    fig.set_facecolor('white')
+
+    fig.text(-0.03, 1.05, 'A', fontsize=15, ha='center')
+    plot_inputs(fig)
+    
+    fig.text(0.245, 1.05, 'B', fontsize=15, ha='center')
+    plot_time_warping(fig)
+    
+    fig.text(0.555, 1.05, 'C', fontsize=15, ha='center')
+    plot_intensities(fig)
+    
+    fig.text(1.03, 1.05, 'S', fontsize=15, alpha=0., ha='center')  # space
+
+
+    ### export ###
+    plt.savefig(save_dir + 'schematic.pdf')
+    
+    
     
     
     

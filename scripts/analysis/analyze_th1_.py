@@ -206,7 +206,7 @@ def main():
     parser.add_argument("--datadir", default="../../data/th1/", type=str)
     parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
 
-    parser.add_argument("--batch_size", default=100000, type=int)
+    parser.add_argument("--batch_size", default=50000, type=int)
     
     parser.add_argument("--device", default=0, type=int)
     parser.add_argument("--cpu", dest="cpu", action="store_true")
@@ -235,25 +235,25 @@ def main():
     ### names ###
     reg_config_names = [
         # exponential and renewal
-        'Mouse28_140313_wakeISI5sel0.0to0.5_PP-log__factorized_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_gamma-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
+        'Mouse28_140313_wakeISI5sel0.0to0.5_PP-log__factorized_gp-32-1000_X[hd-x-y-speed]_Z[]', 
+        'Mouse28_140313_wakeISI5sel0.0to0.5_gamma-log__rate_renewal_gp-32-1000_X[hd-x-y-speed]_Z[]', 
+        'Mouse28_140313_wakeISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-32-1000_X[hd-x-y-speed]_Z[]', 
+        'Mouse28_140313_wakeISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-32-1000_X[hd-x-y-speed]_Z[]', 
         # conditional
         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_PP-log_rcb-16-17.-36.-6.-30.-self-H500_' + \
-        'factorized_gp-8-1000_X[hd]_Z[]_freeze[obs_model0spikefilter0a-' + \
+        'factorized_gp-32-1000_X[hd-x-y-speed]_Z[]_freeze[obs_model0spikefilter0a-' + \
         'obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
-        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_lognorm-log_rcb-16-17.-36.-6.-30.-self-H500_' + \
-        'rate_renewal_gp-8-1000_X[hd]_Z[]_freeze[]',
+#         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_lognorm-log_rcb-16-17.-36.-6.-30.-self-H500_' + \
+#         'rate_renewal_gp-32-1000_X[hd-x-y-speed]_Z[]_freeze[]',
         # BNPP
-        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern12-matern32-1000-n2._' + \
-        'X[hd]_Z[]_freeze[]', 
-        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern12-matern32-1000-n2._' + \
-        'X[hd]_Z[]_freeze[obs_model0log_warp_tau]', 
-        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-matern32-1000-n2._' + \
-        'X[hd]_Z[]_freeze[]', 
-        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-matern32-1000-n2._' + \
-        'X[hd]_Z[]_freeze[obs_model0log_warp_tau]', 
+#         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern12-matern32-1000-n2._' + \
+#         'X[hd-x-y-speed]_Z[]_freeze[]', 
+#         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern12-matern32-1000-n2._' + \
+#         'X[hd-x-y-speed]_Z[]_freeze[obs_model0log_warp_tau]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-96-matern32-matern32-1000-n2._' + \
+        'X[hd-x-y-speed]_Z[]_freeze[]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-96-matern32-matern32-1000-n2._' + \
+        'X[hd-x-y-speed]_Z[]_freeze[obs_model0log_warp_tau]', 
     ]
 
     tuning_model_name = reg_config_names[-1]
@@ -331,7 +331,7 @@ def main():
             "variability": variability_dict, 
             "tuning": tuning_dict, 
         }
-        pickle.dump(data_run, open(save_dir + "results_th1.p", "wb"))
+        pickle.dump(data_run, open(save_dir + "results_th1_.p", "wb"))
 
 
 if __name__ == "__main__":

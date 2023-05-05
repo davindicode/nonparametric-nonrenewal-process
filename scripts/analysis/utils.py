@@ -651,8 +651,19 @@ def gp_regression(
 
 # processing
 def evaluate_regression_fits(
-    checkpoint_dir, reg_config_names, kernel_gen_func, dataset_dict, test_dataset_dicts, rng, prng_state, batch_size
+    checkpoint_dir, 
+    reg_config_names, 
+    kernel_gen_func, 
+    dataset_dict, 
+    test_dataset_dicts, 
+    rng, 
+    prng_state, 
+    batch_size, 
+    num_samps, 
 ):
+    """
+    :param int num_samps: for sampling activity
+    """
     tbin = dataset_dict["properties"]["tbin"]
     neurons = dataset_dict["properties"]["neurons"]
     ISIs = dataset_dict['ISIs']
@@ -663,7 +674,7 @@ def evaluate_regression_fits(
         "approx_pts": 50, 
     }
 
-    num_samps = 1  # for sampling activity
+    
     pred_start, pred_end = 0, 10000
     pred_ts = np.arange(pred_start, pred_end) * tbin
     regression_dict = {}
@@ -761,30 +772,38 @@ def evaluate_regression_fits(
             pred_spkts = []
             for n in range(neurons):
                 pred_spkts.append(
-                    np.where(pred_ys[n] > 0)[0] + pred_start
+                    (np.where(pred_ys[n] > 0)[0] + pred_start) * tbin
                 )
             
             pred_log_intensities.append(pred_log_intens)
             pred_spiketimes.append(pred_spkts)
             
-            sample_ys, log_rho_ts = sample_activity(
-                prng_state, 
-                num_samps, 
-                dataloader.load_batch(0), 
-                model.obs_model, 
-                obs_type, 
-                pred_start, 
-                pred_end, 
-                filter_length, 
-                mean_ISIs, 
-                jitter, 
-            )
-            prng_state, _ = jr.split(prng_state)
+            sample_ys, log_rho_ts = [], []
+            for n in range(num_samps):
+                sample_ys_, log_rho_ts_ = sample_activity(
+                    prng_state, 
+                    1, 
+                    dataloader.load_batch(0), 
+                    model.obs_model, 
+                    obs_type, 
+                    pred_start, 
+                    pred_end, 
+                    filter_length, 
+                    mean_ISIs, 
+                    jitter, 
+                )
+                prng_state, _ = jr.split(prng_state)
+                
+                sample_ys.append(sample_ys_)
+                log_rho_ts.append(log_rho_ts_)
+                
+            sample_ys = np.concatenate(sample_ys)
+            log_rho_ts = np.concatenate(log_rho_ts)
             
             sample_spkts = []
             for n in range(neurons):
                 sample_spkts.append([
-                    np.where(sample_ys[tr, n] > 0)[0] + pred_start
+                    (np.where(sample_ys[tr, n] > 0)[0] + pred_start) * tbin
                     for tr in range(num_samps)
                 ])
             

@@ -228,8 +228,10 @@ def main():
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]', 
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]',
         # conditional
-        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_PP-log_rcb-8-17.-36.-6.-30.-self-H500_factorized_gp-32-1000_' + \
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_PP-log_rcb-16-17.-36.-6.-30.-self-H500_factorized_gp-32-1000_' + \
         'X[x-hd-theta]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
+#         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_gamma-log_rcb-16-17.-36.-6.-30.-self-H500_rate_renewal_gp-32-1000_' + \
+#         'X[x-hd-theta]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
         # BNPP
 #         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern32-1000-n2._' + \
 #         'X[x-hd-theta]_Z[]_freeze[]', 
@@ -266,12 +268,13 @@ def main():
     regression_dict, variability_dict, tuning_dict = {}, {}, {}
     tuning_neuron_list = list(range(neurons))
     
-    process_steps = 3
-    for k in range(process_steps):  # save after finishing each dict
+    process_steps = [0, 1, 2]
+    for k in process_steps:  # save after finishing each dict
         if k == 0:
             regression_dict = utils.evaluate_regression_fits(
                 checkpoint_dir, reg_config_names, hc3.observed_kernel_dict_induc_list, 
-                dataset_dict, test_dataset_dicts, rng, prng_state, batch_size
+                dataset_dict, test_dataset_dicts, rng, prng_state, batch_size, 
+                num_samps = 16, 
             )
 
         elif k == 1:
