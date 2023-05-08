@@ -238,7 +238,7 @@ def main():
 
     ### load ###
     datadir = '../saves/'
-    name = 'results_synthetic'
+    name = 'synthetic_results'
 
     results = pickle.load(
         open(datadir + name + ".p", "rb")

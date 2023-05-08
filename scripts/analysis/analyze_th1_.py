@@ -60,6 +60,8 @@ def tuning(
     speed = dataset_dict['covariates']['speed']
     ISIs = dataset_dict['ISIs']
     
+    mean_x, mean_y = x.mean(), y.mean()
+    mean_speed = speed.mean()
     mean_ISIs = utils.mean_ISI(ISIs)
     
     ### tuning ###
@@ -69,10 +71,15 @@ def tuning(
     
     pts = 100
     plot_hd_x_locs = np.stack([
-        np.linspace(0, 2*np.pi, pts)
+        np.linspace(0, 2*np.pi, pts), 
     ], axis=1)  # (evals, x_dim)
     
-    hd_x_locs = plot_hd_x_locs
+    hd_x_locs = np.stack([
+        plot_hd_x_locs[:, 0], 
+        mean_x * np.ones_like(plot_hd_x_locs[:, 0]), 
+        mean_y * np.ones_like(plot_hd_x_locs[:, 0]), 
+        mean_speed * np.ones_like(plot_hd_x_locs[:, 0]), 
+    ])
     hd_isi_locs = mean_ISIs[:, None] * np.ones((pts, neurons, ISI_order-1))
     
     hd_mean_ISI, hd_mean_invISI, hd_CV_ISI = utils.compute_ISI_stats(
@@ -89,50 +96,54 @@ def tuning(
     )  # (mc, eval_pts, out_dims)
     prng_state, _ = jr.split(prng_state)
     
+    # preferred HD
+    inds = np.argmax(1. / hd_mean_ISI.mean(0), axis=0)  # (out_dims,)
+    pref_hd = plot_hd_x_locs[inds, 0]
+    
     # position tuning
-#     print('Position tuning...')
+    print('Position tuning...')
     
-#     grid_n = [40, 40]
-#     pts = np.prod(grid_n)
-#     plot_pos_x_locs = np.meshgrid(
-#         np.linspace(x.min(), x.max(), grid_n[0]), 
-#         np.linspace(y.min(), y.max(), grid_n[1]), 
-#     )
+    grid_n = [40, 40]
+    pts = np.prod(grid_n)
+    plot_pos_x_locs = np.meshgrid(
+        np.linspace(x.min(), x.max(), grid_n[0]), 
+        np.linspace(y.min(), y.max(), grid_n[1]), 
+    )
     
-#     pos_x_locs = np.stack([
-#         pref_hd * np.ones_like(plot_pos_x_locs[0]), 
-#         plot_pos_x_locs[0], 
-#         plot_pos_x_locs[1], 
-#         mean_speed * np.ones_like(plot_pos_x_locs[0]), 
-#     ], axis=-1)  # (neurons, grid_x, grid_theta, in_dims)
-#     pos_isi_locs = mean_ISIs[:, None] * np.ones((*grid_n, neurons, ISI_order-1))
+    pos_x_locs = np.stack([
+        pref_hd * np.ones_like(plot_pos_x_locs[0]), 
+        plot_pos_x_locs[0], 
+        plot_pos_x_locs[1], 
+        mean_speed * np.ones_like(plot_pos_x_locs[0]), 
+    ], axis=-1)  # (neurons, grid_x, grid_theta, in_dims)
+    pos_isi_locs = mean_ISIs[:, None] * np.ones((*grid_n, neurons, ISI_order-1))
     
-#     pos_mean_ISI, pos_mean_invISI, pos_CV_ISI = [], [], []
-#     for n in neuron_list:
-#         pos_mean_ISI_, pos_mean_invISI_, pos_CV_ISI_ = utils.compute_ISI_stats(
-#             prng_state, 
-#             num_samps, 
-#             pos_x_locs, 
-#             pos_isi_locs, 
-#             model.obs_model, 
-#             jitter, 
-#             [n], 
-#             int_eval_pts = int_eval_pts, 
-#             num_quad_pts = num_quad_pts, 
-#             batch_size = batch_size, 
-#         )  # (mc, eval_pts, 1)
+    pos_mean_ISI, pos_mean_invISI, pos_CV_ISI = [], [], []
+    for n in neuron_list:
+        pos_mean_ISI_, pos_mean_invISI_, pos_CV_ISI_ = utils.compute_ISI_stats(
+            prng_state, 
+            num_samps, 
+            pos_x_locs, 
+            pos_isi_locs, 
+            model.obs_model, 
+            jitter, 
+            [n], 
+            int_eval_pts = int_eval_pts, 
+            num_quad_pts = num_quad_pts, 
+            batch_size = batch_size, 
+        )  # (mc, eval_pts, 1)
         
-#         pos_mean_ISI.append(pos_mean_ISI_)
-#         pos_mean_invISI.append(pos_mean_invISI_)
-#         pos_CV_ISI.append(pos_CV_ISI_)
+        pos_mean_ISI.append(pos_mean_ISI_)
+        pos_mean_invISI.append(pos_mean_invISI_)
+        pos_CV_ISI.append(pos_CV_ISI_)
         
-#     pos_mean_ISI, pos_mean_invISI, pos_CV_ISI = (
-#         np.concatenate(pos_mean_ISI, axis=-1), 
-#         np.concatenate(pos_mean_invISI, axis=-1), 
-#         np.concatenate(pos_CV_ISI, axis=-1), 
-#     )
+    pos_mean_ISI, pos_mean_invISI, pos_CV_ISI = (
+        np.concatenate(pos_mean_ISI, axis=-1), 
+        np.concatenate(pos_mean_invISI, axis=-1), 
+        np.concatenate(pos_CV_ISI, axis=-1), 
+    )
         
-#     prng_state, _ = jr.split(prng_state)
+    prng_state, _ = jr.split(prng_state)
     
     
     ### conditional ISI densities ###
@@ -175,12 +186,12 @@ def tuning(
         'hd_mean_ISI': hd_mean_ISI, 
         'hd_mean_invISI': hd_mean_invISI, 
         'hd_CV_ISI': hd_CV_ISI, 
-#         'plot_pos_x_locs': plot_pos_x_locs, 
-#         'pos_x_locs': pos_x_locs, 
-#         'pos_isi_locs': pos_isi_locs, 
-#         'pos_mean_ISI': pos_mean_ISI, 
-#         'pos_mean_invISI': pos_mean_invISI, 
-#         'pos_CV_ISI': pos_CV_ISI, 
+        'plot_pos_x_locs': plot_pos_x_locs, 
+        'pos_x_locs': pos_x_locs, 
+        'pos_isi_locs': pos_isi_locs, 
+        'pos_mean_ISI': pos_mean_ISI, 
+        'pos_mean_invISI': pos_mean_invISI, 
+        'pos_CV_ISI': pos_CV_ISI, 
         'ISI_t_eval': cisi_t_eval, 
         'ISI_deltas_conds': isi_conds, 
         'ISI_xs_conds': x_conds, 
@@ -243,12 +254,12 @@ def main():
         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_PP-log_rcb-16-17.-36.-6.-30.-self-H500_' + \
         'factorized_gp-32-1000_X[hd-x-y-speed]_Z[]_freeze[obs_model0spikefilter0a-' + \
         'obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
-#         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_lognorm-log_rcb-16-17.-36.-6.-30.-self-H500_' + \
-#         'rate_renewal_gp-32-1000_X[hd-x-y-speed]_Z[]_freeze[]',
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_lognorm-log_rcb-16-17.-36.-6.-30.-self-H500_' + \
+        'rate_renewal_gp-32-1000_X[hd-x-y-speed]_Z[]_freeze[]',
         # BNPP
-#         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern12-matern32-1000-n2._' + \
+#         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-96-matern12-matern32-1000-n2._' + \
 #         'X[hd-x-y-speed]_Z[]_freeze[]', 
-#         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern12-matern32-1000-n2._' + \
+#         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-96-matern12-matern32-1000-n2._' + \
 #         'X[hd-x-y-speed]_Z[]_freeze[obs_model0log_warp_tau]', 
         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-96-matern32-matern32-1000-n2._' + \
         'X[hd-x-y-speed]_Z[]_freeze[]', 
@@ -281,21 +292,16 @@ def main():
     regression_dict, variability_dict, tuning_dict = {}, {}, {}
     tuning_neuron_list = list(range(neurons))
     
-#     data_run = pickle.load(
-#         open(save_dir + "results_th1.p", "rb")
-#     )
-#     regression_dict = data_run["regression"]
-#     variability_dict = data_run["variability"]
-#     tuning_dict = data_run["tuning"]
-    
     process_steps = [0, 1, 2]
     for k in process_steps:  # save after finishing each dict
         if k == 0:
             regression_dict = utils.evaluate_regression_fits(
                 checkpoint_dir, reg_config_names, th1.observed_kernel_dict_induc_list, 
                 dataset_dict, test_dataset_dicts, rng, prng_state, batch_size, 
-                num_samps = 16, 
+                num_samps = 10, 
             )
+            
+            pickle.dump(regression_dict, open(save_dir + "th1_regression.p", "wb"))
         
         elif k == 1:
             variability_dict = utils.analyze_variability_stats(
@@ -309,6 +315,8 @@ def main():
                 num_induc = 8, 
                 jitter = 1e-6, 
             )
+            
+            pickle.dump(variability_dict, open(save_dir + "th1_variability.p", "wb"))
 
         elif k == 2:
             tuning_dict = tuning(
@@ -325,13 +333,7 @@ def main():
                 outdims_per_batch = 2, 
             )
 
-        ### export ###
-        data_run = {
-            "regression": regression_dict,
-            "variability": variability_dict, 
-            "tuning": tuning_dict, 
-        }
-        pickle.dump(data_run, open(save_dir + "results_th1_.p", "wb"))
+            pickle.dump(tuning_dict, open(save_dir + "th1_tuning.p", "wb"))
 
 
 if __name__ == "__main__":

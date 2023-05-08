@@ -124,7 +124,7 @@ def tuning(
     print('Conditional ISI densities...')
     
     evalsteps = 200
-    cisi_t_eval = np.linspace(0.0, 5., evalsteps)
+    cisi_t_eval = np.linspace(0.0, 2., evalsteps)
     
     pts = 8
     isi_conds = mean_ISIs[:, None] * np.ones((pts, neurons, ISI_order-1))
@@ -191,9 +191,9 @@ def main():
     parser.add_argument("--seed", default=123, type=int)
     parser.add_argument("--savedir", default="../saves/", type=str)
     parser.add_argument("--datadir", default="../../data/hc3/", type=str)
-    parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
+    parser.add_argument("--checkpointdir", default="../checkpoint_/", type=str)
 
-    parser.add_argument("--batch_size", default=50000, type=int)
+    parser.add_argument("--batch_size", default=30000, type=int)
     
     parser.add_argument("--device", default=0, type=int)
     parser.add_argument("--cpu", dest="cpu", action="store_true")
@@ -224,19 +224,29 @@ def main():
     reg_config_names = [
         # exponential and renewal
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_PP-log__factorized_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]', 
-        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_gamma-log__rate_renewal_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]', 
-        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]', 
-        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]',
-        # conditional
-        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_PP-log_rcb-16-17.-36.-6.-30.-self-H500_factorized_gp-32-1000_' + \
+#         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_gamma-log__rate_renewal_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]', 
+#         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]', 
+#         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]',
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_gamma-log__rate_renewal_gp-32-1000jointsamples_' + \
+        'X[x-hd-theta]_Z[]_freeze[]_jitter1e-6', 
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-32-1000jointsamples_' + \
+        'X[x-hd-theta]_Z[]_freeze[]', 
+#         # conditional
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_PP-log_rcb-8-10.-20.-4.5-9.-self-H150_factorized_gp-32-1000_' + \
         'X[x-hd-theta]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
-#         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_gamma-log_rcb-16-17.-36.-6.-30.-self-H500_rate_renewal_gp-32-1000_' + \
-#         'X[x-hd-theta]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
         # BNPP
-#         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern32-1000-n2._' + \
-#         'X[x-hd-theta]_Z[]_freeze[]', 
-#         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern32-1000-n2._' + \
-#         'X[x-hd-theta]_Z[]_freeze[obs_model0log_warp_tau]', 
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern12-1000-n2._' + \
+        'X[x-hd-theta]_Z[]_freeze[]', 
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern12-1000-n2._' + \
+        'X[x-hd-theta]_Z[]_freeze[obs_model0log_warp_tau]', 
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern32-1000-n2._' + \
+        'X[x-hd-theta]_Z[]_freeze[]', 
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern32-1000-n2._' + \
+        'X[x-hd-theta]_Z[]_freeze[obs_model0log_warp_tau]', 
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern52-matern32-1000-n2._' + \
+        'X[x-hd-theta]_Z[]_freeze[]', 
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern52-matern32-1000-n2._' + \
+        'X[x-hd-theta]_Z[]_freeze[obs_model0log_warp_tau]', 
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern32-matern32-1000-n2._' + \
         'X[x-hd-theta]_Z[]_freeze[]', 
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern32-matern32-1000-n2._' + \
@@ -276,6 +286,8 @@ def main():
                 dataset_dict, test_dataset_dicts, rng, prng_state, batch_size, 
                 num_samps = 16, 
             )
+            
+            pickle.dump(regression_dict, open(save_dir + "hc3_regression.p", "wb"))
 
         elif k == 1:
             variability_dict = utils.analyze_variability_stats(
@@ -289,6 +301,8 @@ def main():
                 num_induc = 8, 
                 jitter = 1e-6, 
             )
+            
+            pickle.dump(variability_dict, open(save_dir + "hc3_variability.p", "wb"))
 
         elif k == 2:
             tuning_dict = tuning(
@@ -305,13 +319,8 @@ def main():
                 outdims_per_batch = 2, 
             )
 
-        ### export ###
-        data_run = {
-            "regression": regression_dict,
-            "variability": variability_dict, 
-            "tuning": tuning_dict, 
-        }
-        pickle.dump(data_run, open(save_dir + "results_hc3.p", "wb"))
+            pickle.dump(tuning_dict, open(save_dir + "hc3_tuning.p", "wb"))
+            
 
 
 if __name__ == "__main__":

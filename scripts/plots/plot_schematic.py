@@ -200,6 +200,9 @@ def BNPP_samples(prng_state, rng, num_samps, evalsteps, L):
 
 # plotting functions
 def plot_inputs(fig, Tst, T, Te, evals, spiketimes, pos_sample, ISIs):
+    """
+    spike train and input time series
+    """
     widths = [1]
     heights = [0.3, 1, 1, 1]
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
@@ -282,7 +285,9 @@ def plot_inputs(fig, Tst, T, Te, evals, spiketimes, pos_sample, ISIs):
     
     
 def plot_time_warping(fig, Tst, Te, evals, ISIs, tISI, tuISIs, tau, tau_tilde):
-    ### time warping ###
+    """
+    time warping schematic
+    """
     widths = [1, 0.4]
     heights = [1, 1]
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
@@ -351,7 +356,9 @@ def plot_time_warping(fig, Tst, Te, evals, ISIs, tISI, tuISIs, tau, tau_tilde):
     
     
 def plot_intensities(fig, cisi_t_eval, ISI_densities, cisi_tau_tilde, log_rho_tildes):
-    ### log intensity and ISI ###
+    """
+    log intensity and ISI
+    """
     n = 0
     f_dim = 0
 

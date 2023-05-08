@@ -24,11 +24,11 @@ def plot_fit_stats(fig, X, Y, regression_dict, use_reg_config_names, use_names, 
     """
     KS and likelihood statistics
     """
-    widths = [1, 1]
+    widths = [0.9, 1]
     heights = [1]
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
                             height_ratios=heights, top=1.0 + Y, bottom=0.5 + Y, 
-                            left=0.03 + X, right=0.3 + X, wspace=0.1) 
+                            left=0.03 + X, right=0.28 + X, wspace=0.1) 
 
     mdls = len(use_reg_config_names)
     p_vals = [regression_dict[n]['KS_p_value'] for n in use_reg_config_names]
@@ -242,61 +242,51 @@ def plot_instantaneous(fig, X, Y, rng, variability_dict, plot_units):
     heights = [0.2, 1]
 
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
-                            height_ratios=heights, top=0.3 + Y, bottom=0.0 + Y, 
-                            left=0.35 + X, right=0.45 + X, wspace=0.02, hspace=0.02)
+                            height_ratios=heights, top=0.32 + Y, bottom=0.0 + Y, 
+                            left=0.37 + X, right=0.48 + X, wspace=0.02, hspace=0.02)
 
     ax = fig.add_subplot(spec[1, 0])
-    ax.scatter(variability_dict["mean_ISI"].mean(0).mean(1), variability_dict["CV_ISI"].mean(0).mean(1), 
+    ax.scatter((1 / variability_dict["mean_ISI"].mean(0)).mean(1), variability_dict["CV_ISI"].mean(0).mean(1), 
                marker='.', s=8, c='gray')
+    ax.set_xlabel('average rate (Hz)', labelpad=2)
+    ax.set_ylabel('average CV', labelpad=2)
+    ax.set_yticks([1, 2])
 
     ax = fig.add_subplot(spec[0, 0])
-    ax.hist(variability_dict["mean_ISI"].mean(0).mean(1))
+    ax.hist(variability_dict["mean_ISI"].mean(0).mean(1), color='lightgray')
     ax.set_xticks([])
     ax.set_yticks([])
     
     ax = fig.add_subplot(spec[1, 1])
-    ax.hist(variability_dict["mean_ISI"].mean(0).mean(1), orientation='vertical')
+    ax.hist(variability_dict["mean_ISI"].mean(0).mean(1), orientation='horizontal', color='lightgray')
     ax.set_xticks([])
-    ax.set_yticks([])
+    ax.set_yticks([])    
     
-#     ax = fig.add_subplot(spec[0, 1])
-#     ax.scatter(variability_dict["linear_slope"], variability_dict["linear_R2"], 
-#                marker='.', s=8, c='gray')#variability_dict["linear_slope"])
-
-
-    #ax = fig.add_subplot(spec[0, 2])
-
-    widths = [1] * len(plot_units)
-    heights = [1]
-
-    spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
-                            height_ratios=heights, top=0.3 + Y, bottom=0.2 + Y, 
-                            left=0.48 + X, right=0.6 + X, wspace=0.3, hspace=0.8)
-
-    skip = 10
-    for en, ne in enumerate(plot_units):
-        ax = fig.add_subplot(spec[0, en])
-        ax.set_title('neuron {}'.format(ne + 1), fontsize=11)
-        ax.scatter(imISI[ne, ::skip], cvISI[ne, ::skip], marker='.', c='gray', s=4, alpha=0.3)
-        ax.set_ylim([0, cvISI.max() * 1.1])
-        ax.set_yticks([0, 1, 2])
-
-        
     widths = [1]
     heights = [1]
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
-                            height_ratios=heights, top=0.15 + Y, bottom=0.0 + Y, 
-                            left=0.48 + X, right=0.55 + X)
+                            height_ratios=heights, top=0.32 + Y, bottom=0.0 + Y, 
+                            left=0.52 + X, right=0.6 + X)
 
     ax = fig.add_subplot(spec[0, 0])
-    R2 = [variability_dict["linear_R2"], variability_dict["GP_R2"]]
-    ax.violinplot(R2, np.arange(2), points=20, widths=0.9,
-        showmeans=True, showextrema=True, showmedians=True, 
-        bw_method='silverman', 
-    )
+    R2 = np.array([variability_dict["linear_R2"], variability_dict["GP_R2"]])
+    xx = 0.1 * rng.normal(size=R2.shape)
+#     ax.violinplot(R2, np.arange(2), points=20, widths=0.9,
+#         showmeans=True, showextrema=True, showmedians=True, 
+#         bw_method='silverman', 
+#     )
 
+    for x, vals in zip(xx.T, R2.T):
+        ax.plot(np.arange(2) + x, vals, c='lightgray')
+        
     for en, r2 in enumerate(R2):
-        ax.scatter(en + 0.1 * rng.normal(size=r2.shape), r2, c='gray')
+        ax.scatter(en + xx[en], r2, c='gray')
+        
+    ax.set_xticks([0, 1])
+    ax.set_ylim([0, 1])
+    ax.set_yticks([0, 1])
+    ax.set_xticklabels(['linear', 'GP'])
+    ax.set_ylabel(r'CV-rate $R^2$', labelpad=-6)
             
             
 
@@ -320,25 +310,48 @@ def plot_th1_tuning(fig, X, Y, tuning_dict, plot_units):
         cvsamples, percentiles, sm_filter, padding_modes)
     
     # plot
+    pts_inds = [2, 3]
+    
     widths = [1] * len(plot_units)
     heights = [1, 1]
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
                             height_ratios=heights, top=0.3 + Y, bottom=0.0 + Y, 
-                            left=0.7 + X, right=0.85 + X)
+                            left=0.68 + X, right=0.87 + X, wspace=0.4)
 
+    cs = ['r', 'b']
     for en, n in enumerate(plot_units):
         ax = fig.add_subplot(spec[0, en])
+        ax.set_title('neuron {}'.format(n + 1), fontsize=11)
         line, = ax.plot(eval_locs[:, 0], rmedian[n, :], 'gray', label='posterior mean')
         ax.fill_between(eval_locs[:, 0], rlower[n, :], rupper[n, :], 
                         color=line.get_color(), alpha=0.2, label='95% confidence')
         ax.plot(eval_locs[:, 0], rsamples[:, n, :].T, 'gray', alpha=0.2)
-
+        ax.set_xlim([0, 2*np.pi])
+        ax.set_xticks([0, 2*np.pi])
+        ax.set_xticklabels([])
+        
+        ylims = ax.get_ylim()
+        ax.plot(np.ones(2) * tuning_dict["ISI_xs_conds"][pts_inds[en], 0], ylims, c=cs[en], linestyle='--')
+        
+        if en == 0:
+            ax.set_ylabel('rate (Hz)', labelpad=1)
+        
         ax = fig.add_subplot(spec[1, en])
         line, = ax.plot(eval_locs[:, 0], cvmedian[n, :], 'gray', label='posterior mean')
         ax.fill_between(eval_locs[:, 0], cvlower[n, :], cvupper[n, :], 
                         color=line.get_color(), alpha=0.2, label='95% confidence')
         ax.plot(eval_locs[:, 0], cvsamples[:, n, :].T, 'gray', alpha=0.2)
-
+        ax.set_xlim([0, 2*np.pi])
+        ax.set_xticks([0, 2*np.pi])
+        ax.set_xticklabels([])
+        
+        ylims = ax.get_ylim()
+        ax.plot(np.ones(2) * tuning_dict["ISI_xs_conds"][pts_inds[en], 0], ylims, c=cs[en], linestyle='--')
+        
+        if en == 0:
+            ax.set_xlabel('head direction', labelpad=1)
+            ax.set_xticklabels([r'$0$', r'$2\pi$'])
+            ax.set_ylabel('CV', labelpad=1)
 
     widths = [1]
     heights = [1, 1]
@@ -346,13 +359,19 @@ def plot_th1_tuning(fig, X, Y, tuning_dict, plot_units):
                             height_ratios=heights, top=0.3 + Y, bottom=0.0 + Y, 
                             left=0.9 + X, right=1.0 + X)
 
-    ne_inds = [20, 27]
-    pts_inds = [0, 2]
     for en in range(2):
         ax = fig.add_subplot(spec[en, 0])
         ax.plot(tuning_dict['ISI_t_eval'], 
-                tuning_dict['ISI_densities'][pts_inds[en], :, ne_inds[en], :].T, 
-                alpha=0.02, color='k')
+                tuning_dict['ISI_densities'][pts_inds[en], :, plot_units[en], :].T, 
+                alpha=0.02, color=cs[en])
+        ax.set_yticks([])
+        ax.set_xticks([tuning_dict['ISI_t_eval'][0], tuning_dict['ISI_t_eval'][-1]])
+        
+        if en == 1:
+            ax.set_ylabel('             probability', labelpad=2)
+            ax.set_xlabel('ISI (s)', labelpad=1)
+        else:
+            ax.set_xticklabels([])
 
 
         

@@ -89,57 +89,12 @@ def tuning(
     )  # (mc, eval_pts, out_dims)
     prng_state, _ = jr.split(prng_state)
     
-    # position tuning
-#     print('Position tuning...')
-    
-#     grid_n = [40, 40]
-#     pts = np.prod(grid_n)
-#     plot_pos_x_locs = np.meshgrid(
-#         np.linspace(x.min(), x.max(), grid_n[0]), 
-#         np.linspace(y.min(), y.max(), grid_n[1]), 
-#     )
-    
-#     pos_x_locs = np.stack([
-#         pref_hd * np.ones_like(plot_pos_x_locs[0]), 
-#         plot_pos_x_locs[0], 
-#         plot_pos_x_locs[1], 
-#         mean_speed * np.ones_like(plot_pos_x_locs[0]), 
-#     ], axis=-1)  # (neurons, grid_x, grid_theta, in_dims)
-#     pos_isi_locs = mean_ISIs[:, None] * np.ones((*grid_n, neurons, ISI_order-1))
-    
-#     pos_mean_ISI, pos_mean_invISI, pos_CV_ISI = [], [], []
-#     for n in neuron_list:
-#         pos_mean_ISI_, pos_mean_invISI_, pos_CV_ISI_ = utils.compute_ISI_stats(
-#             prng_state, 
-#             num_samps, 
-#             pos_x_locs, 
-#             pos_isi_locs, 
-#             model.obs_model, 
-#             jitter, 
-#             [n], 
-#             int_eval_pts = int_eval_pts, 
-#             num_quad_pts = num_quad_pts, 
-#             batch_size = batch_size, 
-#         )  # (mc, eval_pts, 1)
-        
-#         pos_mean_ISI.append(pos_mean_ISI_)
-#         pos_mean_invISI.append(pos_mean_invISI_)
-#         pos_CV_ISI.append(pos_CV_ISI_)
-        
-#     pos_mean_ISI, pos_mean_invISI, pos_CV_ISI = (
-#         np.concatenate(pos_mean_ISI, axis=-1), 
-#         np.concatenate(pos_mean_invISI, axis=-1), 
-#         np.concatenate(pos_CV_ISI, axis=-1), 
-#     )
-        
-#     prng_state, _ = jr.split(prng_state)
-    
     
     ### conditional ISI densities ###
     print('Conditional ISI densities...')
     
     evalsteps = 200
-    cisi_t_eval = np.linspace(0.0, 5., evalsteps)
+    cisi_t_eval = np.linspace(0.0, 2., evalsteps)
     
     pts = 8
     isi_conds = mean_ISIs[:, None] * np.ones((pts, neurons, ISI_order-1))
@@ -175,12 +130,6 @@ def tuning(
         'hd_mean_ISI': hd_mean_ISI, 
         'hd_mean_invISI': hd_mean_invISI, 
         'hd_CV_ISI': hd_CV_ISI, 
-#         'plot_pos_x_locs': plot_pos_x_locs, 
-#         'pos_x_locs': pos_x_locs, 
-#         'pos_isi_locs': pos_isi_locs, 
-#         'pos_mean_ISI': pos_mean_ISI, 
-#         'pos_mean_invISI': pos_mean_invISI, 
-#         'pos_CV_ISI': pos_CV_ISI, 
         'ISI_t_eval': cisi_t_eval, 
         'ISI_deltas_conds': isi_conds, 
         'ISI_xs_conds': x_conds, 
@@ -206,7 +155,7 @@ def main():
     parser.add_argument("--datadir", default="../../data/th1/", type=str)
     parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
 
-    parser.add_argument("--batch_size", default=100000, type=int)
+    parser.add_argument("--batch_size", default=30000, type=int)
     
     parser.add_argument("--device", default=0, type=int)
     parser.add_argument("--cpu", dest="cpu", action="store_true")
@@ -235,20 +184,36 @@ def main():
     ### names ###
     reg_config_names = [
         # exponential and renewal
-        'Mouse28_140313_wakeISI5sel0.0to0.5_PP-log__factorized_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_gamma-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-        'Mouse28_140313_wakeISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
+#         'Mouse28_140313_wakeISI5sel0.0to0.5_PP-log__factorized_gp-8-1000_X[hd]_Z[]', 
+#         'Mouse28_140313_wakeISI5sel0.0to0.5_gamma-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
+#         'Mouse28_140313_wakeISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
+#         'Mouse28_140313_wakeISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_PP-log__factorized_gp-8-1000_X[hd]_Z[]_freeze[]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_gamma-log__rate_renewal_gp-8-1000jointsamples_' + \
+        'X[hd]_Z[]_freeze[]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-8-1000jointsamples_' + \
+        'X[hd]_Z[]_freeze[]', 
         # conditional
-        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_PP-log_rcb-16-17.-36.-6.-30.-self-H500_' + \
-        'factorized_gp-8-1000_X[hd]_Z[]_freeze[obs_model0spikefilter0a-' + \
-        'obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
-        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_lognorm-log_rcb-16-17.-36.-6.-30.-self-H500_' + \
-        'rate_renewal_gp-8-1000_X[hd]_Z[]_freeze[]',
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_PP-log_rcb-8-10.-20.-4.5-9.-self-H150_''factorized_gp-8-1000_' + \
+        'X[hd]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_gamma-log_rcb-8-10.-20.-4.5-9.-self-H150_rate_renewal_gp-8-1000' _ \
+        'jointsamples_X[hd]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_invgauss-log_rcb-8-10.-20.-4.5-9.-self-H150_rate_renewal_gp-8-1000' _ \
+        'jointsamples_X[hd]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_PP-log_svgp-8-n2.-10.-self-H150_factorized_gp-8-1000_' + \
+        'X[hd]_Z[]_freeze[]', 
         # BNPP
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern12-matern12-1000-n2._' + \
+        'X[hd]_Z[]_freeze[]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern12-matern12-1000-n2._' + \
+        'X[hd]_Z[]_freeze[obs_model0log_warp_tau]', 
         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern12-matern32-1000-n2._' + \
         'X[hd]_Z[]_freeze[]', 
         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern12-matern32-1000-n2._' + \
+        'X[hd]_Z[]_freeze[obs_model0log_warp_tau]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern52-matern32-1000-n2._' + \
+        'X[hd]_Z[]_freeze[]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern52-matern32-1000-n2._' + \
         'X[hd]_Z[]_freeze[obs_model0log_warp_tau]', 
         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-matern32-1000-n2._' + \
         'X[hd]_Z[]_freeze[]', 
@@ -281,13 +246,6 @@ def main():
     regression_dict, variability_dict, tuning_dict = {}, {}, {}
     tuning_neuron_list = list(range(neurons))
     
-#     data_run = pickle.load(
-#         open(save_dir + "results_th1.p", "rb")
-#     )
-#     regression_dict = data_run["regression"]
-#     variability_dict = data_run["variability"]
-#     tuning_dict = data_run["tuning"]
-    
     process_steps = [0, 1, 2]
     for k in process_steps:  # save after finishing each dict
         if k == 0:
@@ -296,6 +254,8 @@ def main():
                 dataset_dict, test_dataset_dicts, rng, prng_state, batch_size, 
                 num_samps = 16, 
             )
+            
+            pickle.dump(regression_dict, open(save_dir + "th1_regression.p", "wb"))
         
         elif k == 1:
             variability_dict = utils.analyze_variability_stats(
@@ -309,6 +269,8 @@ def main():
                 num_induc = 8, 
                 jitter = 1e-6, 
             )
+            
+            pickle.dump(variability_dict, open(save_dir + "th1_variability.p", "wb"))
 
         elif k == 2:
             tuning_dict = tuning(
@@ -324,15 +286,10 @@ def main():
                 batch_size = 1000, 
                 outdims_per_batch = 2, 
             )
+            
+            pickle.dump(tuning_dict, open(save_dir + "th1_tuning.p", "wb"))
 
-        ### export ###
-        data_run = {
-            "regression": regression_dict,
-            "variability": variability_dict, 
-            "tuning": tuning_dict, 
-        }
-        pickle.dump(data_run, open(save_dir + "results_th1.p", "wb"))
-
+            
 
 if __name__ == "__main__":
     main()

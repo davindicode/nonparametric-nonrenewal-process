@@ -242,7 +242,7 @@ def main():
     parser.add_argument("--datadir", default="../../data/synthetic/", type=str)
     parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
 
-    parser.add_argument("--batch_size", default=100000, type=int)
+    parser.add_argument("--batch_size", default=50000, type=int)
     
     parser.add_argument("--device", default=0, type=int)
     parser.add_argument("--cpu", dest="cpu", action="store_true")
@@ -273,9 +273,9 @@ def main():
     ### names ###
     ISI_order = 4
     reg_config_names = [
-        'syn_data_seed123ISI4sel0.0to1.0_PP-log__factorized_gp-16-1000_X[x-y]_Z[]', 
-        'syn_data_seed123ISI4sel0.0to1.0_gamma-log__rate_renewal_gp-16-1000_X[x-y]_Z[]_freeze[]', 
-        'syn_data_seed123ISI4sel0.0to1.0_PP-log_rcb-8-17.-36.-6.-30.-self-H500_factorized_gp-16-1000_' + \
+        'syn_data_seed123ISI4sel0.0to1.0_PP-log__factorized_gp-16-1000_X[x-y]_Z[]_freeze[]', 
+        'syn_data_seed123ISI4sel0.0to1.0_gamma-log__rate_renewal_gp-16-1000jointsamples_X[x-y]_Z[]_freeze[]', 
+        'syn_data_seed123ISI4sel0.0to1.0_PP-log_rcb-8-10.-20.-4.5-9.-self-H150_factorized_gp-16-1000_' + \
         'X[x-y]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
         'syn_data_seed123ISI4sel0.0to1.0_isi4__nonparam_pp_gp-48-matern32-matern32-1000-n2._' + \
         'X[x-y]_Z[]_freeze[]', 
@@ -323,7 +323,7 @@ def main():
             "regression": regression_dict,
             "tuning": tuning_dict, 
         }
-        pickle.dump(data_run, open(save_dir + "results_synthetic.p", "wb"))
+        pickle.dump(data_run, open(save_dir + "synthetic_results.p", "wb"))
 
 
 if __name__ == "__main__":
