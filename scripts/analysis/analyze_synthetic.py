@@ -101,9 +101,9 @@ def tuning(
     GT_unit_renewals = np.concatenate(GT_unit_renewals, axis=1)  # (pts, obs_dims)
     
     tunings['GT'] = {
-        'GT_unit_renewals': GT_unit_renewals, 
-        'GT_rates': GT_rates, 
-        'GT_ISI_densities': GT_ISI_densities, 
+        'unit_renewals': GT_unit_renewals, 
+        'pos_rates': GT_rates, 
+        'ISI_densities': GT_ISI_densities, 
     }
     
     for model_name in reg_config_names:
@@ -136,9 +136,16 @@ def tuning(
             
             # export
             results = {
-                'pose_rates': pos_rates, 
+                'pos_rates': pos_rates, 
                 'len_xs': len_xs, 
             }
+            
+            if model.obs_model.spikefilter is not None:
+                filter_t, _ = model.obs_model.spikefilter.sample_posterior(
+                    prng_state, 1, False, None, jitter)
+                results["spike_filter"] = np.array(filter_t[0])  # (filter_length, outs, 1)
+                prng_state, _ = jr.split(prng_state)
+                
             tunings[model_name] = results
             
         elif obs_type == 'nonparam_pp_gp':
@@ -274,7 +281,7 @@ def main():
     ISI_order = 4
     reg_config_names = [
         'syn_data_seed123ISI4sel0.0to1.0_PP-log__factorized_gp-16-1000_X[x-y]_Z[]_freeze[]', 
-        'syn_data_seed123ISI4sel0.0to1.0_gamma-log__rate_renewal_gp-16-1000jointsamples_X[x-y]_Z[]_freeze[]', 
+        'syn_data_seed123ISI4sel0.0to1.0_gamma-log__rate_renewal_gp-16-1000_X[x-y]_Z[]_freeze[]', 
         'syn_data_seed123ISI4sel0.0to1.0_PP-log_rcb-8-10.-20.-4.5-9.-self-H150_factorized_gp-16-1000_' + \
         'X[x-y]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
         'syn_data_seed123ISI4sel0.0to1.0_isi4__nonparam_pp_gp-48-matern32-matern32-1000-n2._' + \

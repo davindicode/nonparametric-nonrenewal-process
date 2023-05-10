@@ -13,8 +13,8 @@ import gaussneuro as lib
 
 def plot_ground_truth(fig, tuning_dict, cs):
     unit_ISI_t_eval = tuning_dict["unit_ISI_t_eval"]
-    GT_unit_renewals = tuning_dict["GT"]["GT_unit_renewals"]
-    GT_rates = tuning_dict["GT"]["GT_rates"]
+    GT_unit_renewals = tuning_dict["GT"]["unit_renewals"]
+    GT_rates = tuning_dict["GT"]["pos_rates"]
     
     ### ground truth ###
     fig.text(0.1, 1.04, 'true rate maps', fontsize=13, ha='center')
@@ -73,7 +73,7 @@ def plot_tuning_and_ISIs(fig, tuning_dict, name, cs):
     ISI_t_eval = tuning_dict["ISI_t_eval"]
     ISI_densities = tuning_dict[name]["ISI_densities"]
     ISI_neuron_conds = tuning_dict["ISI_neuron_conds"]
-    GT_ISI_densities = tuning_dict["GT"]["GT_ISI_densities"]
+    GT_ISI_densities = tuning_dict["GT"]["ISI_densities"]
     
     ### tuning curves ###
     fig.text(0.37, 1.04, 'inferred rates', fontsize=13, ha='center')
@@ -196,7 +196,9 @@ def plot_kernel_lens(fig, data_dict, cs):
     
 
 def plot_QQ(fig, use_reg_config_names, use_names, regression_dict, cs):
-    ### KS statistics ###
+    """
+    KS statistics
+    """
     widths = [1, 1]
     heights = [1, 1]
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
@@ -204,7 +206,7 @@ def plot_QQ(fig, use_reg_config_names, use_names, regression_dict, cs):
                             left=0.85, right=1.2, hspace=0.3, wspace=0.1)
 
     for en, n in enumerate(use_reg_config_names):
-        ax = fig.add_subplot(spec[en // 2, en % 2])
+        ax = fig.add_subplot(spec[en % 2, en // 2])
         ax.set_title(use_names[en], fontsize=12, fontweight='bold')
 
         dd = regression_dict[n]
@@ -216,11 +218,11 @@ def plot_QQ(fig, use_reg_config_names, use_names, regression_dict, cs):
         ax.plot(np.linspace(0., 1., 100), np.linspace(0., 1., 100), c='k')
         ax.set_xlim([-0.03, 1.03])
         ax.set_xticks([0, 1])
-        if en // 2 == 0:
+        if en % 2 == 0:
             ax.set_xticklabels([])
         ax.set_ylim([-0.03, 1.03])
         ax.set_yticks([0, 1])
-        if en % 2 == 1:
+        if en // 2 == 1:
             ax.set_yticklabels([])
         ax.set_aspect(1.0)
 
@@ -254,8 +256,8 @@ def main():
     use_reg_config_names = [reg_config_names[k] for k in [0, 1, 2, 4]]
     use_names = [
         'Poisson', 
-        'conditional Poisson', 
         'rescaled gamma', 
+        'conditional Poisson', 
         'nonparametric', 
     ]
     

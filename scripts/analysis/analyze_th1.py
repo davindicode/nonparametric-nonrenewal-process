@@ -155,6 +155,7 @@ def main():
     parser.add_argument("--datadir", default="../../data/th1/", type=str)
     parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
 
+    parser.add_argument("--tasks", default=[0, 1, 2], nargs="+", type=int)
     parser.add_argument("--batch_size", default=30000, type=int)
     
     parser.add_argument("--device", default=0, type=int)
@@ -182,27 +183,23 @@ def main():
     batch_size = args.batch_size
 
     ### names ###
-    reg_config_names = [
+    baseline_config_names = [
         # exponential and renewal
-#         'Mouse28_140313_wakeISI5sel0.0to0.5_PP-log__factorized_gp-8-1000_X[hd]_Z[]', 
-#         'Mouse28_140313_wakeISI5sel0.0to0.5_gamma-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-#         'Mouse28_140313_wakeISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
-#         'Mouse28_140313_wakeISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-8-1000_X[hd]_Z[]', 
         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_PP-log__factorized_gp-8-1000_X[hd]_Z[]_freeze[]', 
-        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_gamma-log__rate_renewal_gp-8-1000jointsamples_' + \
-        'X[hd]_Z[]_freeze[]', 
-        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-8-1000jointsamples_' + \
-        'X[hd]_Z[]_freeze[]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_gamma-log__rate_renewal_gp-8-1000_X[hd]_Z[]_freeze[]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-8-1000_X[hd]_Z[]_freeze[]', 
         # conditional
         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_PP-log_rcb-8-10.-20.-4.5-9.-self-H150_''factorized_gp-8-1000_' + \
         'X[hd]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
-        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_gamma-log_rcb-8-10.-20.-4.5-9.-self-H150_rate_renewal_gp-8-1000' _ \
-        'jointsamples_X[hd]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
-        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_invgauss-log_rcb-8-10.-20.-4.5-9.-self-H150_rate_renewal_gp-8-1000' _ \
-        'jointsamples_X[hd]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
-        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_PP-log_svgp-8-n2.-10.-self-H150_factorized_gp-8-1000_' + \
-        'X[hd]_Z[]_freeze[]', 
-        # BNPP
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_gamma-log_rcb-8-10.-20.-4.5-9.-self-H150_rate_renewal_gp-8-1000_' + \
+        'X[hd]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_invgauss-log_rcb-8-10.-20.-4.5-9.-self-H150_rate_renewal_gp-8-1000_' + \
+        'X[hd]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
+#         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_PP-log_svgp-8-n2.-10.-self-H150_factorized_gp-8-1000_' + \
+#         'X[hd]_Z[]_freeze[]', 
+    ]
+    
+    reg_config_names = [
         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern12-matern12-1000-n2._' + \
         'X[hd]_Z[]_freeze[]', 
         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern12-matern12-1000-n2._' + \
@@ -211,9 +208,9 @@ def main():
         'X[hd]_Z[]_freeze[]', 
         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern12-matern32-1000-n2._' + \
         'X[hd]_Z[]_freeze[obs_model0log_warp_tau]', 
-        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern52-matern32-1000-n2._' + \
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-matern52-1000-n2._' + \
         'X[hd]_Z[]_freeze[]', 
-        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern52-matern32-1000-n2._' + \
+        'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-matern52-1000-n2._' + \
         'X[hd]_Z[]_freeze[obs_model0log_warp_tau]', 
         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-matern32-1000-n2._' + \
         'X[hd]_Z[]_freeze[]', 
@@ -246,7 +243,7 @@ def main():
     regression_dict, variability_dict, tuning_dict = {}, {}, {}
     tuning_neuron_list = list(range(neurons))
     
-    process_steps = [0, 1, 2]
+    process_steps = args.tasks
     for k in process_steps:  # save after finishing each dict
         if k == 0:
             regression_dict = utils.evaluate_regression_fits(
@@ -256,8 +253,17 @@ def main():
             )
             
             pickle.dump(regression_dict, open(save_dir + "th1_regression.p", "wb"))
-        
+            
         elif k == 1:
+            baseline_dict = utils.evaluate_regression_fits(
+                checkpoint_dir, baseline_config_names, th1.observed_kernel_dict_induc_list, 
+                dataset_dict, test_dataset_dicts, rng, prng_state, batch_size, 
+                num_samps = 16, 
+            )
+            
+            pickle.dump(baseline_dict, open(save_dir + "th1_baselines.p", "wb"))
+        
+        elif k == 2:
             variability_dict = utils.analyze_variability_stats(
                 checkpoint_dir, tuning_model_name, th1.observed_kernel_dict_induc_list, 
                 dataset_dict, rng, prng_state, 
@@ -272,7 +278,7 @@ def main():
             
             pickle.dump(variability_dict, open(save_dir + "th1_variability.p", "wb"))
 
-        elif k == 2:
+        elif k == 3:
             tuning_dict = tuning(
                 checkpoint_dir, 
                 tuning_model_name, 

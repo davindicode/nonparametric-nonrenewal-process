@@ -3,6 +3,7 @@ import pickle
 
 import matplotlib.pyplot as plt
 import numpy as np
+import scipy.stats as scstats
 
 import sys
 sys.path.append("../../../GaussNeuro")
@@ -190,30 +191,31 @@ def plot_kernel_lens(fig, X, Y, tuning_dict):
         ARD_order.append(np.sum(len_deltas[n] < 3.) + 1)
 
     # plot
-    widths = [1, 0.2]
-    heights = [1]
+    widths = [1, 0.3, 0.1, 0.3]
+    heights = [1, 0.02]
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
-                            height_ratios=heights, top=0.3 + Y, bottom=0.0 + Y, 
-                            left=0.0 + X, right=0.27 + X, wspace=0.2)
+                            height_ratios=heights, top=0.3 + Y, bottom=-0.04 + Y, 
+                            left=0.0 + X, right=0.27 + X, wspace=0.1)
 
+    cs = ['r', 'g', 'b', 'orange']
     markers = ['o', 's', 'x', '+']
     N = len(len_deltas)
 
-    ax = fig.add_subplot(spec[0, 1])
+    ax = fig.add_subplot(spec[0, -1])
     ax.hist(ARD_order, bins=np.linspace(0, 4, 5) + .5, color='lightgray')
     ax.set_yticks([])
     ax.set_xticks([1, 2, 3, 4])
     ax.set_ylabel('frequency', labelpad=1)
     ax.set_xlabel('order', labelpad=1)
 
-    ax = fig.add_subplot(spec[0, 0])
+    ax = fig.add_subplot(spec[:, 0])
     for n in range(N):
         lens = len_deltas[n]
         tlen = len_tau[n]
-        ax.scatter(n, tlen, marker=markers[0], c='gray', s=20, 
+        ax.scatter(n, tlen, marker=markers[0], c=cs[0], s=20, 
                    label='lag 0' if n == 0 else None)
         for k in range(1, 4):
-            ax.scatter(n, lens[k-1], marker=markers[k], c='gray', 
+            ax.scatter(n, lens[k-1], marker=markers[k], c=cs[k], 
                        label='lag {}'.format(k) if n == 0 else None)
 
         ax.set_yscale('log')
@@ -223,9 +225,32 @@ def plot_kernel_lens(fig, X, Y, tuning_dict):
         ax.set_xlabel('neuron index', labelpad=1)
         ax.set_xticks(list(range(N)))
         ax.set_xticklabels([])
-        leg = ax.legend(loc='right', bbox_to_anchor=(1.5, 0.7), handletextpad=0.2)
+        leg = ax.legend(loc='right', bbox_to_anchor=(2.08, 0.7), handletextpad=0.2)
         for k in range(4):
-            leg.legend_handles[k].set_color('k')
+            leg.legend_handles[k].set_color(cs[k])
+            
+    yl = ax.get_ylim()
+            
+    ax = fig.add_subplot(spec[:, 1])
+    for k in range(4):
+        if k > 0:
+            lens = len_deltas[:, k-1]
+        else:
+            lens = len_tau
+        
+        ax.hist(np.log(lens), color=cs[k], orientation='horizontal', 
+                bins=np.linspace(np.log(yl[0]), np.log(yl[1]), 20), 
+                alpha=0.3, density=True)
+        xx = np.linspace(np.log(yl[0]), np.log(yl[1]), 100)
+        kde = scstats.gaussian_kde(np.log(lens))
+        ax.plot(kde(xx), xx, c=cs[k])
+        ax.set_ylim(np.log(yl[0]), np.log(yl[1]))
+        
+        xl = ax.get_xlim()
+        ax.plot(xl, np.log(3.) * np.ones(2), color='gray', linestyle='--')
+        ax.set_yticks([])
+        ax.set_xticks([])
+        ax.set_xlabel('density', labelpad=3)
             
             
             
@@ -253,12 +278,24 @@ def plot_instantaneous(fig, X, Y, rng, variability_dict, plot_units):
     ax.set_yticks([1, 2])
 
     ax = fig.add_subplot(spec[0, 0])
-    ax.hist(variability_dict["mean_ISI"].mean(0).mean(1), color='lightgray')
+    dd = variability_dict["mean_ISI"].mean(0).mean(1)
+    ax.hist(dd, color='lightgray', density=True)
+    xl = ax.get_xlim()
+    xx = np.linspace(xl[0], xl[1], 100)
+    kde = scstats.gaussian_kde(dd)
+    ax.plot(xx, kde(xx), c='gray')
+    ax.set_xlim(xl)
     ax.set_xticks([])
     ax.set_yticks([])
     
     ax = fig.add_subplot(spec[1, 1])
-    ax.hist(variability_dict["mean_ISI"].mean(0).mean(1), orientation='horizontal', color='lightgray')
+    dd = variability_dict["mean_ISI"].mean(0).mean(1)
+    ax.hist(dd, orientation='horizontal', color='lightgray', density=True)
+    xl = ax.get_ylim()
+    xx = np.linspace(xl[0], xl[1], 100)
+    kde = scstats.gaussian_kde(dd)
+    ax.plot(kde(xx), xx, c='gray')
+    ax.set_ylim(xl)
     ax.set_xticks([])
     ax.set_yticks([])    
     
@@ -266,15 +303,11 @@ def plot_instantaneous(fig, X, Y, rng, variability_dict, plot_units):
     heights = [1]
     spec = fig.add_gridspec(ncols=len(widths), nrows=len(heights), width_ratios=widths, 
                             height_ratios=heights, top=0.32 + Y, bottom=0.0 + Y, 
-                            left=0.52 + X, right=0.6 + X)
+                            left=0.52 + X, right=0.58 + X)
 
     ax = fig.add_subplot(spec[0, 0])
     R2 = np.array([variability_dict["linear_R2"], variability_dict["GP_R2"]])
-    xx = 0.1 * rng.normal(size=R2.shape)
-#     ax.violinplot(R2, np.arange(2), points=20, widths=0.9,
-#         showmeans=True, showextrema=True, showmedians=True, 
-#         bw_method='silverman', 
-#     )
+    xx = 0.05 * rng.normal(size=R2.shape)
 
     for x, vals in zip(xx.T, R2.T):
         ax.plot(np.arange(2) + x, vals, c='lightgray')
@@ -282,6 +315,7 @@ def plot_instantaneous(fig, X, Y, rng, variability_dict, plot_units):
     for en, r2 in enumerate(R2):
         ax.scatter(en + xx[en], r2, c='gray')
         
+    ax.set_xlim([-0.3, 1.3])
     ax.set_xticks([0, 1])
     ax.set_ylim([0, 1])
     ax.set_yticks([0, 1])
@@ -387,10 +421,10 @@ def plot_hc3_tuning(fig, X, Y):
 
     for en, n in enumerate(plot_units):
         ax = fig.add_subplot(spec[0, en])
-        ax.imshow(pos_invEisi[n], origin='lower', cmap='gray')
+        ax.imshow(xt_invEisi[n], origin='lower', cmap='gray')
 
         ax = fig.add_subplot(spec[1, en])
-        ax.imshow(pos_CV[n], origin='lower', cmap='gray')
+        ax.imshow(xt_CV[n], origin='lower', cmap='gray')
 
 
 

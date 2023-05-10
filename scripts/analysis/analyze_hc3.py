@@ -191,9 +191,10 @@ def main():
     parser.add_argument("--seed", default=123, type=int)
     parser.add_argument("--savedir", default="../saves/", type=str)
     parser.add_argument("--datadir", default="../../data/hc3/", type=str)
-    parser.add_argument("--checkpointdir", default="../checkpoint_/", type=str)
+    parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
 
-    parser.add_argument("--batch_size", default=30000, type=int)
+    parser.add_argument("--tasks", default=[0, 1, 2], nargs="+", type=int)
+    parser.add_argument("--batch_size", default=20000, type=int)
     
     parser.add_argument("--device", default=0, type=int)
     parser.add_argument("--cpu", dest="cpu", action="store_true")
@@ -221,20 +222,25 @@ def main():
 
     
     ### names ###
-    reg_config_names = [
+    baseline_config_names = [
         # exponential and renewal
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_PP-log__factorized_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]', 
-#         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_gamma-log__rate_renewal_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]', 
-#         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]', 
-#         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_lognorm-log__rate_renewal_gp-32-1000_X[x-hd-theta]_Z[]_freeze[]',
-        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_gamma-log__rate_renewal_gp-32-1000jointsamples_' + \
-        'X[x-hd-theta]_Z[]_freeze[]_jitter1e-6', 
-        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-32-1000jointsamples_' + \
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_gamma-log__rate_renewal_gp-32-1000_' + \
         'X[x-hd-theta]_Z[]_freeze[]', 
-#         # conditional
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_invgauss-log__rate_renewal_gp-32-1000_' + \
+        'X[x-hd-theta]_Z[]_freeze[]', 
+        # conditional
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_PP-log_rcb-8-10.-20.-4.5-9.-self-H150_factorized_gp-32-1000_' + \
         'X[x-hd-theta]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
-        # BNPP
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_gamma-log_rcb-8-10.-20.-4.5-9.-self-H150_rate_renewal_gp-32-1000_' + \
+        'X[x-hd-theta]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_invgauss-log_rcb-8-10.-20.-4.5-9.-self-H150_rate_renewal_gp-32-1000_' + \
+        'X[x-hd-theta]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]', 
+#         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_PP-log_svgp-8-n2.-10.-self-H150_factorized_gp-40-1000doublearrays_' + \
+#         'X[x-hd-theta]_Z[]_freeze[]', 
+    ]
+    
+    reg_config_names = [
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern12-1000-n2._' + \
         'X[x-hd-theta]_Z[]_freeze[]', 
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern12-1000-n2._' + \
@@ -243,9 +249,9 @@ def main():
         'X[x-hd-theta]_Z[]_freeze[]', 
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern12-matern32-1000-n2._' + \
         'X[x-hd-theta]_Z[]_freeze[obs_model0log_warp_tau]', 
-        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern52-matern32-1000-n2._' + \
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern32-matern52-1000-n2._' + \
         'X[x-hd-theta]_Z[]_freeze[]', 
-        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern52-matern32-1000-n2._' + \
+        'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern32-matern52-1000-n2._' + \
         'X[x-hd-theta]_Z[]_freeze[obs_model0log_warp_tau]', 
         'ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern32-matern32-1000-n2._' + \
         'X[x-hd-theta]_Z[]_freeze[]', 
@@ -278,7 +284,7 @@ def main():
     regression_dict, variability_dict, tuning_dict = {}, {}, {}
     tuning_neuron_list = list(range(neurons))
     
-    process_steps = [0, 1, 2]
+    process_steps = args.tasks
     for k in process_steps:  # save after finishing each dict
         if k == 0:
             regression_dict = utils.evaluate_regression_fits(
@@ -288,8 +294,17 @@ def main():
             )
             
             pickle.dump(regression_dict, open(save_dir + "hc3_regression.p", "wb"))
-
+            
         elif k == 1:
+            baseline_dict = utils.evaluate_regression_fits(
+                checkpoint_dir, baseline_config_names, hc3.observed_kernel_dict_induc_list, 
+                dataset_dict, test_dataset_dicts, rng, prng_state, batch_size, 
+                num_samps = 16, 
+            )
+            
+            pickle.dump(baseline_dict, open(save_dir + "hc3_baselines.p", "wb"))
+
+        elif k == 2:
             variability_dict = utils.analyze_variability_stats(
                 checkpoint_dir, tuning_model_name, hc3.observed_kernel_dict_induc_list, 
                 dataset_dict, rng, prng_state, 
@@ -304,7 +319,7 @@ def main():
             
             pickle.dump(variability_dict, open(save_dir + "hc3_variability.p", "wb"))
 
-        elif k == 2:
+        elif k == 3:
             tuning_dict = tuning(
                 checkpoint_dir, 
                 tuning_model_name, 

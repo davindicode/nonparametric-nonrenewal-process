@@ -476,8 +476,8 @@ def gp_regression(
     num_induc, 
     batch_size = 1000, 
     lr_start = 1e-2, 
-    lr_decay = 0.9995, 
-    lr_end = 1e-3, 
+    lr_decay = 0.995, 
+    lr_end = 1e-5, 
     loss_margin = -1e-1, 
     margin_epochs = 100, 
     max_epochs = 3000, 
@@ -487,8 +487,8 @@ def gp_regression(
     """
     1D GP regresssion
     
-    :param np.array X: input locs (obs_dims, pts)
-    :param np.array Y: observations (obs_dims, pts)
+    :param jnp.array X: input locs (obs_dims, pts)
+    :param jnp.array Y: observations (obs_dims, pts)
     """
     obs_dims, ts = Y.shape
     batches = int(np.ceil(ts / batch_size))
@@ -669,12 +669,6 @@ def evaluate_regression_fits(
     ISIs = dataset_dict['ISIs']
     mean_ISIs = mean_ISI(ISIs)
     
-    lik_int_method = {
-        "type": "GH", 
-        "approx_pts": 50, 
-    }
-
-    
     pred_start, pred_end = 0, 10000
     pred_ts = np.arange(pred_start, pred_end) * tbin
     regression_dict = {}
@@ -693,6 +687,18 @@ def evaluate_regression_fits(
         unroll = config.unroll
         jitter = config.jitter
         
+        if obs_type == 'factorized_gp' or obs_type == 'nonparam_pp_gp':
+            lik_int_method = {
+                "type": "GH", 
+                "approx_pts": 50, 
+            }
+            
+        elif obs_type == 'rate_renewal_gp':
+            lik_int_method = {
+                "type": "MC", 
+                "approx_pts": 10, 
+            }
+
         # data
         timestamps, covs_t, ISIs, observations, filter_length = template.select_inputs(
             dataset_dict, config)
@@ -700,8 +706,8 @@ def evaluate_regression_fits(
         if batch_size is None:  # full batch
             batch_size = len(timestamps)
             
-        # train likelihoods and rate/time rescaling
-        print('Training data...')
+        # train likelihoods
+        print('Training likelihoods...')
         dataloader = lib.utils.loaders.BatchedTimeSeries(
             timestamps, covs_t, ISIs, observations, batch_size, filter_length)
         
@@ -717,13 +723,16 @@ def evaluate_regression_fits(
             unroll=unroll, joint_samples=joint_samples, log_predictive=True)
         prng_state, _ = jr.split(prng_state)
         
+        # rate/time rescaling
+        print('Time or rate rescaling...')
         dataloader = lib.utils.loaders.BatchedTimeSeries(
             timestamps, covs_t, ISIs, observations, len(timestamps), filter_length)
+        
         sort_cdfs, T_KSs, sign_KSs, p_KSs = time_rescaling_statistics(
             dataloader.load_batch(0), model.obs_model, obs_type, jitter, outdims_per_batch=1)
 
         # test data
-        print('Test data...')
+        print('Test data and predictions...')
         test_lpds, test_ells, test_datas_ts = [], [], []
         pred_log_intensities, pred_spiketimes = [], []
         sample_log_rhos, sample_spiketimes = [], []
@@ -891,16 +900,24 @@ def analyze_variability_stats(
     ### stats ###
     print('Analyzing ISI statistics...')
     X, Y = 1 / mean_ISI.mean(0), CV_ISI.mean(0)  # (out_dims, pts), analytical expressions
+    lX = jnp.log(X)
+    dlX = lX.max(-1) - lX.min(-1)
+    
     a, b, R2_lin = linear_regression(X, Y)
     gp_model, tracker, R2_gp = gp_regression(
-        X, 
+        lX,  # regression in log space more stable
         Y, 
         rng, 
-        ini_len_fx = X.mean(-1) / 3., 
+        ini_len_fx = dlX, 
         num_induc = num_induc, 
     )
     
-    xx = np.array([np.linspace(0., x.max() * 1.2, 100) for x in X])
+    xx = np.array(
+        [np.log(np.linspace(
+            np.exp(x.min() - dlX * 0.02), 
+            np.exp(x.max() + dlX * 0.02), 
+            100)) for x in lX]
+    )
     post_mean, _, _, _ = gp_model.gp.evaluate_posterior(
         jnp.array(xx[None, ..., None]), mean_only=True, diag_cov=True, 
         compute_KL=False, compute_aux=False, jitter=1e-6)
@@ -915,7 +932,7 @@ def analyze_variability_stats(
         'linear_intercept': b, 
         'linear_R2': R2_lin, 
         'GP_tracker': tracker, 
-        'GP_post_locs': xx, 
+        'GP_post_locs': jnp.exp(xx), 
         'GP_post_mean': post_mean, 
         'GP_R2': R2_gp, 
     }
