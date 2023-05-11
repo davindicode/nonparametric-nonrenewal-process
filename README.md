@@ -1,12 +1,15 @@
 # Bayesian nonparametric modulated (non-)renewal processes
 
-See notebooks in `tutorial/` for a basic usage overview.
-See `validation/` for model validation code.
-Inspired by probabilistic programming library [Pyro](https://github.com/pyro-ppl/pyro).
+See notebooks in `notebooks/` for a basic usage overview.
+See `scripts/` for model fitting, analysis and plotting code.
 
 
 ## Motivation
 
+
+TODO:
+- change repo name
+- put library subset in and change path imports
 
 
 ## Dependencies:
@@ -20,11 +23,3 @@ Formatting
 
 Code analysis linter
 #. [pylint](https://www.pylint.org/)
-
-
-
-- ELBO and fitting
-- Sample STGP
-- pathwise conditioned KS test
-- neural correlations
-- LVM

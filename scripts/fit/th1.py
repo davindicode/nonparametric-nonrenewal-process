@@ -1,8 +1,8 @@
 import argparse
 
-import template
-
 import numpy as np
+
+import template
 
 
 def counts_dataset(session_name, bin_size, path, select_fracs=None):
@@ -65,9 +65,7 @@ def counts_dataset(session_name, bin_size, path, select_fracs=None):
     metainfo = {
         "neuron_regions": neuron_regions,
     }
-    name = (
-        session_name + "bin{}".format(bin_size) + "sel{}to{}".format(*select_fracs)
-    )
+    name = session_name + "bin{}".format(bin_size) + "sel{}to{}".format(*select_fracs)
     units_used = rc_t.shape[0]
     max_count = int(rc_t.max())
 
@@ -193,10 +191,10 @@ def observed_kernel_dict_induc_list(rng, obs_covs, num_induc, out_dims, covariat
     for comp in obs_covs_comps:
         if comp == "":  # empty
             continue
-            
+
         order_arr = rng.permuted(
-            np.tile(np.arange(num_induc), out_dims).reshape(out_dims, num_induc), 
-            axis=1, 
+            np.tile(np.arange(num_induc), out_dims).reshape(out_dims, num_induc),
+            axis=1,
         )
 
         if comp == "hd":
@@ -214,7 +212,9 @@ def observed_kernel_dict_induc_list(rng, obs_covs, num_induc, out_dims, covariat
 
         elif comp == "omega":
             scale = covariates["omega"].std()
-            induc_list += [scale * np.linspace(-1., 1., num_induc)[order_arr][..., None]]
+            induc_list += [
+                scale * np.linspace(-1.0, 1.0, num_induc)[order_arr][..., None]
+            ]
             ls = scale * np.ones(out_dims)
             kernel_dicts += [
                 {
@@ -240,7 +240,9 @@ def observed_kernel_dict_induc_list(rng, obs_covs, num_induc, out_dims, covariat
         elif comp == "x":
             left_x = covariates["x"].min()
             right_x = covariates["x"].max()
-            induc_list += [np.linspace(left_x, right_x, num_induc, 1)[order_arr][..., None]]
+            induc_list += [
+                np.linspace(left_x, right_x, num_induc, 1)[order_arr][..., None]
+            ]
             ls = (right_x - left_x) / 10.0
             kernel_dicts += [
                 {
@@ -254,7 +256,9 @@ def observed_kernel_dict_induc_list(rng, obs_covs, num_induc, out_dims, covariat
         elif comp == "y":
             bottom_y = covariates["y"].min()
             top_y = covariates["y"].max()
-            induc_list += [np.linspace(bottom_y, top_y, num_induc)[order_arr][..., None]]
+            induc_list += [
+                np.linspace(bottom_y, top_y, num_induc)[order_arr][..., None]
+            ]
             ls = (top_y - bottom_y) / 10.0
             kernel_dicts += [
                 {
@@ -267,9 +271,7 @@ def observed_kernel_dict_induc_list(rng, obs_covs, num_induc, out_dims, covariat
 
         elif comp == "time":
             scale = covariates["time"].max()
-            induc_list += [
-                np.linspace(0, scale, num_induc)[order_arr][..., None]
-            ]
+            induc_list += [np.linspace(0, scale, num_induc)[order_arr][..., None]]
             kernel_dicts += [
                 {
                     "type": "SE",
@@ -283,7 +285,6 @@ def observed_kernel_dict_induc_list(rng, obs_covs, num_induc, out_dims, covariat
             raise ValueError("Invalid covariate type")
 
     return kernel_dicts, induc_list
-
 
 
 def main():

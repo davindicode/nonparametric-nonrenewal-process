@@ -1,9 +1,8 @@
 import argparse
 
-import template
-
 import numpy as np
 
+import template
 
 
 def counts_dataset(session_name, bin_size, path, select_fracs=None):
@@ -43,9 +42,7 @@ def counts_dataset(session_name, bin_size, path, select_fracs=None):
     }
 
     metainfo = {}
-    name = (
-        session_name + "bin{}".format(bin_size) + "sel{}to{}".format(*select_fracs)
-    )
+    name = session_name + "bin{}".format(bin_size) + "sel{}to{}".format(*select_fracs)
     units_used = rc_t.shape[0]
     max_count = int(rc_t.max())
 
@@ -86,7 +83,7 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
 
     # ISIs
     ISIs = data["ISIs"][..., :max_ISI_order]  # (ts, neurons, order)
-    
+
     order_computed_at = np.empty_like(ISIs[0, :, 0]).astype(int)
     for n in range(order_computed_at.shape[0]):
         order_computed_at[n] = np.where(
@@ -152,16 +149,18 @@ def observed_kernel_dict_induc_list(rng, observations, num_induc, out_dims, cova
     for comp in observations_comps:
         if comp == "":  # empty
             continue
-            
+
         order_arr = rng.permuted(
-            np.tile(np.arange(num_induc), out_dims).reshape(out_dims, num_induc), 
-            axis=1, 
+            np.tile(np.arange(num_induc), out_dims).reshape(out_dims, num_induc),
+            axis=1,
         )
 
         if comp == "x":
             left_x = covariates["x"].min()
             right_x = covariates["x"].max()
-            induc_list += [np.linspace(left_x, right_x, num_induc)[order_arr][..., None]]
+            induc_list += [
+                np.linspace(left_x, right_x, num_induc)[order_arr][..., None]
+            ]
             ls = (right_x - left_x) / 10.0
             kernel_dicts += [
                 {
@@ -175,7 +174,9 @@ def observed_kernel_dict_induc_list(rng, observations, num_induc, out_dims, cova
         elif comp == "y":
             bottom_y = covariates["y"].min()
             top_y = covariates["y"].max()
-            induc_list += [np.linspace(bottom_y, top_y, num_induc)[order_arr][..., None]]
+            induc_list += [
+                np.linspace(bottom_y, top_y, num_induc)[order_arr][..., None]
+            ]
             ls = (top_y - bottom_y) / 10.0
             kernel_dicts += [
                 {
@@ -202,7 +203,6 @@ def observed_kernel_dict_induc_list(rng, observations, num_induc, out_dims, cova
             raise ValueError("Invalid covariate type")
 
     return kernel_dicts, induc_list
-
 
 
 def main():
