@@ -248,6 +248,12 @@ def likelihood_metric(
     Compute likelihood metrics of Bayesian neural encoding models
     """
     timesteps = len(dataloader.timestamps)  # total time steps
+    batch_metadata = {
+        "ini_t_tildes": jnp.nan
+        * jnp.empty(
+            (lik_int_method["approx_pts"], dataloader.observations.shape[0])
+        ),  # for rate-rescaling, unknown time since last spike
+    }
 
     llms = []
     for b in range(dataloader.batches):
@@ -267,12 +273,13 @@ def likelihood_metric(
             )
 
         elif obs_type == "rate_renewal_gp":
-            llm, _ = obs_model.variational_expectation(
+            llm, _, batch_metadata = obs_model.variational_expectation(
                 prng_state,
                 jitter,
                 covs_t[None, None],
                 ys,
                 ys_filt,
+                batch_metadata,
                 False,
                 timesteps,
                 lik_int_method,

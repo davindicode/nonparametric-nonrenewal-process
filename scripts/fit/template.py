@@ -1102,7 +1102,7 @@ def fit_and_save(parser_args, dataset_dict, observed_kernel_dict_induc_list, sav
         )
 
         # loss
-        @eqx.filter_value_and_grad
+        @partial(eqx.filter_value_and_grad, has_aux=True)
         def compute_loss(
             diff_model,
             static_model,
@@ -1110,40 +1110,50 @@ def fit_and_save(parser_args, dataset_dict, observed_kernel_dict_induc_list, sav
             num_samps,
             jitter,
             data,
+            batch_metadata,
             lik_int_method,
         ):
             model = eqx.combine(diff_model, static_model)
-            nELBO = -model.ELBO(
+            ELBO, batch_metadata = model.ELBO(
                 prng_state,
                 num_samps,
                 jitter,
                 tot_ts,
                 data,
+                batch_metadata,
                 lik_int_method,
                 config.joint_samples,
                 config.unroll,
             )
-            return nELBO
+            return -ELBO, batch_metadata
 
         @partial(eqx.filter_jit, device=jax.devices()[0])
         def make_step(
-            model, prng_state, num_samps, jitter, data, lik_int_method, opt_state
+            model,
+            prng_state,
+            num_samps,
+            jitter,
+            data,
+            batch_metadata,
+            lik_int_method,
+            opt_state,
         ):
             diff_model, static_model = eqx.partition(model, filter_spec)
-            loss, grads = compute_loss(
+            (loss, batch_metadata), grads = compute_loss(
                 diff_model,
                 static_model,
                 prng_state,
                 num_samps,
                 jitter,
                 data,
+                batch_metadata,
                 lik_int_method,
             )
 
             updates, opt_state = optim.update(grads, opt_state)
             model = eqx.apply_updates(model, updates)
             model = model.apply_constraints()
-            return loss, model, opt_state
+            return loss, model, opt_state, batch_metadata
 
         lik_int_comps = config.lik_int_method.split("-")
         lik_int_method = {
@@ -1159,24 +1169,31 @@ def fit_and_save(parser_args, dataset_dict, observed_kernel_dict_induc_list, sav
         }
         lrs = []
 
-        # try:  # attempt to fit model
+        # seed before model fit
         prng_state = jr.PRNGKey(seed)
 
         minloss = np.inf
         iterator = tqdm(range(config.max_epochs))
         for epoch in iterator:
+            batch_metadata = {
+                "ini_t_tildes": jnp.nan
+                * jnp.empty(
+                    (lik_int_method["approx_pts"], observations.shape[0])
+                ),  # for rate-rescaling, unknown time since last spike
+            }
 
             avg_loss = []
             for b in range(dataloader.batches):
                 batch_data = dataloader.load_batch(b)
                 prng_state, prng_key = jr.split(prng_state)
 
-                loss, model, opt_state = make_step(
+                loss, model, opt_state, batch_metadata = make_step(
                     model,
                     prng_key,
                     config.num_MC,
                     config.jitter,
                     batch_data,
+                    batch_metadata,
                     lik_int_method,
                     opt_state,
                 )

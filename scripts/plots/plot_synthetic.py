@@ -339,15 +339,14 @@ def main():
 
     ### load ###
     datadir = "../saves/"
-    name = "synthetic_results"
 
-    results = pickle.load(open(datadir + name + ".p", "rb"))
-
-    regression_dict = results["regression"]
+    name = "synthetic_regression"
+    regression_dict = pickle.load(open(datadir + name + ".p", "rb"))
     reg_config_names = list(regression_dict.keys())
 
-    name = reg_config_names[-1]
-    tuning_dict = results["tuning"]
+    name = "synthetic_tuning"
+    tuning_dict = pickle.load(open(datadir + name + ".p", "rb"))
+    name = reg_config_names[-1]  # for showing tuning
 
     ### plot ###
     use_reg_config_names = [reg_config_names[k] for k in [0, 1, 2, 4]]

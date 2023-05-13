@@ -82,9 +82,9 @@ def plot_spike_history_filters(fig, rng, prng_state, jitter, array_type, filter_
     u_Lcov = 0.1 * np.eye(num_induc)[None, ...].repeat(obs_dims, axis=0)
 
     # kernel
-    len_fx = filter_length / 4.0 * np.ones((obs_dims, x_dims))  # GP lengthscale
+    len_fx = filter_length / 7.0 * np.ones((obs_dims, x_dims))  # GP lengthscale
     beta = 0.0 * np.ones((obs_dims, x_dims))
-    len_beta = 1.5 * len_fx
+    len_beta = 2.3 * len_fx
     var_f = 1.0 * np.ones(obs_dims)  # kernel variance
 
     kern = lib.GP.kernels.DecayingSquaredExponential(
@@ -117,7 +117,7 @@ def plot_spike_history_filters(fig, rng, prng_state, jitter, array_type, filter_
     t = np.arange(glm_filter_t.shape[0]) - glm_filter_t.shape[0]
 
     widths = [1]
-    heights = [0.7, 1]
+    heights = [0.5, 1, 1]
     spec = fig.add_gridspec(
         ncols=len(widths),
         nrows=len(heights),
@@ -127,28 +127,27 @@ def plot_spike_history_filters(fig, rng, prng_state, jitter, array_type, filter_
         bottom=0.52,
         left=0.45,
         right=0.75,
-        hspace=0.4,
+        hspace=0.6,
     )
 
     ax = fig.add_subplot(spec[0, 0])
-    ax.set_title("raised cosine basis", fontsize=12)
+    ax.set_title("raised cosine basis (RCB)", fontsize=12)
     ax.plot(t, glm_basis[:, :, 0])
     ax.set_xlim([t[0], t[-1]])
     ax.set_xticklabels([])
     ax.set_ylabel("amplitude (a.u.)                              ")
 
     ax = fig.add_subplot(spec[1, 0])
-    ax.set_title("random examples", fontsize=12)
+    ax.set_title("RCB filter samples", fontsize=12)
     ax.plot(t, glm_filter_t[:, :, 0], c="b", label="RCB", alpha=0.6)
-    # ax.plot(t, gp_filter_t[:, :, 1, 0].T, c='r', label='DSE GP', alpha=0.8)
+    ax.set_xlim([t[0], t[-1]])
+    ax.set_xticklabels([])
+
+    ax = fig.add_subplot(spec[2, 0])
+    ax.set_title("DSE GP filter samples", fontsize=12)
+    ax.plot(t, gp_filter_t[:, :, 1, 0].T, c="r", label="DSE GP", alpha=0.8)
     ax.set_xlim([t[0], t[-1]])
     ax.set_xlabel("lag (ms)")
-
-
-#     handles, labels = ax.get_legend_handles_labels()
-#     labels, ids = np.unique(labels, return_index=True)
-#     handles = [handles[i] for i in ids]
-#     ax.legend(handles, labels, loc='best')
 
 
 def plot_rate_rescaling(fig, rng, dt=0.001, p=0.003, ts=3000):
@@ -284,9 +283,11 @@ def plot_ARDs(fig, tuning_dict, ard_names, cs):
 
         ax = fig.add_subplot(spec[en, 0])
         if en == 0:
-            ax.set_title(r"free $\tau_w$", fontsize=12, fontweight="bold")
+            ax.set_title(r"learned $\tau_w$", fontsize=12, fontweight="bold")
         else:
-            ax.set_title(r"fixed $\tau_w$", fontsize=12, fontweight="bold")
+            ax.set_title(
+                r"fixed $\tau_w = \langle ISI \rangle$", fontsize=12, fontweight="bold"
+            )
 
         for n in range(N):
             lens = len_deltas[n]
@@ -326,7 +327,7 @@ def plot_ARDs(fig, tuning_dict, ard_names, cs):
 
 
 def plot_rate_maps(fig, tuning_dict, names, titles, cs):
-    dx = 0.2
+    dx = 0.06
 
     for en in range(len(names)):
         widths = [1] * 3
@@ -336,11 +337,20 @@ def plot_rate_maps(fig, tuning_dict, names, titles, cs):
             nrows=len(heights),
             width_ratios=widths,
             height_ratios=heights,
-            top=0.33,
-            bottom=0.0,
+            top=0.3,
+            bottom=-0.03,
             left=0.0 + dx * en,
-            right=0.17 + dx * en,
-            wspace=0.1,
+            right=0.76 + dx * en,
+            wspace=5.5,
+        )
+
+        fig.text(
+            0.17 * en + 0.16,
+            0.35,
+            titles[en],
+            fontsize=12,
+            ha="center",
+            fontweight="bold",
         )
 
         for n in range(3):
@@ -348,9 +358,6 @@ def plot_rate_maps(fig, tuning_dict, names, titles, cs):
                 k = 3 * n + m
 
                 ax = fig.add_subplot(spec[m, n])
-                if m == 0 and n == 1:
-                    ax.set_title(titles[en], fontsize=13)
-
                 if en == 0:
                     rs = tuning_dict[names[en]]["pos_rates"][..., k]
                 elif en == len(names) - 1:
@@ -363,6 +370,20 @@ def plot_rate_maps(fig, tuning_dict, names, titles, cs):
                 for spine in ax.spines.values():
                     spine.set_edgecolor(cs[k])
                     spine.set_linewidth(2)
+
+                if n == 1 and m == 0:
+                    ax.annotate(
+                        "",
+                        xy=(0.5, 1.05),
+                        xytext=(2.25 * en - 4, 1.45),
+                        rotation=np.pi / 2.0,
+                        xycoords="axes fraction",
+                        arrowprops=dict(
+                            arrowstyle="-",
+                            color="gray",
+                        ),
+                        annotation_clip=False,
+                    )
 
 
 def main():
@@ -384,14 +405,15 @@ def main():
 
     ### data ###
 
-    name = "synthetic_results"
-    results = pickle.load(open(save_dir + name + ".p", "rb"))
+    name = "synthetic_tuning"
+    tuning_dict = pickle.load(open(save_dir + name + ".p", "rb"))
+
+    name = "synthetic_regression"
+    regression_dict = pickle.load(open(save_dir + name + ".p", "rb"))
+    reg_config_names = list(regression_dict.keys())
 
     jitter = 1e-5
     dt = 0.001
-
-    tuning_dict, regression_dict = results["tuning"], results["regression"]
-    reg_config_names = list(regression_dict.keys())
 
     titles = [
         "ground truth",
@@ -434,6 +456,8 @@ def main():
 
     fig.text(-0.02, 0.36, "D", fontsize=15, ha="center", fontweight="bold")
     plot_rate_maps(fig, tuning_dict, tuning_names, titles, cs)
+
+    fig.text(1.02, 1.01, "S", fontsize=15, alpha=0.0, ha="center")  # space
 
     ### export ###
     plt.savefig(save_dir + "baselines.pdf")

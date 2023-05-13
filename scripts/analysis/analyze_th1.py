@@ -20,9 +20,9 @@ import numpy as np
 import utils
 
 
-def tuning(
+def tuning_bnpp(
     checkpoint_dir,
-    model_name,
+    model_names,
     dataset_dict,
     rng,
     prng_state,
@@ -39,19 +39,6 @@ def tuning(
     tbin = dataset_dict["properties"]["tbin"]
     neurons = dataset_dict["properties"]["neurons"]
 
-    print("Analyzing tuning for {}...".format(model_name))
-
-    # config
-    model, config = utils.load_model_and_config(
-        checkpoint_dir + model_name,
-        dataset_dict,
-        th1.observed_kernel_dict_induc_list,
-        rng,
-    )
-    obs_type = config.observations.split("-")[0]
-    jitter = config.jitter
-    ISI_order = int(config.likelihood[3:])
-
     # data
     hd = dataset_dict["covariates"]["hd"]
     x = dataset_dict["covariates"]["x"]
@@ -61,86 +48,105 @@ def tuning(
 
     mean_ISIs = utils.mean_ISI(ISIs)
 
-    ### tuning ###
-
-    # head direction
-    print("Head direction tuning...")
-
+    # locations
     pts = 100
     plot_hd_x_locs = np.stack(
         [np.linspace(0, 2 * np.pi, pts)], axis=1
     )  # (evals, x_dim)
 
-    hd_x_locs = plot_hd_x_locs
-    hd_isi_locs = mean_ISIs[:, None] * np.ones((pts, neurons, ISI_order - 1))
-
-    hd_mean_ISI, hd_mean_invISI, hd_CV_ISI = utils.compute_ISI_stats(
-        prng_state,
-        num_samps,
-        hd_x_locs,
-        hd_isi_locs,
-        model.obs_model,
-        jitter,
-        neuron_list,
-        int_eval_pts=int_eval_pts,
-        num_quad_pts=num_quad_pts,
-        batch_size=batch_size,
-    )  # (mc, eval_pts, out_dims)
-    prng_state, _ = jr.split(prng_state)
-
-    ### conditional ISI densities ###
-    print("Conditional ISI densities...")
-
     evalsteps = 200
     cisi_t_eval = np.linspace(0.0, 2.0, evalsteps)
 
-    pts = 8
-    isi_conds = mean_ISIs[:, None] * np.ones((pts, neurons, ISI_order - 1))
-    x_conds = np.stack(
-        [
-            np.linspace(0, 2 * np.pi, pts),
-        ],
-        axis=-1,
-    )
-
-    ISI_densities = utils.compute_ISI_densities(
-        prng_state,
-        num_samps,
-        cisi_t_eval,
-        isi_conds,
-        x_conds,
-        model.obs_model,
-        jitter,
-        outdims_list=neuron_list,
-        int_eval_pts=int_eval_pts,
-        num_quad_pts=num_quad_pts,
-        outdims_per_batch=outdims_per_batch,
-    )  # (eval_pts, mc, out_dims, ts)
-
-    ### ISI kernel ARD ###
-    warp_tau = np.exp(model.obs_model.log_warp_tau)
-    len_tau, len_deltas, len_xs = utils.extract_lengthscales(
-        model.obs_model.gp.kernel.kernels, ISI_order
-    )
-
-    # export
     tuning_dict = {
         "neuron_list": neuron_list,
         "plot_hd_x_locs": plot_hd_x_locs,
-        "hd_x_locs": hd_x_locs,
-        "hd_isi_locs": hd_isi_locs,
-        "hd_mean_ISI": hd_mean_ISI,
-        "hd_mean_invISI": hd_mean_invISI,
-        "hd_CV_ISI": hd_CV_ISI,
         "ISI_t_eval": cisi_t_eval,
-        "ISI_deltas_conds": isi_conds,
-        "ISI_xs_conds": x_conds,
-        "ISI_densities": ISI_densities,
-        "warp_tau": warp_tau,
-        "len_tau": len_tau,
-        "len_deltas": len_deltas,
-        "len_xs": len_xs,
     }
+    for model_name in model_names:
+        print("Analyzing tuning for {}...".format(model_name))
+
+        # config
+        model, config = utils.load_model_and_config(
+            checkpoint_dir + model_name,
+            dataset_dict,
+            th1.observed_kernel_dict_induc_list,
+            rng,
+        )
+        obs_type = config.observations.split("-")[0]
+        jitter = config.jitter
+        ISI_order = int(config.likelihood[3:])
+
+        ### tuning ###
+
+        # head direction
+        print("Head direction tuning...")
+
+        hd_x_locs = plot_hd_x_locs
+        hd_isi_locs = mean_ISIs[:, None] * np.ones((pts, neurons, ISI_order - 1))
+
+        hd_mean_ISI, hd_mean_invISI, hd_CV_ISI = utils.compute_ISI_stats(
+            prng_state,
+            num_samps,
+            hd_x_locs,
+            hd_isi_locs,
+            model.obs_model,
+            jitter,
+            neuron_list,
+            int_eval_pts=int_eval_pts,
+            num_quad_pts=num_quad_pts,
+            batch_size=batch_size,
+        )  # (mc, eval_pts, out_dims)
+        prng_state, _ = jr.split(prng_state)
+
+        ### conditional ISI densities ###
+        print("Conditional ISI densities...")
+
+        isi_pts = 8
+        isi_conds = mean_ISIs[:, None] * np.ones((isi_pts, neurons, ISI_order - 1))
+        x_conds = np.stack(
+            [
+                np.linspace(0, 2 * np.pi, isi_pts),
+            ],
+            axis=-1,
+        )
+
+        ISI_densities = utils.compute_ISI_densities(
+            prng_state,
+            num_samps,
+            cisi_t_eval,
+            isi_conds,
+            x_conds,
+            model.obs_model,
+            jitter,
+            outdims_list=neuron_list,
+            int_eval_pts=int_eval_pts,
+            num_quad_pts=num_quad_pts,
+            outdims_per_batch=outdims_per_batch,
+        )  # (eval_pts, mc, out_dims, ts)
+
+        ### ISI kernel ARD ###
+        warp_tau = np.exp(model.obs_model.log_warp_tau)
+        len_tau, len_deltas, len_xs = utils.extract_lengthscales(
+            model.obs_model.gp.kernel.kernels, ISI_order
+        )
+
+        # export
+        results = {
+            "hd_x_locs": hd_x_locs,
+            "hd_isi_locs": hd_isi_locs,
+            "hd_mean_ISI": hd_mean_ISI,
+            "hd_mean_invISI": hd_mean_invISI,
+            "hd_CV_ISI": hd_CV_ISI,
+            "ISI_deltas_conds": isi_conds,
+            "ISI_xs_conds": x_conds,
+            "ISI_densities": ISI_densities,
+            "warp_tau": warp_tau,
+            "len_tau": len_tau,
+            "len_deltas": len_deltas,
+            "len_xs": len_xs,
+        }
+        tuning_dict[model_name] = results
+
     return tuning_dict
 
 
@@ -197,8 +203,8 @@ def main():
         + "X[hd]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]",
         "Mouse28_140313_wake_isi5ISI5sel0.0to0.5_invgauss-log_rcb-8-10.-20.-4.5-9.-self-H150_rate_renewal_gp-8-1000_"
         + "X[hd]_Z[]_freeze[obs_model0spikefilter0a-obs_model0spikefilter0log_c-obs_model0spikefilter0phi]",
-        #         'Mouse28_140313_wake_isi5ISI5sel0.0to0.5_PP-log_svgp-8-n2.-10.-self-H150_factorized_gp-8-1000_' + \
-        #         'X[hd]_Z[]_freeze[]',
+        "Mouse28_140313_wake_isi5ISI5sel0.0to0.5_PP-log_svgp-6-n2.-10.-self-H150_factorized_gp-8-1000_"
+        + "X[hd]_Z[]_freeze[]",
     ]
 
     reg_config_names = [
@@ -219,8 +225,6 @@ def main():
         "Mouse28_140313_wake_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-40-matern32-matern32-1000-n2._"
         + "X[hd]_Z[]_freeze[obs_model0log_warp_tau]",
     ]
-
-    tuning_model_name = reg_config_names[-1]
 
     ### load dataset ###
     session_name = "Mouse28_140313_wake_isi5"
@@ -283,7 +287,7 @@ def main():
         elif k == 2:
             variability_dict = utils.analyze_variability_stats(
                 checkpoint_dir,
-                tuning_model_name,
+                reg_config_names[-1],
                 th1.observed_kernel_dict_induc_list,
                 dataset_dict,
                 rng,
@@ -292,7 +296,7 @@ def main():
                 dilation=100,
                 int_eval_pts=1000,
                 num_quad_pts=100,
-                batch_size=100,
+                batch_size=batch_size,
                 num_induc=8,
                 jitter=1e-6,
             )
@@ -300,9 +304,9 @@ def main():
             pickle.dump(variability_dict, open(save_dir + "th1_variability.p", "wb"))
 
         elif k == 3:
-            tuning_dict = tuning(
+            tuning_dict = tuning_bnpp(
                 checkpoint_dir,
-                tuning_model_name,
+                reg_config_names,
                 dataset_dict,
                 rng,
                 prng_state,
@@ -310,7 +314,7 @@ def main():
                 num_samps=50,
                 int_eval_pts=1000,
                 num_quad_pts=100,
-                batch_size=1000,
+                batch_size=batch_size,
                 outdims_per_batch=2,
             )
 

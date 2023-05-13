@@ -255,6 +255,7 @@ def main():
     parser.add_argument("--datadir", default="../../data/synthetic/", type=str)
     parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
 
+    parser.add_argument("--tasks", default=[0, 1, 2], nargs="+", type=int)
     parser.add_argument("--batch_size", default=50000, type=int)
 
     parser.add_argument("--device", default=0, type=int)
@@ -310,7 +311,7 @@ def main():
     regression_dict, tuning_dict = {}, {}
     tuning_neuron_list = list(range(neurons))
 
-    process_steps = [0, 1]
+    process_steps = args.tasks
     for k in process_steps:  # save after finishing each dict
         if k == 0:
             regression_dict = utils.evaluate_regression_fits(
@@ -325,6 +326,10 @@ def main():
                 0,
             )
 
+            pickle.dump(
+                regression_dict, open(save_dir + "synthetic_regression.p", "wb")
+            )
+
         elif k == 1:
             tuning_dict = tuning(
                 checkpoint_dir,
@@ -336,16 +341,11 @@ def main():
                 num_samps=30,
                 int_eval_pts=1000,
                 num_quad_pts=100,
-                batch_size=100,
+                batch_size=batch_size,
                 outdims_per_batch=2,
             )
 
-        ### export ###
-        data_run = {
-            "regression": regression_dict,
-            "tuning": tuning_dict,
-        }
-        pickle.dump(data_run, open(save_dir + "synthetic_results.p", "wb"))
+            pickle.dump(tuning_dict, open(save_dir + "synthetic_tuning.p", "wb"))
 
 
 if __name__ == "__main__":

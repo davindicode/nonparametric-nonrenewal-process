@@ -76,7 +76,7 @@ def plot_th1_tuning(fig, tuning_dict):
                 alpha=0.2,
                 label="95% confidence",
             )
-            ax.plot(eval_locs[:, 0], rsamples[:, ne, :].T, "gray", alpha=0.2)
+            # ax.plot(eval_locs[:, 0], rsamples[:, ne, :].T, "gray", alpha=0.2)
             ax.set_ylim(0)
             ax.set_xticks([0, 2 * np.pi])
             ax.set_xticklabels([])
@@ -116,7 +116,7 @@ def plot_th1_tuning(fig, tuning_dict):
                 alpha=0.2,
                 label="95% confidence",
             )
-            ax.plot(eval_locs[:, 0], cvsamples[:, ne, :].T, "gray", alpha=0.2)
+            # ax.plot(eval_locs[:, 0], cvsamples[:, ne, :].T, "gray", alpha=0.2)
             ax.set_ylim(0)
             ax.set_xticks([0, 2 * np.pi])
             if ne == 0:
@@ -350,7 +350,7 @@ def plot_instantaneous(fig, variability_dict):
                 alpha=0.3,
             )
             ax.set_ylim([0, cvISI.max() * 1.1])
-            ax.set_yticks([0, 1, 2])
+            # ax.set_yticks([0, 1, 2])
 
             xx = variability_dict["GP_post_locs"]
             lin_func = (
@@ -363,8 +363,8 @@ def plot_instantaneous(fig, variability_dict):
             ax.plot(xx[ne], lin_func[ne], c="b", label="linear")
 
             # ax.yaxis.get_major_locator().set_params(integer=True)
-            # ax.yaxis.get_major_locator().set_params(integer=True)
             ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+            # ax.yaxis.set_major_formatter(FormatStrFormatter('%.0f'))
 
             if ne == imISI.shape[0] - 1:
                 ax.legend(loc="right", bbox_to_anchor=(2.2, 0.8))
@@ -381,12 +381,48 @@ def main():
         os.makedirs(save_dir)
     plt.style.use(["paper.mplstyle"])
 
-    ### load ###
+    ### th1 ###
 
-    ### plot ###
+    # data
+    tuning_dict = pickle.load(open(save_dir + "th1_tuning" + ".p", "rb"))
 
-    ### export ###
-    plt.savefig(save_dir + "plot_synthetic.pdf")
+    variability_dict = pickle.load(open(save_dir + "th1_variability" + ".p", "rb"))
+
+    # plot
+    fig = plt.figure(figsize=(10, 8))
+    fig.set_facecolor("white")
+    plot_th1_tuning(fig, tuning_dict)
+    plt.savefig(save_dir + "th1_tuning.pdf")
+
+    fig = plt.figure(figsize=(10, 5))
+    fig.set_facecolor("white")
+    plot_instantaneous(fig, variability_dict)
+    plt.savefig(save_dir + "th1_variability.png", dpi=100)
+
+    ### hc3 ###
+
+    # data
+    tuning_dict = pickle.load(open(save_dir + "hc3_tuning" + ".p", "rb"))
+
+    variability_dict = pickle.load(open(save_dir + "hc3_variability" + ".p", "rb"))
+
+    # plot
+    fig = plt.figure(figsize=(10, 8))
+    fig.set_facecolor("white")
+    direction = "LR"
+    plot_hc3_tuning(fig, tuning_dict, direction)
+    plt.savefig(save_dir + "hc3_LR_tuning.pdf")
+
+    fig = plt.figure(figsize=(10, 8))
+    fig.set_facecolor("white")
+    direction = "RL"
+    plot_hc3_tuning(fig, tuning_dict, direction)
+    plt.savefig(save_dir + "hc3_RL_tuning.pdf")
+
+    fig = plt.figure(figsize=(10, 5))
+    fig.set_facecolor("white")
+    plot_instantaneous(fig, variability_dict)
+    plt.savefig(save_dir + "hc3_variability.png", dpi=100)
 
 
 if __name__ == "__main__":

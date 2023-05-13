@@ -21,7 +21,9 @@ def get_tuning_curves(samples, percentiles, sm_filter, padding_modes):
 
 
 # plot functions
-def plot_fit_stats(fig, X, Y, regression_dict, use_reg_config_names, use_names, cs):
+def plot_fit_stats(
+    fig, X, Y, regression_dict, use_reg_config_names, use_names, cs, xlims=None
+):
     """
     KS and likelihood statistics
     """
@@ -115,6 +117,9 @@ def plot_fit_stats(fig, X, Y, regression_dict, use_reg_config_names, use_names, 
     ax.set_xlabel("test ELL (nats/s)", labelpad=2)
     ax.xaxis.grid(True)
 
+    if xlims is not None:
+        ax.set_xlim(xlims)
+
 
 def plot_QQ(fig, X, Y, regression_dict, use_reg_config_names, cs):
     ### QQ plots ###
@@ -128,9 +133,9 @@ def plot_QQ(fig, X, Y, regression_dict, use_reg_config_names, cs):
         height_ratios=heights,
         top=1.0 + Y,
         bottom=0.81 + Y,
-        left=0.35 + X,
+        left=0.36 + X,
         right=1.0 + X,
-        wspace=0.1,
+        wspace=0.05,
     )
 
     for en, name in enumerate(use_reg_config_names):
@@ -156,10 +161,20 @@ def plot_QQ(fig, X, Y, regression_dict, use_reg_config_names, cs):
             ax.set_yticklabels([])
 
 
-def plot_posteriors(fig, X, Y, regression_dict, visualize_names, visualize_inds, cs):
-    test_fold = 0
-    ne = 7
-    Ts, Te = 5000, 8000
+def plot_posteriors(
+    fig,
+    X,
+    Y,
+    regression_dict,
+    visualize_names,
+    visualize_inds,
+    cs,
+    ne,
+    test_fold,
+    Ts,
+    CIF_ylim,
+):
+    Te = Ts + 3000
 
     ### posterior visualizations ###
     widths = [1] * (len(visualize_names))
@@ -192,7 +207,7 @@ def plot_posteriors(fig, X, Y, regression_dict, visualize_names, visualize_inds,
         ax = fig.add_subplot(spec[1, en])
         ax.plot(pred_ts, pred_lint[test_fold][0, ne, :], c=cs[visualize_inds[en]])
         ax.set_xlim([pred_ts[Ts], pred_ts[Te]])
-        ax.set_ylim([-3.0, 4.0])
+        ax.set_ylim(CIF_ylim)
         ax.set_yticks([])
         if en == 0:
             ax.set_ylabel("log CIF", labelpad=2)
@@ -201,6 +216,9 @@ def plot_posteriors(fig, X, Y, regression_dict, visualize_names, visualize_inds,
         stss = regression_dict[n]["sample_spiketimes"][test_fold][ne]
         ax = fig.add_subplot(spec[2, en])
         for num, st_samples in enumerate(stss):
+            # if num == 10:
+            #    break
+
             for st in st_samples:
                 ax.plot(
                     st * np.ones(2),
@@ -235,13 +253,13 @@ def plot_posteriors(fig, X, Y, regression_dict, visualize_names, visualize_inds,
     ax.axis("off")
 
 
-def plot_kernel_lens(fig, X, Y, tuning_dict):
+def plot_kernel_lens(fig, X, Y, tuning_dict, name):
     """
     kernel lengthscales
     """
-    warp_tau = tuning_dict["warp_tau"]
-    len_tau = tuning_dict["len_tau"]
-    len_deltas = tuning_dict["len_deltas"]
+    warp_tau = tuning_dict[name]["warp_tau"]
+    len_tau = tuning_dict[name]["len_tau"]
+    len_deltas = tuning_dict[name]["len_deltas"]
 
     ARD_order = []
     for n in range(len_deltas.shape[0]):
@@ -419,7 +437,7 @@ def plot_instantaneous(fig, X, Y, rng, variability_dict, plot_units):
     ax.set_ylabel(r"CV-rate $R^2$", labelpad=-6)
 
 
-def plot_th1_tuning(fig, X, Y, tuning_dict, plot_units):
+def plot_th1_tuning(fig, X, Y, tuning_dict, name, plot_units):
     """
     tuning of th1 head direction cells
     """
@@ -427,11 +445,11 @@ def plot_th1_tuning(fig, X, Y, tuning_dict, plot_units):
     sm_filter = np.ones(5) / 5
     padding_modes = ["periodic"]
 
-    eval_locs = tuning_dict["hd_x_locs"]
+    eval_locs = tuning_dict["plot_hd_x_locs"]
 
-    rsamples = 1 / tuning_dict["hd_mean_ISI"]
+    rsamples = 1 / tuning_dict[name]["hd_mean_ISI"]
     # rsamples = tuning_dict["hd_mean_invISI"]
-    cvsamples = tuning_dict["hd_CV_ISI"]
+    cvsamples = tuning_dict[name]["hd_CV_ISI"]
 
     rlower, rmedian, rupper = get_tuning_curves(
         rsamples, percentiles, sm_filter, padding_modes
@@ -442,7 +460,7 @@ def plot_th1_tuning(fig, X, Y, tuning_dict, plot_units):
 
     # plot
     pts_inds = [2, 3]
-    cs = ["r", "b"]
+    cs = ["cyan", "pink"]
 
     widths = [1] * len(plot_units)
     heights = [1, 1]
@@ -472,14 +490,17 @@ def plot_th1_tuning(fig, X, Y, tuning_dict, plot_units):
             alpha=0.2,
             label="95% confidence",
         )
-        ax.plot(eval_locs[:, 0], rsamples[:, n, :].T, "gray", alpha=0.2)
         ax.set_xlim([0, 2 * np.pi])
         ax.set_xticks([0, 2 * np.pi])
         ax.set_xticklabels([])
 
+        if n == 9:
+            # ax.set_ylim([0, 4])
+            ax.set_yticks([0, 3])
+
         ylims = ax.get_ylim()
         ax.plot(
-            np.ones(2) * tuning_dict["ISI_xs_conds"][pts_inds[en], 0],
+            np.ones(2) * tuning_dict[name]["ISI_xs_conds"][pts_inds[en], 0],
             ylims,
             c=cs[en],
             linestyle="--",
@@ -500,14 +521,17 @@ def plot_th1_tuning(fig, X, Y, tuning_dict, plot_units):
             alpha=0.2,
             label="95% confidence",
         )
-        ax.plot(eval_locs[:, 0], cvsamples[:, n, :].T, "gray", alpha=0.2)
         ax.set_xlim([0, 2 * np.pi])
         ax.set_xticks([0, 2 * np.pi])
         ax.set_xticklabels([])
 
+        if n == 9:
+            # ax.set_ylim([0, 2.2])
+            ax.set_yticks([1, 2])
+
         ylims = ax.get_ylim()
         ax.plot(
-            np.ones(2) * tuning_dict["ISI_xs_conds"][pts_inds[en], 0],
+            np.ones(2) * tuning_dict[name]["ISI_xs_conds"][pts_inds[en], 0],
             ylims,
             c=cs[en],
             linestyle="--",
@@ -536,8 +560,8 @@ def plot_th1_tuning(fig, X, Y, tuning_dict, plot_units):
         ax = fig.add_subplot(spec[en, 0])
         ax.plot(
             tuning_dict["ISI_t_eval"],
-            tuning_dict["ISI_densities"][pts_inds[en], :, plot_units[en], :].T,
-            alpha=0.02,
+            tuning_dict[name]["ISI_densities"][pts_inds[en], :, plot_units[en], :].T,
+            alpha=0.1,
             color=cs[en],
         )
         ax.set_yticks([])
@@ -550,19 +574,19 @@ def plot_th1_tuning(fig, X, Y, tuning_dict, plot_units):
             ax.set_xticklabels([])
 
 
-def plot_hc3_tuning(fig, X, Y, tuning_dict, direction, plot_units):
+def plot_hc3_tuning(fig, X, Y, tuning_dict, name, direction, plot_units):
     """
     tuning of hc3 linear track cells
     """
     # data
     eval_locs = tuning_dict["plot_xt_x_locs"]
 
-    xt_rate = 1 / tuning_dict["xt{}_mean_ISI".format(direction)].mean(0)
-    xt_CV = tuning_dict["xt{}_CV_ISI".format(direction)].mean(0)
+    xt_rate = 1 / tuning_dict[name]["xt{}_mean_ISI".format(direction)].mean(0)
+    xt_CV = tuning_dict[name]["xt{}_CV_ISI".format(direction)].mean(0)
 
     # plot
-    pts_inds = [2, 3]
-    cs = ["r", "b"]
+    pts_inds = [5, 2]
+    cs = ["cyan", "pink"]
 
     white = "#ffffff"
     black = "#000000"
@@ -597,7 +621,18 @@ def plot_hc3_tuning(fig, X, Y, tuning_dict, direction, plot_units):
         )
         ax.set_title("{:.1f} Hz".format(g), fontsize=10, pad=3)
         im = ax.imshow(
-            xt_rate[ne], origin="lower", cmap="viridis", vmin=0.0, vmax=g, aspect="auto"
+            xt_rate[ne],
+            origin="lower",
+            cmap="viridis",
+            vmin=0.0,
+            vmax=g,
+            aspect="auto",
+            extent=[
+                eval_locs[0].min(),
+                eval_locs[0].max(),
+                eval_locs[1].min(),
+                eval_locs[1].max(),
+            ],
         )
         ax.set_xticks([])
         if en == 0:
@@ -609,7 +644,13 @@ def plot_hc3_tuning(fig, X, Y, tuning_dict, direction, plot_units):
         ax.spines.right.set_visible(True)
         ax.spines.top.set_visible(True)
 
-        # ax.plot(np.ones(2) * tuning_dict["ISI_xs_conds"][pts_inds[en], 0], ylims, c=cs[en], linestyle='--')
+        ax.scatter(
+            tuning_dict[name]["ISI_xs_conds"][pts_inds[en], 0],
+            tuning_dict[name]["ISI_xs_conds"][pts_inds[en], 2],
+            c=cs[en],
+            s=20,
+            marker="x",
+        )
 
     cspec = fig.add_gridspec(
         ncols=1,
@@ -659,7 +700,18 @@ def plot_hc3_tuning(fig, X, Y, tuning_dict, direction, plot_units):
             transform=ax.transAxes,
         )
         im = ax.imshow(
-            field, origin="lower", cmap=weight_map, vmin=-g, vmax=g, aspect="auto"
+            field,
+            origin="lower",
+            cmap=weight_map,
+            vmin=-g,
+            vmax=g,
+            aspect="auto",
+            extent=[
+                eval_locs[0].min(),
+                eval_locs[0].max(),
+                eval_locs[1].min(),
+                eval_locs[1].max(),
+            ],
         )
         ax.set_xticks([])
         if en == 0:
@@ -670,6 +722,14 @@ def plot_hc3_tuning(fig, X, Y, tuning_dict, direction, plot_units):
             ax.set_yticks([])
         ax.spines.right.set_visible(True)
         ax.spines.top.set_visible(True)
+
+        ax.scatter(
+            tuning_dict[name]["ISI_xs_conds"][pts_inds[en], 0],
+            tuning_dict[name]["ISI_xs_conds"][pts_inds[en], 2],
+            c=cs[en],
+            s=20,
+            marker="x",
+        )
 
     cspec = fig.add_gridspec(
         ncols=1,
@@ -731,8 +791,8 @@ def plot_hc3_tuning(fig, X, Y, tuning_dict, direction, plot_units):
         ax = fig.add_subplot(spec[en, 0])
         ax.plot(
             tuning_dict["ISI_t_eval"],
-            tuning_dict["ISI_densities"][pts_inds[en], :, plot_units[en], :].T,
-            alpha=0.02,
+            tuning_dict[name]["ISI_densities"][pts_inds[en], :, plot_units[en], :].T,
+            alpha=0.1,
             color=cs[en],
         )
         ax.set_yticks([])
@@ -751,12 +811,128 @@ def main():
         os.makedirs(save_dir)
     plt.style.use(["paper.mplstyle"])
 
-    ### load ###
+    # seed
+    seed = 123
+    rng = np.random.default_rng(seed)
 
-    ### plot ###
+    # data
+    cs = [
+        "tab:blue",
+        "tab:orange",
+        "tab:green",
+        "tab:red",
+        "tab:purple",
+        "tab:brown",
+        "tab:pink",
+        "tab:gray",
+    ]
+    use_names = [
+        "Poisson",
+        "gamma",
+        "inv. Gauss.",
+        "RC cond. P",
+        "RC cond. G",
+        "RC cond. IG",
+        "NP cond. P",
+        "NP (ours)",
+    ]
+    use_model_inds = np.array([0, 1, 2, 3, 4, 5, 6, 14])
+    visualize_inds = [0, 1, 4, 6, 7]
 
-    ### export ###
-    plt.savefig(save_dir + "plot_synthetic.pdf")
+    ### th1 ###
+    tuning_dict = pickle.load(open(save_dir + "th1_tuning" + ".p", "rb"))
+
+    variability_dict = pickle.load(open(save_dir + "th1_variability" + ".p", "rb"))
+
+    bnpp_dict = pickle.load(open(save_dir + "th1_regression" + ".p", "rb"))
+
+    baseline_dict = pickle.load(open(save_dir + "th1_baselines" + ".p", "rb"))
+
+    regression_dict = {**baseline_dict, **bnpp_dict}
+    reg_config_names = list(regression_dict.keys())
+    use_reg_config_names = [reg_config_names[k] for k in use_model_inds]
+    visualize_names = [reg_config_names[k] for k in use_model_inds[visualize_inds]]
+
+    plot_units = [9, 27]
+
+    fig = plt.figure(figsize=(10, 4))
+    fig.set_facecolor("white")
+
+    fig.text(-0.05, 1.01, "A", fontsize=15, ha="center", fontweight="bold")
+    plot_fit_stats(fig, 0.0, 0.0, regression_dict, use_reg_config_names, use_names, cs)
+
+    fig.text(0.325, 1.01, "B", fontsize=15, ha="center", fontweight="bold")
+    plot_QQ(fig, 0.0, 0.02, regression_dict, use_reg_config_names, cs)
+
+    fig.text(0.325, 0.73, "C", fontsize=15, ha="center", fontweight="bold")
+    plot_posteriors(
+        fig,
+        0.0,
+        0.0,
+        regression_dict,
+        visualize_names,
+        visualize_inds,
+        cs,
+        test_fold=0,
+        ne=7,
+        Ts=5000,
+        CIF_ylim=[-3.0, 4.0],
+    )
+
+    fig.text(-0.05, 0.34, "D", fontsize=15, ha="center", fontweight="bold")
+    plot_kernel_lens(fig, 0.0, 0.0, tuning_dict, reg_config_names[-1])
+
+    fig.text(0.325, 0.34, "E", fontsize=15, ha="center", fontweight="bold")
+    plot_instantaneous(fig, 0.0, 0.0, rng, variability_dict, plot_units)
+
+    fig.text(0.62, 0.34, "F", fontsize=15, ha="center", fontweight="bold")
+    plot_th1_tuning(fig, 0.0, 0.0, tuning_dict, reg_config_names[-1], plot_units)
+
+    fig.text(1.02, 1.01, "S", fontsize=15, alpha=0.0, ha="center")  # space
+
+    plt.savefig(save_dir + "th1.pdf")
+
+    ### hc3 ###
+    fig = plt.figure(figsize=(10, 4))
+    fig.set_facecolor("white")
+
+    fig.text(-0.05, 1.01, "A", fontsize=15, ha="center", fontweight="bold")
+    plot_real.plot_fit_stats(
+        fig, 0.0, 0.0, regression_dict, use_reg_config_names, use_names, cs, xlims=-200
+    )
+
+    fig.text(0.325, 1.01, "B", fontsize=15, ha="center", fontweight="bold")
+    plot_real.plot_QQ(fig, 0.0, 0.02, regression_dict, use_reg_config_names, cs)
+
+    fig.text(0.325, 0.72, "C", fontsize=15, ha="center", fontweight="bold")
+    plot_real.plot_posteriors(
+        fig,
+        0.0,
+        0.0,
+        regression_dict,
+        visualize_names,
+        visualize_inds,
+        cs,
+        test_fold=4,
+        ne=15,
+        Ts=6000,
+        CIF_ylim=[-5.0, 7.0],
+    )
+
+    fig.text(-0.05, 0.35, "D", fontsize=15, ha="center", fontweight="bold")
+    plot_real.plot_kernel_lens(fig, 0.0, 0.0, tuning_dict, reg_config_names[-1])
+
+    fig.text(0.325, 0.34, "E", fontsize=15, ha="center", fontweight="bold")
+    plot_real.plot_instantaneous(fig, 0.0, 0.0, rng, variability_dict, plot_units)
+
+    fig.text(0.62, 0.34, "F", fontsize=15, ha="center", fontweight="bold")
+    plot_real.plot_hc3_tuning(
+        fig, 0.0, 0.0, tuning_dict, reg_config_names[-1], "LR", plot_units
+    )
+
+    fig.text(1.02, 1.01, "S", fontsize=15, alpha=0.0, ha="center")  # space
+
+    plt.savefig(save_dir + "hc3.pdf")
 
 
 if __name__ == "__main__":
