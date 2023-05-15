@@ -135,7 +135,7 @@ def plot_spike_history_filters(fig, rng, prng_state, jitter, array_type, filter_
     ax.plot(t, glm_basis[:, :, 0])
     ax.set_xlim([t[0], t[-1]])
     ax.set_xticklabels([])
-    ax.set_ylabel("amplitude (a.u.)                              ")
+    ax.set_ylabel("amplitude (a.u.)                                          ")
 
     ax = fig.add_subplot(spec[1, 0])
     ax.set_title("RCB filter samples", fontsize=12)
@@ -254,136 +254,10 @@ def plot_rate_rescaling(fig, rng, dt=0.001, p=0.003, ts=3000):
     ax.set_xlim([0, 1])
 
 
-def plot_ARDs(fig, tuning_dict, ard_names, cs):
-    """
-    Plot kernel lengthscales
-    """
-    widths = [1]
-    heights = [1] * len(ard_names)
-    spec = fig.add_gridspec(
-        ncols=len(widths),
-        nrows=len(heights),
-        width_ratios=widths,
-        height_ratios=heights,
-        top=0.99,
-        bottom=0.59,
-        left=0.85,
-        right=1.0,
-        hspace=0.4,
-    )
-
-    markers = ["o", "s", "x", "+"]
-
-    for en, name in enumerate(ard_names):
-        warp_tau = tuning_dict[name]["warp_tau"]
-        len_tau = tuning_dict[name]["len_tau"]
-        len_deltas = tuning_dict[name]["len_deltas"]
-
-        N = len(len_deltas)
-
-        ax = fig.add_subplot(spec[en, 0])
-        if en == 0:
-            ax.set_title(r"learned $\tau_w$", fontsize=12, fontweight="bold")
-        else:
-            ax.set_title(
-                r"fixed $\tau_w = \langle ISI \rangle$", fontsize=12, fontweight="bold"
-            )
-
-        for n in range(N):
-            lens = len_deltas[n]
-            tlen = len_tau[n]
-            ax.scatter(
-                n,
-                tlen,
-                marker=markers[0],
-                c=cs[n],
-                s=20,
-                label="lag 0" if n == 0 else None,
-            )
-            for k in range(1, 4):
-                ax.scatter(
-                    n,
-                    lens[k - 1],
-                    marker=markers[k],
-                    c=cs[n],
-                    label="lag {}".format(k) if n == 0 else None,
-                )
-
-            ax.set_yscale("log")
-            ax.plot([-0.5, N + 0.5], 3.0 * np.ones(2), "--", color="gray")
-            ax.set_xlim([-0.5, N + 0.5])
-            ax.set_xticks(list(range(N)))
-            ax.set_xticklabels([])
-
-            if en == 1:
-                ax.set_ylabel("                         kernel timescales", labelpad=1)
-                leg = ax.legend(
-                    loc="right", bbox_to_anchor=(0.9, -0.7), handletextpad=0.2, ncol=2
-                )
-                for k in range(4):
-                    leg.legend_handles[k].set_color("k")
-
-                ax.set_xlabel("neuron index", labelpad=1)
 
 
-def plot_rate_maps(fig, tuning_dict, names, titles, cs):
-    dx = 0.06
 
-    for en in range(len(names)):
-        widths = [1] * 3
-        heights = [1] * 3
-        spec = fig.add_gridspec(
-            ncols=len(widths),
-            nrows=len(heights),
-            width_ratios=widths,
-            height_ratios=heights,
-            top=0.3,
-            bottom=-0.03,
-            left=0.0 + dx * en,
-            right=0.76 + dx * en,
-            wspace=5.5,
-        )
 
-        fig.text(
-            0.17 * en + 0.16,
-            0.35,
-            titles[en],
-            fontsize=12,
-            ha="center",
-            fontweight="bold",
-        )
-
-        for n in range(3):
-            for m in range(3):
-                k = 3 * n + m
-
-                ax = fig.add_subplot(spec[m, n])
-                if en == 0:
-                    rs = tuning_dict[names[en]]["pos_rates"][..., k]
-                elif en == len(names) - 1:
-                    rs = 1 / tuning_dict[names[en]]["pos_mean_ISI"].mean(0)[k]
-                else:
-                    rs = tuning_dict[names[en]]["pos_rates"][k]
-
-                ax.imshow(rs, vmin=0.0, origin="lower", cmap="viridis")
-                lib.utils.plots.decorate_ax(ax)
-                for spine in ax.spines.values():
-                    spine.set_edgecolor(cs[k])
-                    spine.set_linewidth(2)
-
-                if n == 1 and m == 0:
-                    ax.annotate(
-                        "",
-                        xy=(0.5, 1.05),
-                        xytext=(2.25 * en - 4, 1.45),
-                        rotation=np.pi / 2.0,
-                        xycoords="axes fraction",
-                        arrowprops=dict(
-                            arrowstyle="-",
-                            color="gray",
-                        ),
-                        annotation_clip=False,
-                    )
 
 
 def main():
@@ -404,38 +278,8 @@ def main():
     plt.style.use(["paper.mplstyle"])
 
     ### data ###
-
-    name = "synthetic_tuning"
-    tuning_dict = pickle.load(open(save_dir + name + ".p", "rb"))
-
-    name = "synthetic_regression"
-    regression_dict = pickle.load(open(save_dir + name + ".p", "rb"))
-    reg_config_names = list(regression_dict.keys())
-
     jitter = 1e-5
     dt = 0.001
-
-    titles = [
-        "ground truth",
-        "Poisson",
-        "rescaled gamma",
-        "conditional Poisson",
-        "nonparametric",
-    ]
-    tuning_names = ["GT"] + reg_config_names[:3] + reg_config_names[-1:]
-    ard_names = reg_config_names[-2:]
-
-    cs = [
-        "tab:blue",
-        "tab:orange",
-        "tab:green",
-        "tab:red",
-        "tab:purple",
-        "tab:brown",
-        "tab:pink",
-        "tab:gray",
-        "tab:cyan",
-    ]  # cell ID colour
 
     # seed everything
     seed = 123
@@ -451,13 +295,7 @@ def main():
     fig.text(0.4, 1.01, "B", fontsize=15, ha="center", fontweight="bold")
     plot_spike_history_filters(fig, rng, prng_state, jitter, array_type, filter_conf=0)
 
-    fig.text(0.8, 1.01, "C", fontsize=15, ha="center", fontweight="bold")
-    plot_ARDs(fig, tuning_dict, ard_names, cs)
-
-    fig.text(-0.02, 0.36, "D", fontsize=15, ha="center", fontweight="bold")
-    plot_rate_maps(fig, tuning_dict, tuning_names, titles, cs)
-
-    fig.text(1.02, 1.01, "S", fontsize=15, alpha=0.0, ha="center")  # space
+    fig.text(0.77, 1.01, "S", fontsize=15, alpha=0.0, ha="center")  # space
 
     ### export ###
     plt.savefig(save_dir + "baselines.pdf")

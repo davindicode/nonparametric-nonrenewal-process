@@ -329,6 +329,67 @@ def plot_QQ(fig, use_reg_config_names, use_names, regression_dict, cs):
         va="center",
         fontsize=11,
     )
+    
+    
+def plot_rate_maps(fig, tuning_dict, names, titles, cs):
+    dx = 0.06
+
+    for en in range(len(names)):
+        widths = [1] * 3
+        heights = [1] * 3
+        spec = fig.add_gridspec(
+            ncols=len(widths),
+            nrows=len(heights),
+            width_ratios=widths,
+            height_ratios=heights,
+            top=0.3,
+            bottom=-0.03,
+            left=0.0 + dx * en,
+            right=0.76 + dx * en,
+            wspace=5.5,
+        )
+
+        fig.text(
+            0.17 * en + 0.16,
+            0.35,
+            titles[en],
+            fontsize=12,
+            ha="center",
+            fontweight="bold",
+        )
+
+        for n in range(3):
+            for m in range(3):
+                k = 3 * n + m
+
+                ax = fig.add_subplot(spec[m, n])
+                if en == 0:
+                    rs = tuning_dict[names[en]]["pos_rates"][..., k]
+                elif en == len(names) - 1:
+                    rs = 1 / tuning_dict[names[en]]["pos_mean_ISI"].mean(0)[k]
+                else:
+                    rs = tuning_dict[names[en]]["pos_rates"][k]
+
+                ax.imshow(rs, vmin=0.0, origin="lower", cmap="viridis")
+                lib.utils.plots.decorate_ax(ax)
+                for spine in ax.spines.values():
+                    spine.set_edgecolor(cs[k])
+                    spine.set_linewidth(2)
+
+                if n == 1 and m == 0:
+                    ax.annotate(
+                        "",
+                        xy=(0.5, 1.05),
+                        xytext=(2.25 * en - 4, 1.45),
+                        rotation=np.pi / 2.0,
+                        xycoords="axes fraction",
+                        arrowprops=dict(
+                            arrowstyle="-",
+                            color="gray",
+                        ),
+                        annotation_clip=False,
+                    )
+    
 
 
 def main():
@@ -369,6 +430,16 @@ def main():
         "tab:cyan",
     ]  # cell ID colour
 
+    titles = [
+        "ground truth",
+        "Poisson",
+        "rescaled gamma",
+        "conditional Poisson",
+        "nonparametric",
+    ]
+    tuning_names = ["GT"] + reg_config_names[:3] + reg_config_names[-1:]
+    
+    # plot
     fig = plt.figure(figsize=(8, 3))
 
     fig.text(-0.03, 1.05, "A", fontsize=15, ha="center", fontweight="bold")
@@ -381,6 +452,9 @@ def main():
     fig.text(0.81, 1.05, "C", fontsize=15, ha="center", fontweight="bold")
     plot_QQ(fig, use_reg_config_names, use_names, regression_dict, cs)
 
+    fig.text(-0.02, 0.36, "D", fontsize=15, ha="center", fontweight="bold")
+    plot_rate_maps(fig, tuning_dict, tuning_names, titles, cs)
+    
     fig.text(1.23, 1.05, "S", fontsize=15, alpha=0.0, ha="center")  # space
 
     ### export ###

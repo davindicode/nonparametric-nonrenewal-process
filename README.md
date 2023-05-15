@@ -8,16 +8,14 @@ See `scripts/` for model fitting, analysis and plotting code.
 
 
 TODO:
-- Replot the hc3 related and BNPP plots with -1 margin
-- log p values
 - Inset of rate maps from 5D, with 3 ISIs on the side
-- plot the tuning for baseline models, and ISIs as well
 
-- Add dots to violin plots?
-- Tuning of more models, all BNPPs and baselines?
+- plot the tuning for baseline models, and ISIs as well
+- Try plot the tunings of baseline models too, e.g. rate and CV of those models... if time permits, use conditional with same past spike as the one used for that
+
 - put library subset in and change path imports
 
-- Try plot the tunings of baseline models too, e.g. rate and CV of those models... if time permits, use conditional with same past spike as the one used for that
+
 
 
 

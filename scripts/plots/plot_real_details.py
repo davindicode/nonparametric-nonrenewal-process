@@ -21,12 +21,12 @@ def get_tuning_curves(samples, percentiles, sm_filter, padding_modes):
 
 
 # plot functions
-def plot_th1_tuning(fig, tuning_dict):
+def plot_th1_tuning(fig, tuning_dict, name):
     # data
     eval_locs = tuning_dict["plot_hd_x_locs"]
 
-    rsamples = 1 / tuning_dict["hd_mean_ISI"]
-    cvsamples = tuning_dict["hd_CV_ISI"]
+    rsamples = 1 / tuning_dict[name]["hd_mean_ISI"]
+    cvsamples = tuning_dict[name]["hd_CV_ISI"]
 
     sm_filter = np.ones(5) / 5
     padding_modes = ["periodic"]
@@ -130,12 +130,12 @@ def plot_th1_tuning(fig, tuning_dict):
     fig.text(0.5, -0.05, "head direction (radians)", fontsize=11, ha="center")
 
 
-def plot_hc3_tuning(fig, tuning_dict, direction):
+def plot_hc3_tuning(fig, tuning_dict, name, direction):
     # data
     eval_locs = tuning_dict["plot_xt_x_locs"]
 
-    xt_rate = 1 / tuning_dict["xt{}_mean_ISI".format(direction)].mean(0)
-    xt_CV = tuning_dict["xt{}_CV_ISI".format(direction)].mean(0)
+    xt_rate = 1 / tuning_dict[name]["xt{}_mean_ISI".format(direction)].mean(0)
+    xt_CV = tuning_dict[name]["xt{}_CV_ISI".format(direction)].mean(0)
 
     # plot
     white = "#ffffff"
@@ -384,14 +384,17 @@ def main():
     ### th1 ###
 
     # data
+    bnpp_dict = pickle.load(open(save_dir + "th1_regression" + ".p", "rb"))
+    config_names = list(bnpp_dict.keys())
+    name = config_names[-1]
+    
     tuning_dict = pickle.load(open(save_dir + "th1_tuning" + ".p", "rb"))
-
     variability_dict = pickle.load(open(save_dir + "th1_variability" + ".p", "rb"))
 
     # plot
     fig = plt.figure(figsize=(10, 8))
     fig.set_facecolor("white")
-    plot_th1_tuning(fig, tuning_dict)
+    plot_th1_tuning(fig, tuning_dict, name)
     plt.savefig(save_dir + "th1_tuning.pdf")
 
     fig = plt.figure(figsize=(10, 5))
@@ -402,21 +405,24 @@ def main():
     ### hc3 ###
 
     # data
+    bnpp_dict = pickle.load(open(save_dir + "hc3_regression" + ".p", "rb"))
+    config_names = list(bnpp_dict.keys())
+    name = config_names[-1]
+    
     tuning_dict = pickle.load(open(save_dir + "hc3_tuning" + ".p", "rb"))
-
     variability_dict = pickle.load(open(save_dir + "hc3_variability" + ".p", "rb"))
 
     # plot
     fig = plt.figure(figsize=(10, 8))
     fig.set_facecolor("white")
     direction = "LR"
-    plot_hc3_tuning(fig, tuning_dict, direction)
+    plot_hc3_tuning(fig, tuning_dict, name, direction)
     plt.savefig(save_dir + "hc3_LR_tuning.pdf")
 
     fig = plt.figure(figsize=(10, 8))
     fig.set_facecolor("white")
     direction = "RL"
-    plot_hc3_tuning(fig, tuning_dict, direction)
+    plot_hc3_tuning(fig, tuning_dict, name, direction)
     plt.savefig(save_dir + "hc3_RL_tuning.pdf")
 
     fig = plt.figure(figsize=(10, 5))
