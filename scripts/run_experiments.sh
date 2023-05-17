@@ -122,7 +122,7 @@ python3 plot_real.py
 
 # appendix
 python3 plot_baselines.py
-python3 plot_BNPP_checks.py
+python3 plot_NPNR_checks.py
 python3 plot_real_details.py
 
 # logo

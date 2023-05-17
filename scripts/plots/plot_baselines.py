@@ -254,12 +254,6 @@ def plot_rate_rescaling(fig, rng, dt=0.001, p=0.003, ts=3000):
     ax.set_xlim([0, 1])
 
 
-
-
-
-
-
-
 def main():
     jax.config.update("jax_platform_name", "cpu")
     # jax.config.update('jax_disable_jit', True)

@@ -127,14 +127,25 @@ def tuning(
             ### tuning ###
             print("Position tuning...")
 
-            pos_rates, _, _ = model.obs_model.gp_posterior(
-                pos_x_locs[None, None],
-                mean_only=True,
-                diag_cov=True,
-                compute_KL=False,
+            if model.obs_model.spikefilter is not None:
+                filter_t, _ = model.obs_model.spikefilter.sample_posterior(
+                    prng_state, 1, False, None, jitter
+                )
+                spike_filter = np.array(filter_t[0])  # (filter_length, outs, 1)
+                prng_state, _ = jr.split(prng_state)
+                ys_filt = jnp.zeros(
+                    (neurons, pos_x_locs.shape[0] + spike_filter.shape[0] - 1)
+                )
+
+            else:
+                spike_filter, ys_filt = None, None
+
+            pos_rates = model.obs_model.posterior_mean(
+                pos_x_locs,
+                ys_filt,
                 jitter=jitter,
                 sel_outdims=jnp.array(neuron_list),
-            )  # (1, out_dims, eval_locs)
+            )  # (out_dims, eval_locs)
             pos_rates = np.array(pos_rates.reshape(-1, *or_shape))
             len_xs = np.array(model.obs_model.gp.kernel.kernels[0].lengthscale)
 
@@ -142,16 +153,8 @@ def tuning(
             results = {
                 "pos_rates": pos_rates,
                 "len_xs": len_xs,
+                "spike_filter": spike_filter,
             }
-
-            if model.obs_model.spikefilter is not None:
-                filter_t, _ = model.obs_model.spikefilter.sample_posterior(
-                    prng_state, 1, False, None, jitter
-                )
-                results["spike_filter"] = np.array(
-                    filter_t[0]
-                )  # (filter_length, outs, 1)
-                prng_state, _ = jr.split(prng_state)
 
             tunings[model_name] = results
 

@@ -387,7 +387,7 @@ def main():
     bnpp_dict = pickle.load(open(save_dir + "th1_regression" + ".p", "rb"))
     config_names = list(bnpp_dict.keys())
     name = config_names[-1]
-    
+
     tuning_dict = pickle.load(open(save_dir + "th1_tuning" + ".p", "rb"))
     variability_dict = pickle.load(open(save_dir + "th1_variability" + ".p", "rb"))
 
@@ -408,7 +408,7 @@ def main():
     bnpp_dict = pickle.load(open(save_dir + "hc3_regression" + ".p", "rb"))
     config_names = list(bnpp_dict.keys())
     name = config_names[-1]
-    
+
     tuning_dict = pickle.load(open(save_dir + "hc3_tuning" + ".p", "rb"))
     variability_dict = pickle.load(open(save_dir + "hc3_variability" + ".p", "rb"))
 

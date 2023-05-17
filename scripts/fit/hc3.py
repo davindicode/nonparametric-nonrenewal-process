@@ -129,7 +129,7 @@ def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
     s_t = np.concatenate((s_t, s_t[-1:]))
 
     timestamps = np.arange(start, end) * tbin
-    print('Selected number of data time points: {}'.format(len(timestamps)))
+    print("Selected number of data time points: {}".format(len(timestamps)))
 
     rcov = {
         "theta": theta_t % (2 * np.pi),

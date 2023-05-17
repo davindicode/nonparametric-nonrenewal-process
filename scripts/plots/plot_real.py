@@ -42,7 +42,12 @@ def plot_fit_stats(
     )
 
     mdls = len(use_reg_config_names)
-    lp_vals = np.log10(np.maximum(np.array([regression_dict[n]["KS_p_value"] for n in use_reg_config_names]), 1e-12))
+    lp_vals = np.log10(
+        np.maximum(
+            np.array([regression_dict[n]["KS_p_value"] for n in use_reg_config_names]),
+            1e-12,
+        )
+    )
 
     test_lls = np.array(
         [
@@ -75,14 +80,20 @@ def plot_fit_stats(
             bw_method="silverman",
             vert=False,
         )
-        ax.scatter(lp_vals[m], 0.1 * rng.normal(size=lp_vals[m].shape) + m, marker='.', 
-                   s=10, c=cs[m], alpha=0.3)
-        
+        ax.scatter(
+            lp_vals[m],
+            0.1 * rng.normal(size=lp_vals[m].shape) + m,
+            marker=".",
+            s=10,
+            c=cs[m],
+            alpha=0.3,
+        )
+
         for partname in ("cbars", "cmins", "cmaxes", "cmeans", "cmedians"):
             vp = violin_parts[partname]
             vp.set_edgecolor(cs[m])
             vp.set_linewidth(1)
-            
+
         for vp in violin_parts["bodies"]:
             vp.set_facecolor(cs[m])
             vp.set_edgecolor("gray")
@@ -90,13 +101,13 @@ def plot_fit_stats(
             vp.set_alpha(0.3)
 
     ax.set_xlabel("KS $p$-values", labelpad=1)
-    #ax.xaxis.set_major_formatter(mticker.StrMethodFormatter("$10^{{{x:.0f}}}$"))
+    # ax.xaxis.set_major_formatter(mticker.StrMethodFormatter("$10^{{{x:.0f}}}$"))
     ax.set_xlim([-8, 0])
     tick_range = np.arange(-8, 1)
     ax.set_xticks(tick_range)
     ax.set_xticklabels([r"$10^{-8}$", "", "", "", r"$10^{-4}$", "", "", "", ""])
-    #ax.xaxis.set_ticks([np.log10(x) for p in tick_range for x in np.linspace(10 ** p, 10 ** (p + 1), 10)], minor=True)
-    
+    # ax.xaxis.set_ticks([np.log10(x) for p in tick_range for x in np.linspace(10 ** p, 10 ** (p + 1), 10)], minor=True)
+
     ax.set_ylim([-0.5, mdls - 0.5])
     ax.set_yticks(np.arange(mdls))
     ax.set_yticklabels(use_names)
@@ -845,7 +856,7 @@ def main():
     visualize_inds = [0, 1, 4, 6, 7]
 
     ### th1 ###
-    
+
     # data
     tuning_dict = pickle.load(open(save_dir + "th1_tuning" + ".p", "rb"))
 
@@ -903,29 +914,21 @@ def main():
     plt.savefig(save_dir + "th1.pdf")
 
     ### hc3 ###
-    
+
     # data
-    tuning_dict = pickle.load(
-        open(save_dir + 'hc3_tuning' + ".p", "rb")
-    )
+    tuning_dict = pickle.load(open(save_dir + "hc3_tuning" + ".p", "rb"))
 
-    variability_dict = pickle.load(
-        open(save_dir + 'hc3_variability' + ".p", "rb")
-    )
+    variability_dict = pickle.load(open(save_dir + "hc3_variability" + ".p", "rb"))
 
-    bnpp_dict = pickle.load(
-        open(save_dir + 'hc3_regression' + ".p", "rb")
-    )
+    bnpp_dict = pickle.load(open(save_dir + "hc3_regression" + ".p", "rb"))
 
-    baseline_dict = pickle.load(
-        open(save_dir + 'hc3_baselines' + ".p", "rb")
-    )
+    baseline_dict = pickle.load(open(save_dir + "hc3_baselines" + ".p", "rb"))
 
     regression_dict = {**baseline_dict, **bnpp_dict}
     reg_config_names = list(regression_dict.keys())
     use_reg_config_names = [reg_config_names[k] for k in use_model_inds]
     visualize_names = [reg_config_names[k] for k in use_model_inds[visualize_inds]]
-    
+
     plot_units = [1, 15]
 
     # plot
@@ -934,7 +937,15 @@ def main():
 
     fig.text(-0.05, 1.01, "A", fontsize=15, ha="center", fontweight="bold")
     plot_fit_stats(
-        fig, 0.01, 0.0, rng, regression_dict, use_reg_config_names, use_names, cs, xlims=-200
+        fig,
+        0.01,
+        0.0,
+        rng,
+        regression_dict,
+        use_reg_config_names,
+        use_names,
+        cs,
+        xlims=-200,
     )
 
     fig.text(0.325, 1.01, "B", fontsize=15, ha="center", fontweight="bold")
@@ -962,9 +973,7 @@ def main():
     plot_instantaneous(fig, 0.0, 0.0, rng, variability_dict, plot_units)
 
     fig.text(0.62, 0.34, "F", fontsize=15, ha="center", fontweight="bold")
-    plot_hc3_tuning(
-        fig, 0.0, 0.0, tuning_dict, reg_config_names[-1], "LR", plot_units
-    )
+    plot_hc3_tuning(fig, 0.0, 0.0, tuning_dict, reg_config_names[-1], "LR", plot_units)
 
     fig.text(1.02, 1.01, "S", fontsize=15, alpha=0.0, ha="center")  # space
 
