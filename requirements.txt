@@ -1,4 +1,6 @@
 numpy
 scipy
 jax
+jaxlib
 tensorflow_probability[jax]
+matplotlib

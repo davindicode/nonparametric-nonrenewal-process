@@ -36,19 +36,3 @@ class module(eqx.Module):
 
     def apply_constraints(self):
         return self
-
-
-class SSM(module):
-    """
-    State space model with Gaussian pseudo-observations
-    """
-
-    site_locs: Union[jnp.ndarray, None]
-    site_obs: jnp.ndarray
-    site_Lcov: jnp.ndarray
-
-    def __init__(self, site_locs, site_obs, site_Lcov, array_type):
-        super().__init__(array_type)
-        self.site_locs = self._to_jax(site_locs) if site_locs is not None else None
-        self.site_obs = self._to_jax(site_obs)
-        self.site_Lcov = self._to_jax(site_Lcov)

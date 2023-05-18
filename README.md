@@ -15,14 +15,6 @@ See `scripts/` for model fitting, analysis and plotting code.
 
 
 
-
-TODO:
-- rename BNPP to NPNR, rho to lambda in code
-
-
-
-
-
 ### Dependencies:
 #. [JAX](https://jax.readthedocs.io/en/latest/#)
 #. [TFP](https://www.tensorflow.org/probability)
