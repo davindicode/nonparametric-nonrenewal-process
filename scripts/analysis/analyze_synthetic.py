@@ -77,8 +77,7 @@ def tuning(
     tunings = {}
 
     ### ground truth ###
-    mdl = generate.model("Gaussian")
-    ratefunc, _, renewals_ll, _, _ = mdl.get_model()
+    ratefunc, _, renewals_ll, _, _ = generate.get_model()
 
     GT_rates = vmap(ratefunc)(jnp.array(pos_x_locs))
     GT_rates = np.array(GT_rates.reshape(*or_shape, -1))
