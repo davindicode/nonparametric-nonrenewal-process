@@ -294,7 +294,9 @@ class NonparametricPointProcess(Observations):
         )  # (num_samps, obs_dims, ts)
 
     ### inference ###
-    def _get_log_lambda_post(self, xs, deltas, mean_only, compute_KL, jitter, sel_outdims):
+    def _get_log_lambda_post(
+        self, xs, deltas, mean_only, compute_KL, jitter, sel_outdims
+    ):
         """
         :param jnp.ndarray xs: inputs (num_samps, 1, ts, x_dims)
         :param jnp.ndarray deltas: lagged ISIs (num_samps, obs_dims, ts, orders)
@@ -579,7 +581,11 @@ class NonparametricPointProcess(Observations):
             tau_eval[None, :], False
         )  # (obs_dims, locs)
 
-        log_lambda_tilde, int_lambda_tau_tilde, log_normalizer = self._sample_log_ISI_tilde(
+        (
+            log_lambda_tilde,
+            int_lambda_tau_tilde,
+            log_normalizer,
+        ) = self._sample_log_ISI_tilde(
             prng_state,
             num_samps,
             tau_tilde,
@@ -636,7 +642,11 @@ class NonparametricPointProcess(Observations):
             tau_tilde_pts, True
         )  # (obs_dims, locs)
 
-        log_lambda_tilde, int_lambda_tau_tilde, log_normalizer = self._sample_log_ISI_tilde(
+        (
+            log_lambda_tilde,
+            int_lambda_tau_tilde,
+            log_normalizer,
+        ) = self._sample_log_ISI_tilde(
             prng_state,
             num_samps,
             tau_tilde_pts,

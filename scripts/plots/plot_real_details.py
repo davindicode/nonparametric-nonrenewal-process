@@ -363,7 +363,7 @@ def plot_instantaneous(fig, variability_dict):
             ax.plot(xx[ne], lin_func[ne], c="b", label="linear")
 
             # ax.yaxis.get_major_locator().set_params(integer=True)
-            #ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+            # ax.yaxis.set_major_locator(MaxNLocator(integer=True))
             # ax.yaxis.set_major_formatter(FormatStrFormatter('%.0f'))
             if ne > 0:
                 ax.set_yticklabels([])

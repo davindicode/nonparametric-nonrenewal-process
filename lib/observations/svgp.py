@@ -606,7 +606,7 @@ class RateRescaledRenewal(SparseGPFilterObservations):
                         else safe_log(rate)
                     )
                     + has_prev_spike * self.renewal.log_density(t_tilde + min_ISI),
-                    0.0, 
+                    0.0,
                 )  # avoid zero ISI for refractory densities numerically
 
                 valid_ts = jnp.where(has_prev_spike, valid_ts + 1.0, valid_ts)
@@ -623,7 +623,7 @@ class RateRescaledRenewal(SparseGPFilterObservations):
                 valid_ts,
                 inv_valid_ts,
             ), t_tilde if return_t_tildes else None
-        
+
         init = (
             ~jnp.isnan(ini_t_tilde),
             jnp.nan_to_num(ini_t_tilde),
@@ -646,7 +646,7 @@ class RateRescaledRenewal(SparseGPFilterObservations):
         xs,
         ys,
         ys_filt,
-        metadata, 
+        metadata,
         compute_KL,
         total_samples,
         lik_int_method,
@@ -706,7 +706,9 @@ class RateRescaledRenewal(SparseGPFilterObservations):
         else:
             Eq = ll.mean()  # mean over num_samps
 
-        metadata["ini_t_tildes"] = lax.stop_gradient(next_t_tildes)  # (num_samps, out_dims)
+        metadata["ini_t_tildes"] = lax.stop_gradient(
+            next_t_tildes
+        )  # (num_samps, out_dims)
         return total_samples * Eq, KL, metadata
 
     ### evaluation ###
@@ -811,11 +813,14 @@ class RateRescaledRenewal(SparseGPFilterObservations):
 
         # rate rescaling, rescaled time since last spike
         rrs = lambda spikes, rates, ini_t_tildes: self._rate_rescale(
-            spikes, rates, ini_t_tildes, False, True, unroll)[-1]
-        
+            spikes, rates, ini_t_tildes, False, True, unroll
+        )[-1]
+
         spikes = (ys > 0).transpose(0, 2, 1)
         tau_tilde = vmap(rrs)(
-            spikes, rates, ini_t_tilde, 
+            spikes,
+            rates,
+            ini_t_tilde,
         )  # (num_samps, ts, obs_dims)
 
         log_hazard = vmap(vmap(self.renewal.log_hazard))(tau_tilde)

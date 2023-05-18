@@ -8,13 +8,12 @@ import template
 import th1
 
 sys.path.append("../../")
-import lib
-
 import pickle
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import lib
 import numpy as np
 
 import utils

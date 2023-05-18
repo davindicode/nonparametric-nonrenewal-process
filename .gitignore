@@ -1,7 +1,6 @@
 __pycache__/
 output/
 saves/
-data/
 checkpoint/
 .DS_Store
 .ipynb_checkpoints

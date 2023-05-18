@@ -62,7 +62,7 @@ class GaussianTwoLayer(module):
         jitter,
         tot_ts,
         data,
-        metadata, 
+        metadata,
         lik_int_method,
         joint_samples=False,
         unroll=10,
@@ -103,7 +103,7 @@ class GaussianTwoLayer(module):
                 xs,
                 ys,
                 ys_filt,
-                metadata, 
+                metadata,
                 True,
                 tot_ts,
                 lik_int_method,
@@ -120,5 +120,5 @@ class GaussianTwoLayer(module):
             Ell, KL_o = self.obs_model.variational_expectation(
                 prng_key_o, jitter, xs, deltas, ys, True, tot_ts, lik_int_method
             )
-            
+
         return Ell - KL_o - KL_x, metadata

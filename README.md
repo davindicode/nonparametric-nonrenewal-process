@@ -15,12 +15,12 @@ See `scripts/` for model fitting, analysis and plotting code.
 
 
 
-### Dependencies:
-#. [JAX](https://jax.readthedocs.io/en/latest/#)
-#. [TFP](https://www.tensorflow.org/probability)
-#. [NumPy](https://numpy.org/)
-#. [SciPy](https://scipy.org/)
-#. [tqdm](https://github.com/tqdm/tqdm)
+### Dependencies
 
-Formatting
-#. [ufmt](https://pypi.org/project/ufmt/)
+- [JAX](https://jax.readthedocs.io/en/latest/#)
+- [TFP](https://www.tensorflow.org/probability)
+- [NumPy](https://numpy.org/)
+- [SciPy](https://scipy.org/)
+- [tqdm](https://github.com/tqdm/tqdm)
+
+Formatting done with [ufmt](https://pypi.org/project/ufmt/), run `ufmt format .`
