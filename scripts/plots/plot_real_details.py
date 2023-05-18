@@ -7,8 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.ticker import MaxNLocator
 
-sys.path.append("../../../GaussNeuro")
-from gaussneuro import utils
+sys.path.append("../../")
+from lib import utils
 
 
 # computation functions
@@ -329,7 +329,7 @@ def plot_instantaneous(fig, variability_dict):
         bottom=0.0,
         left=0.0,
         right=1.0,
-        wspace=0.3,
+        wspace=0.25,
         hspace=0.6,
     )
 
@@ -363,9 +363,10 @@ def plot_instantaneous(fig, variability_dict):
             ax.plot(xx[ne], lin_func[ne], c="b", label="linear")
 
             # ax.yaxis.get_major_locator().set_params(integer=True)
-            ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+            #ax.yaxis.set_major_locator(MaxNLocator(integer=True))
             # ax.yaxis.set_major_formatter(FormatStrFormatter('%.0f'))
-
+            if ne > 0:
+                ax.set_yticklabels([])
             if ne == imISI.shape[0] - 1:
                 ax.legend(loc="right", bbox_to_anchor=(2.2, 0.8))
 

@@ -7,8 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats as scstats
 
-sys.path.append("../../../GaussNeuro")
-from gaussneuro import utils
+sys.path.append("../../")
+from lib import utils
 
 
 # computation functions

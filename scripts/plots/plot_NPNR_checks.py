@@ -6,8 +6,8 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 
-sys.path.append("../../../GaussNeuro")
-from gaussneuro import utils
+sys.path.append("../../")
+from lib import utils
 
 
 def plot_NPNRs(

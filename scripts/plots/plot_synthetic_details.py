@@ -6,9 +6,8 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 
-sys.path.append("../../../GaussNeuro")
-import gaussneuro as lib
-from gaussneuro import utils
+sys.path.append("../../")
+from lib import utils
 
 
 def plot_ARDs(fig, X, Y, tuning_dict, ard_names, cs):
@@ -112,7 +111,7 @@ def plot_tunings(fig, tuning_dict, names, titles, cs):
             ax.imshow(
                 GT_rates[..., k], vmin=0.0, origin="lower", cmap="viridis", alpha=a
             )
-            lib.utils.plots.decorate_ax(ax)
+            utils.plots.decorate_ax(ax)
             for spine in ax.spines.values():
                 spine.set_edgecolor(cs[k])
                 spine.set_linewidth(2)
@@ -163,7 +162,7 @@ def plot_tunings(fig, tuning_dict, names, titles, cs):
                     cmap="viridis",
                     vmax=GT_rates[..., k].max(),
                 )
-                lib.utils.plots.decorate_ax(ax)
+                utils.plots.decorate_ax(ax)
                 for spine in ax.spines.values():
                     spine.set_edgecolor(cs[k])
                     spine.set_linewidth(2)

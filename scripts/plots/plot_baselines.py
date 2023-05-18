@@ -9,9 +9,9 @@ import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
 
-sys.path.append("../../../GaussNeuro")
-import gaussneuro as lib
-from gaussneuro import utils
+sys.path.append("../../")
+import lib
+from lib import utils
 
 
 def plot_spike_history_filters(fig, rng, prng_state, jitter, array_type, filter_conf=0):

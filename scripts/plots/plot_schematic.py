@@ -10,9 +10,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from jax import vmap
 
-sys.path.append("../../../GaussNeuro")
-import gaussneuro as lib
-from gaussneuro import utils
+sys.path.append("../../")
+import lib
+from lib import utils
 
 
 # computation functions

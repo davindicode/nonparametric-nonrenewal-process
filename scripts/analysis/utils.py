@@ -5,11 +5,12 @@ from typing import Any
 sys.path.append("../fit/")
 import template
 
-sys.path.append("../../../GaussNeuro")
+sys.path.append("../../")
+import lib
+
 import pickle
 
 import equinox as eqx
-import gaussneuro as lib
 import jax
 import jax.numpy as jnp
 import jax.random as jr

@@ -17,19 +17,19 @@ import optax
 
 from tqdm.autonotebook import tqdm
 
-sys.path.append("../../../GaussNeuro")
-import gaussneuro as lib
-from gaussneuro.inputs.gaussian import GaussianLatentObservedSeries
-from gaussneuro.models import GaussianTwoLayer
+sys.path.append("../../")
+import lib
+from lib.inputs.gaussian import GaussianLatentObservedSeries
+from lib.models import GaussianTwoLayer
 
-from gaussneuro.observations.base import Observations
-from gaussneuro.observations.bnpp import NonparametricPointProcess
-from gaussneuro.observations.svgp import (
+from lib.observations.base import Observations
+from lib.observations.bnpp import NonparametricPointProcess
+from lib.observations.svgp import (
     ModulatedFactorized,
     ModulatedRenewal,
     RateRescaledRenewal,
 )
-from gaussneuro.utils.loaders import BatchedTimeSeries
+from lib.utils.loaders import BatchedTimeSeries
 
 
 ### script ###

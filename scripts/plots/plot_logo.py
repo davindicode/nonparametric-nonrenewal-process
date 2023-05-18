@@ -8,9 +8,9 @@ import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
 
-sys.path.append("../../../GaussNeuro")
-import gaussneuro as lib
-from gaussneuro import utils
+sys.path.append("../../")
+import lib
+from lib import utils
 
 
 def logo_data(prng_state, rng, num_samps, a_m, b_m, mean_tau, L, evalsteps):

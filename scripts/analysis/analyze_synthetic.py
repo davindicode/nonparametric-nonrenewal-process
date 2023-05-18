@@ -7,8 +7,8 @@ sys.path.append("../fit/")
 import synthetic
 import template
 
-sys.path.append("../../../GaussNeuro")
-import gaussneuro as lib
+sys.path.append("../../")
+import lib
 
 sys.path.append("../../data/synthetic")
 import pickle

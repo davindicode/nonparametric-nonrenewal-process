@@ -6,9 +6,8 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 
-sys.path.append("../../../GaussNeuro")
-import gaussneuro as lib
-from gaussneuro import utils
+sys.path.append("../../")
+from lib import utils
 
 
 def plot_ground_truth(fig, tuning_dict, cs):
@@ -39,7 +38,7 @@ def plot_ground_truth(fig, tuning_dict, cs):
             ax = fig.add_subplot(spec[m, n])
 
             ax.imshow(GT_rates[..., k], vmin=0.0, origin="lower", cmap="viridis")
-            lib.utils.plots.decorate_ax(ax)
+            utils.plots.decorate_ax(ax)
             for spine in ax.spines.values():
                 spine.set_edgecolor(cs[k])
                 spine.set_linewidth(2)
@@ -118,7 +117,7 @@ def plot_tuning_and_ISIs(fig, tuning_dict, name, cs):
                 origin="lower",
                 cmap="viridis",
             )
-            lib.utils.plots.decorate_ax(ax)
+            utils.plots.decorate_ax(ax)
             for spine in ax.spines.values():
                 spine.set_edgecolor(cs[k])
                 spine.set_linewidth(2)

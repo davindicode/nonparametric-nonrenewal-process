@@ -7,10 +7,10 @@ sys.path.append("../fit/")
 import template
 import th1
 
-sys.path.append("../../../GaussNeuro")
-import pickle
+sys.path.append("../../")
+import lib
 
-import gaussneuro as lib
+import pickle
 
 import jax
 import jax.numpy as jnp
