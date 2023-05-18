@@ -49,11 +49,11 @@ def logo_data(prng_state, rng, num_samps, a_m, b_m, mean_tau, L, evalsteps):
     mean_amp = a_m * np.ones((obs_dims,))
     mean_bias = b_m * np.ones((obs_dims,))
 
-    bnpp = lib.observations.bnpp.NonparametricPointProcess(
+    npnr = lib.observations.npnr.NonparametricPointProcess(
         svgp, wrap_tau, mean_tau, mean_amp, mean_bias, dt
     )
 
-    ISI_density = bnpp.sample_conditional_ISI(
+    ISI_density = npnr.sample_conditional_ISI(
         prng_state,
         num_samps,
         cisi_t_eval,

@@ -83,7 +83,7 @@ def model_inputs(prng_state, rng, evalsteps, L):
 
 
 def sample_conditional_ISI(
-    bnpp,
+    npnr,
     prng_state,
     num_samps,
     tau_eval,
@@ -104,18 +104,18 @@ def sample_conditional_ISI(
     :param jnp.ndarray x_cond: covariate values to condition on (x_dims,)
     """
     if sel_outdims is None:
-        obs_dims = bnpp.gp.kernel.out_dims
+        obs_dims = npnr.gp.kernel.out_dims
         sel_outdims = jnp.arange(obs_dims)
 
     sigma_pts, weights = utils.linalg.gauss_legendre(1, num_quad_pts)
-    sigma_pts, weights = bnpp._to_jax(sigma_pts), bnpp._to_jax(weights)
+    sigma_pts, weights = npnr._to_jax(sigma_pts), npnr._to_jax(weights)
 
     # evaluation locs
-    tau_tilde, log_dtilde_dt = vmap(bnpp._log_time_transform_jac, (1, None), 1)(
+    tau_tilde, log_dtilde_dt = vmap(npnr._log_time_transform_jac, (1, None), 1)(
         tau_eval[None, :], False
     )  # (obs_dims, locs)
 
-    log_rho_tilde, int_rho_tau_tilde, log_normalizer = bnpp._sample_log_ISI_tilde(
+    log_rho_tilde, int_rho_tau_tilde, log_normalizer = npnr._sample_log_ISI_tilde(
         prng_state,
         num_samps,
         tau_tilde,
@@ -134,7 +134,7 @@ def sample_conditional_ISI(
     return ISI_density, log_rho_tilde, tau_tilde
 
 
-def BNPP_samples(prng_state, rng, num_samps, evalsteps, L):
+def NPNR_samples(prng_state, rng, num_samps, evalsteps, L):
     dt = 1e-3  # s
     obs_dims = 1
     num_induc = 8
@@ -174,12 +174,12 @@ def BNPP_samples(prng_state, rng, num_samps, evalsteps, L):
         mean_amp = a_m * np.ones((obs_dims,))
         mean_bias = b_m * np.ones((obs_dims,))
 
-        bnpp = lib.observations.bnpp.NonparametricPointProcess(
+        npnr = lib.observations.npnr.NonparametricPointProcess(
             svgp, wrap_tau, mean_tau, mean_amp, mean_bias, dt
         )
 
         ISI_density, log_rho_tilde, tau_tilde = sample_conditional_ISI(
-            bnpp,
+            npnr,
             prng_state,
             num_samps,
             cisi_t_eval,
@@ -520,7 +520,7 @@ def main():
     evalsteps = 500
     L = 3.0
 
-    cisi_t_eval, ISI_densities, cisi_tau_tilde, log_rho_tildes = BNPP_samples(
+    cisi_t_eval, ISI_densities, cisi_tau_tilde, log_rho_tildes = NPNR_samples(
         prng_state, rng, num_samps, evalsteps, L
     )
 

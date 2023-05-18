@@ -406,7 +406,7 @@ class ModulatedFactorized(SparseGPFilterObservations):
         )  # (obs_dims, ts)
 
         if self.likelihood.link_type == LinkTypes["log"]:
-            post_rho_mean = jnp.exp(f_mean + f_var / 2.0)
+            post_lambda_mean = jnp.exp(f_mean + f_var / 2.0)
 
         else:  # quadratures
             if sel_outdims is None:
@@ -422,9 +422,9 @@ class ModulatedFactorized(SparseGPFilterObservations):
                 f_std[..., None] * f[:, None, :] + f_mean[..., None]
             )  # (obs_dims, ts, approx_points)
             integrand = self.likelihood.inverse_link(f_points)
-            post_rho_mean = (w * integrand).sum(-1)
+            post_lambda_mean = (w * integrand).sum(-1)
 
-        return post_rho_mean
+        return post_lambda_mean
 
     ### sample ###
     def _sample_generative(self, prng_state, x_samples, prior, ini_Y, jitter):
@@ -541,7 +541,7 @@ class RateRescaledRenewal(SparseGPFilterObservations):
                 f if self.renewal.link_type == LinkTypes["log"] else safe_log(rate)
             )
             log_hazard = vmap(self.renewal.log_hazard)(tau_tilde)
-            log_rho_t = log_rate + log_hazard
+            log_lambda_t = log_rate + log_hazard
 
             # generate spikes
             spikes = jnp.where(
@@ -558,12 +558,12 @@ class RateRescaledRenewal(SparseGPFilterObservations):
             else:
                 past_spikes = spikes[..., None]
 
-            return (tau_tilde, rescaled_t_spike, past_spikes), (spikes, log_rho_t)
+            return (tau_tilde, rescaled_t_spike, past_spikes), (spikes, log_lambda_t)
 
         init = (ini_t_tilde, ini_rescaled_ISI, ini_spikes)
         xs = (prng_states, f_samples.transpose(2, 0, 1))
-        _, (spikes, log_rho_ts) = lax.scan(step, init, xs)
-        return spikes.transpose(1, 2, 0), log_rho_ts.transpose(
+        _, (spikes, log_lambda_ts) = lax.scan(step, init, xs)
+        return spikes.transpose(1, 2, 0), log_lambda_ts.transpose(
             1, 2, 0
         )  # (num_samps, obs_dims, ts)
 
@@ -734,7 +734,7 @@ class RateRescaledRenewal(SparseGPFilterObservations):
         )  # (obs_dims, ts)
 
         if self.renewal.link_type == LinkTypes["log"]:
-            post_rho_mean = jnp.exp(f_mean + f_var / 2.0)
+            post_lambda_mean = jnp.exp(f_mean + f_var / 2.0)
 
         else:  # quadratures
             if sel_outdims is None:
@@ -750,9 +750,9 @@ class RateRescaledRenewal(SparseGPFilterObservations):
                 f_std[..., None] * f[:, None, :] + f_mean[..., None]
             )  # (obs_dims, ts, approx_points)
             integrand = self.renewal.inverse_link(f_points)
-            post_rho_mean = (w * integrand).sum(-1)
+            post_lambda_mean = (w * integrand).sum(-1)
 
-        return post_rho_mean
+        return post_lambda_mean
 
     def log_conditional_intensity(
         self,
@@ -822,8 +822,8 @@ class RateRescaledRenewal(SparseGPFilterObservations):
         log_rates = (
             pre_rates if self.renewal.link_type == LinkTypes["log"] else safe_log(rates)
         )
-        log_rho_t = log_rates + log_hazard.transpose(0, 2, 1)
-        return log_rho_t[:, sel_outdims, :]  # (num_samps, out_dims, ts)
+        log_lambda_t = log_rates + log_hazard.transpose(0, 2, 1)
+        return log_lambda_t[:, sel_outdims, :]  # (num_samps, out_dims, ts)
 
     def sample_conditional_ISI(
         self, prng_state, t_eval, x_cond, jitter, sel_outdims, num_samps=20, prior=True
@@ -871,10 +871,10 @@ class RateRescaledRenewal(SparseGPFilterObservations):
             sel_outdims=None,
         )  # (num_samps, obs_dims, 1)
 
-        y_samples, log_rho_ts = self._sample_spikes(
+        y_samples, log_lambda_ts = self._sample_spikes(
             prng_states[1], ini_spikes, ini_t_tilde, f_samples, jitter
         )
-        return y_samples, log_rho_ts
+        return y_samples, log_lambda_ts
 
     def sample_prior(self, prng_state, x_samples, ini_spikes, ini_t_tilde, jitter):
         return self._sample_generative(
@@ -974,11 +974,11 @@ class ModulatedRenewal(SparseGPFilterObservations):
                 else safe_log(self.renewal.inverse_link(f))
             )
             log_hazard = self.renewal.log_hazard(invscale_tau * tau)
-            log_rho_t = log_modulator + log_hazard
+            log_lambda_t = log_modulator + log_hazard
 
             # generate spikes
             p_spike = jnp.minimum(
-                jnp.exp(log_rho_t) * self.renewal.dt, 1.0
+                jnp.exp(log_lambda_t) * self.renewal.dt, 1.0
             )  # approximate by discrete Bernoulli
             spikes = jr.bernoulli(prng_state[-1], p_spike).astype(
                 self.array_dtype()
@@ -991,12 +991,12 @@ class ModulatedRenewal(SparseGPFilterObservations):
             else:
                 past_spikes = spikes[..., None]
 
-            return (tau, past_spikes), (spikes, log_rho_t)
+            return (tau, past_spikes), (spikes, log_lambda_t)
 
         init = (ini_tau, ini_spikes)
         xs = (prng_states, f_samples.transpose(2, 0, 1))
-        _, (spikes, log_rho_ts) = lax.scan(step, init, xs)
-        return spikes.transpose(1, 2, 0), log_rho_ts.transpose(
+        _, (spikes, log_lambda_ts) = lax.scan(step, init, xs)
+        return spikes.transpose(1, 2, 0), log_lambda_ts.transpose(
             1, 2, 0
         )  # (num_samps, obs_dims, ts)
 
@@ -1084,12 +1084,12 @@ class ModulatedRenewal(SparseGPFilterObservations):
             else safe_log(self.renewal.inverse_link(f_mean))
         )
         log_hazard = vmap(self.renewal.log_hazard)(invscale_tau * taus.T)
-        log_rho_t = log_modulator + log_hazard[None, ..., None]
+        log_lambda_t = log_modulator + log_hazard[None, ..., None]
 
-        pre_rho_t = (
-            log_rho_t
+        pre_lambda_t = (
+            log_lambda_t
             if self.renewal.link_type == LinkTypes["log"]
-            else self.renewal.link(jnp.exp(log_rho_t))
+            else self.renewal.link(jnp.exp(log_lambda_t))
         )
 
         llf = lambda y, m, c, p: self.pp.variational_expectation(
@@ -1098,14 +1098,14 @@ class ModulatedRenewal(SparseGPFilterObservations):
 
         if log_predictive:
             Eq = jax.nn.logsumexp(
-                vmap(vmap(llf), (None, 0, 0, 0))(ys.T, pre_rho_t, f_cov, prng_state)
+                vmap(vmap(llf), (None, 0, 0, 0))(ys.T, pre_lambda_t, f_cov, prng_state)
                 - jnp.log(num_samps),
                 axis=0,  # take mean over num_samps inside log, ts outside log
             ).mean()
 
         else:
             Eq = vmap(vmap(llf), (None, 0, 0, 0))(
-                ys.T, pre_rho_t, f_cov, prng_state
+                ys.T, pre_lambda_t, f_cov, prng_state
             ).mean()  # vmap and take mean over num_samps and ts
 
         return total_samples * Eq, KL
@@ -1144,8 +1144,8 @@ class ModulatedRenewal(SparseGPFilterObservations):
             spikes, ini_tau
         )  # (num_samps, ts, obs_dims)
 
-        log_rho_t = log_hazards + log_modulator
-        return log_rho_t  # (num_samps, out_dims, ts)
+        log_lambda_t = log_hazards + log_modulator
+        return log_lambda_t  # (num_samps, out_dims, ts)
 
     def posterior_mean(
         self, prng_state, xs, taus, ys_filt, jitter, sel_outdims, quadrature_pts=30
@@ -1178,8 +1178,8 @@ class ModulatedRenewal(SparseGPFilterObservations):
         log_hazard = vmap(self.renewal.log_hazard)(invscale_tau * taus.T).T[sel_outdims]
 
         if self.renewal.link_type == LinkTypes["log"]:
-            log_rho_t_mean = f_mean + log_hazard
-            post_rho_mean = jnp.exp(log_rho_t_mean + f_var / 2.0)
+            log_lambda_t_mean = f_mean + log_hazard
+            post_lambda_mean = jnp.exp(log_lambda_t_mean + f_var / 2.0)
 
         else:  # quadratues
             f, w = gauss_hermite(1, quadrature_pts)
@@ -1192,9 +1192,9 @@ class ModulatedRenewal(SparseGPFilterObservations):
                 f_std[..., None] * f[:, None, :] + f_mean[..., None]
             )  # (obs_dims, ts, approx_points)
             integrand = self.renewal.inverse_link(f_points) * jnp.exp(log_hazard)
-            post_rho_mean = (w * integrand).sum(-1)
+            post_lambda_mean = (w * integrand).sum(-1)
 
-        return post_rho_mean
+        return post_lambda_mean
 
     ### sample ###
     def sample_conditional_ISI(
@@ -1245,10 +1245,10 @@ class ModulatedRenewal(SparseGPFilterObservations):
             sel_outdims=None,
         )  # (num_samps, obs_dims, 1)
 
-        y_samples, log_rho_ts = self._sample_spikes(
+        y_samples, log_lambda_ts = self._sample_spikes(
             prng_states[1], ini_spikes, ini_tau, f_samples
         )
-        return y_samples, log_rho_ts
+        return y_samples, log_lambda_ts
 
     def sample_prior(self, prng_state, x_samples, ini_spikes, ini_tau, jitter):
         return self._sample_generative(

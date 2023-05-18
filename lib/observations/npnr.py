@@ -132,7 +132,7 @@ class NonparametricPointProcess(Observations):
         div_taus = jnp.exp((self.log_warp_tau - self.log_mean_tau)[sel_outdims])
         return mean_amp * (1.0 - tau_tilde) ** (div_taus) + mean_bias
 
-    def _log_rho_tilde_sample(
+    def _log_lambda_tilde_sample(
         self, prng_state, num_samps, tau_tilde, isi, x, prior, jitter, sel_outdims
     ):
         """
@@ -184,10 +184,10 @@ class NonparametricPointProcess(Observations):
         m_eval = vmap(vmap(self._mean, (0, None)), (2, None), 2)(
             tau_tilde, sel_outdims
         )  # (num_samps, obs_dims, locs)
-        log_rho_tilde = f_samples + m_eval
-        return log_rho_tilde
+        log_lambda_tilde = f_samples + m_eval
+        return log_lambda_tilde
 
-    def _log_rho_tilde_post(
+    def _log_lambda_tilde_post(
         self, tau_tilde, isi, x, mean_only, compute_KL, jitter, sel_outdims
     ):
         """
@@ -218,8 +218,8 @@ class NonparametricPointProcess(Observations):
         m_eval = vmap(vmap(self._mean, (0, None)), (2, None), 2)(
             tau_tilde, sel_outdims
         )  # (num_samps, obs_dims, locs)
-        log_rho_tilde_mean = f_mean + m_eval[..., None]
-        return log_rho_tilde_mean, f_var, KL
+        log_lambda_tilde_mean = f_mean + m_eval[..., None]
+        return log_lambda_tilde_mean, f_var, KL
 
     def _sample_spikes(self, prng_state, timesteps, ini_tau, past_ISIs, x_eval, jitter):
         """
@@ -247,7 +247,7 @@ class NonparametricPointProcess(Observations):
             )  # (num_samps, obs_dims)
 
             # compute intensity
-            log_rho_tilde = self._log_rho_tilde_sample(
+            log_lambda_tilde = self._log_lambda_tilde_sample(
                 prng_gp,
                 num_samps,
                 tau_tilde[..., None],
@@ -259,10 +259,10 @@ class NonparametricPointProcess(Observations):
             )[
                 ..., 0
             ]  # add dummy time/locs dimension to tau_tilde
-            log_rho_t = log_rho_tilde + log_dtilde_dt  # (num_samps, obs_dims)
+            log_lambda_t = log_lambda_tilde + log_dtilde_dt  # (num_samps, obs_dims)
 
             p_spike = jnp.minimum(
-                jnp.exp(log_rho_t) * self.pp.dt, 1.0
+                jnp.exp(log_lambda_t) * self.pp.dt, 1.0
             )  # approximate by discrete Bernoulli
             spikes = jr.bernoulli(prng_state[-1], p_spike).astype(
                 self.array_dtype()
@@ -279,7 +279,7 @@ class NonparametricPointProcess(Observations):
                 )[..., None, :]
             tau = jnp.where(spike_cond, 0.0, tau)
 
-            return (tau, past_ISI, spikes), (spikes, log_rho_t)
+            return (tau, past_ISI, spikes), (spikes, log_lambda_t)
 
         # add dummy time dimension
         if x_eval is not None:
@@ -288,13 +288,13 @@ class NonparametricPointProcess(Observations):
 
         init = (ini_tau, past_ISIs, jnp.zeros_like(ini_tau))
         xs = (prng_states, x_eval)
-        _, (spikes, log_rho_ts) = lax.scan(step, init, xs)
-        return spikes.transpose(1, 2, 0), log_rho_ts.transpose(
+        _, (spikes, log_lambda_ts) = lax.scan(step, init, xs)
+        return spikes.transpose(1, 2, 0), log_lambda_ts.transpose(
             1, 2, 0
         )  # (num_samps, obs_dims, ts)
 
     ### inference ###
-    def _get_log_rho_post(self, xs, deltas, mean_only, compute_KL, jitter, sel_outdims):
+    def _get_log_lambda_post(self, xs, deltas, mean_only, compute_KL, jitter, sel_outdims):
         """
         :param jnp.ndarray xs: inputs (num_samps, 1, ts, x_dims)
         :param jnp.ndarray deltas: lagged ISIs (num_samps, obs_dims, ts, orders)
@@ -311,7 +311,7 @@ class NonparametricPointProcess(Observations):
             tau, False
         )  # (num_samps, obs_dims, ts)
 
-        log_rho_tilde_mean, log_rho_t_var, KL = self._log_rho_tilde_post(
+        log_lambda_tilde_mean, log_lambda_t_var, KL = self._log_lambda_tilde_post(
             tau_tilde,
             isi,
             xs,
@@ -321,10 +321,10 @@ class NonparametricPointProcess(Observations):
             sel_outdims=sel_outdims,
         )
 
-        log_rho_t_mean = (
-            log_rho_tilde_mean + log_dtilde_dt[:, sel_outdims, :, None]
+        log_lambda_t_mean = (
+            log_lambda_tilde_mean + log_dtilde_dt[:, sel_outdims, :, None]
         )  # (num_samps, obs_dims, ts)
-        return log_rho_t_mean, log_rho_t_var, KL
+        return log_lambda_t_mean, log_lambda_t_var, KL
 
     def variational_expectation(
         self,
@@ -347,25 +347,25 @@ class NonparametricPointProcess(Observations):
         num_samps, ts = xs.shape[0], xs.shape[2]
         prng_state = jr.split(prng_state, num_samps * ts).reshape(num_samps, ts, -1)
 
-        log_rho_t_mean, log_rho_t_var, KL = self._get_log_rho_post(
+        log_lambda_t_mean, log_lambda_t_var, KL = self._get_log_lambda_post(
             xs, deltas[None], False, compute_KL, jitter, sel_outdims
         )
 
-        log_rho_t_mean = log_rho_t_mean.transpose(
+        log_lambda_t_mean = log_lambda_t_mean.transpose(
             0, 2, 1, 3
         )  # (num_samps, ts, obs_dims, 1)
-        log_rho_t_var = log_rho_t_var[..., 0].transpose(
+        log_lambda_t_var = log_lambda_t_var[..., 0].transpose(
             0, 2, 1
         )  # (num_samps, ts, obs_dims, 1)
-        log_rho_t_cov = vmap(vmap(jnp.diag))(
-            log_rho_t_var
+        log_lambda_t_cov = vmap(vmap(jnp.diag))(
+            log_lambda_t_var
         )  # (num_samps, ts, obs_dims, obs_dims)
 
         llf = lambda y, m, c, p: self.pp.variational_expectation(
             y, m, c, p, jitter, lik_int_method, log_predictive
         )
         Eq = vmap(vmap(llf), (None, 0, 0, 0))(
-            ys.T, log_rho_t_mean, log_rho_t_cov, prng_state
+            ys.T, log_lambda_t_mean, log_lambda_t_cov, prng_state
         ).mean()  # mean over mc and ts
 
         return total_samples * Eq, KL
@@ -398,7 +398,7 @@ class NonparametricPointProcess(Observations):
         )  # (num_samps, obs_dims, ts)
 
         if sampling:
-            log_rho_tilde, _ = self._log_rho_tilde_sample(
+            log_lambda_tilde, _ = self._log_lambda_tilde_sample(
                 prng_state,
                 num_samps,
                 tau_tilde,
@@ -411,7 +411,7 @@ class NonparametricPointProcess(Observations):
             )
 
         else:
-            log_rho_tilde, _, _ = self._log_rho_tilde_post(
+            log_lambda_tilde, _, _ = self._log_lambda_tilde_post(
                 tau_tilde,
                 isi,
                 xs,
@@ -421,10 +421,10 @@ class NonparametricPointProcess(Observations):
                 sel_outdims=sel_outdims,
             )
 
-        log_rho_t = (
-            log_rho_tilde + log_dtilde_dt[:, sel_outdims, :, None]
+        log_lambda_t = (
+            log_lambda_tilde + log_dtilde_dt[:, sel_outdims, :, None]
         )  # (num_samps, obs_dims, ts, 1)
-        return log_rho_t
+        return log_lambda_t
 
     def posterior_mean(self, xs, deltas, jitter, sel_outdims):
         """
@@ -438,16 +438,16 @@ class NonparametricPointProcess(Observations):
             obs_dims = len(self.log_warp_tau)
             sel_outdims = jnp.arange(obs_dims)
 
-        log_rho_t_mean, log_rho_t_var, _ = self._get_log_rho_post(
+        log_lambda_t_mean, log_lambda_t_var, _ = self._get_log_lambda_post(
             xs[None, None], deltas[None], False, False, jitter, sel_outdims
         )
-        log_rho_t_mean, log_rho_t_var = (
-            log_rho_t_mean[0, ..., 0],
-            log_rho_t_var[0, ..., 0],
+        log_lambda_t_mean, log_lambda_t_var = (
+            log_lambda_t_mean[0, ..., 0],
+            log_lambda_t_var[0, ..., 0],
         )  # (obs_dims, ts)
 
-        post_rho_mean = jnp.exp(log_rho_t_mean + log_rho_t_var / 2.0)
-        return post_rho_mean
+        post_lambda_mean = jnp.exp(log_lambda_t_mean + log_lambda_t_var / 2.0)
+        return post_lambda_mean
 
     ### sample ###
     def _sample_log_ISI_tilde(
@@ -515,7 +515,7 @@ class NonparametricPointProcess(Observations):
             else None
         )  # (1, obs_dims, pts, x_dims)
 
-        log_rho_tilde_cat = self._log_rho_tilde_sample(
+        log_lambda_tilde_cat = self._log_lambda_tilde_sample(
             prng_state,
             num_samps,
             tau_tilde_cat[None],
@@ -525,24 +525,24 @@ class NonparametricPointProcess(Observations):
             jitter,
             sel_outdims,
         )
-        log_rho_tilde = log_rho_tilde_cat[..., int_eval_pts:]
-        rho_tilde_pts = jnp.exp(log_rho_tilde_cat[..., :int_eval_pts])
+        log_lambda_tilde = log_lambda_tilde_cat[..., int_eval_pts:]
+        lambda_tilde_pts = jnp.exp(log_lambda_tilde_cat[..., :int_eval_pts])
 
         # compute integral over rho
-        quad_rho_tau_tilde = vvvinterp(
-            locs[sel_outdims, ..., 0], tau_tilde_pts[sel_outdims], rho_tilde_pts
+        quad_lambda_tau_tilde = vvvinterp(
+            locs[sel_outdims, ..., 0], tau_tilde_pts[sel_outdims], lambda_tilde_pts
         )  # num_samps, obs_dims, taus, cub_pts
-        int_rho_tau_tilde = (quad_rho_tau_tilde * ws[sel_outdims]).sum(-1)
+        int_lambda_tau_tilde = (quad_lambda_tau_tilde * ws[sel_outdims]).sum(-1)
 
         # normalizer
         locs, ws = gauss_quad_integrate(0.0, 1.0, sigma_pts, weights)
-        quad_rho = vvinterp(locs[:, 0], tau_tilde_pts[sel_outdims], rho_tilde_pts)
+        quad_rho = vvinterp(locs[:, 0], tau_tilde_pts[sel_outdims], lambda_tilde_pts)
         int_rho = (quad_rho * ws).sum(-1)  # (num_samps, obs_dims, taus)
         log_normalizer = safe_log(1.0 - jnp.exp(-int_rho))[
             ..., None
         ]  # (num_samps, obs_dims, 1)
 
-        return log_rho_tilde, int_rho_tau_tilde, log_normalizer
+        return log_lambda_tilde, int_lambda_tau_tilde, log_normalizer
 
     def sample_conditional_ISI(
         self,
@@ -579,7 +579,7 @@ class NonparametricPointProcess(Observations):
             tau_eval[None, :], False
         )  # (obs_dims, locs)
 
-        log_rho_tilde, int_rho_tau_tilde, log_normalizer = self._sample_log_ISI_tilde(
+        log_lambda_tilde, int_lambda_tau_tilde, log_normalizer = self._sample_log_ISI_tilde(
             prng_state,
             num_samps,
             tau_tilde,
@@ -593,7 +593,7 @@ class NonparametricPointProcess(Observations):
             jitter,
         )
 
-        log_ISI_tilde = log_rho_tilde - int_rho_tau_tilde - log_normalizer
+        log_ISI_tilde = log_lambda_tilde - int_lambda_tau_tilde - log_normalizer
         ISI_density = jnp.exp(log_ISI_tilde + log_dtilde_dt[sel_outdims])
         return ISI_density
 
@@ -636,7 +636,7 @@ class NonparametricPointProcess(Observations):
             tau_tilde_pts, True
         )  # (obs_dims, locs)
 
-        log_rho_tilde, int_rho_tau_tilde, log_normalizer = self._sample_log_ISI_tilde(
+        log_lambda_tilde, int_lambda_tau_tilde, log_normalizer = self._sample_log_ISI_tilde(
             prng_state,
             num_samps,
             tau_tilde_pts,
@@ -650,7 +650,7 @@ class NonparametricPointProcess(Observations):
             jitter,
         )
 
-        log_ISI_tilde_pts = log_rho_tilde - int_rho_tau_tilde - log_normalizer
+        log_ISI_tilde_pts = log_lambda_tilde - int_lambda_tau_tilde - log_normalizer
 
         f_pts = func_of_tau(tau_pts[sel_outdims])
         return (f_pts * jnp.exp(log_ISI_tilde_pts) * ws).sum(-1)
@@ -672,10 +672,10 @@ class NonparametricPointProcess(Observations):
         """
         prng_states = jr.split(prng_state, 2)
 
-        y_samples, log_rho_ts = self._sample_spikes(
+        y_samples, log_lambda_ts = self._sample_spikes(
             prng_states[1], timesteps, ini_t_since, past_ISIs, x_samples, jitter
         )
-        return y_samples, log_rho_ts
+        return y_samples, log_lambda_ts
 
     def sample_posterior(
         self,
@@ -691,7 +691,7 @@ class NonparametricPointProcess(Observations):
         """
         prng_states = jr.split(prng_state, 2)
 
-        y_samples, log_rho_ts = self._sample_spikes(
+        y_samples, log_lambda_ts = self._sample_spikes(
             prng_states[1], timesteps, ini_t_since, past_ISIs, x_samples, jitter
         )
-        return y_samples, log_rho_ts
+        return y_samples, log_lambda_ts

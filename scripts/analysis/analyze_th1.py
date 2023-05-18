@@ -20,7 +20,7 @@ import numpy as np
 import utils
 
 
-def tuning_bnpp(
+def tuning_npnr(
     checkpoint_dir,
     model_names,
     dataset_dict,
@@ -34,7 +34,7 @@ def tuning_bnpp(
     outdims_per_batch,
 ):
     """
-    Compute tuning curves of BNPP model
+    Compute tuning curves of NPNR model
     """
     tbin = dataset_dict["properties"]["tbin"]
     neurons = dataset_dict["properties"]["neurons"]
@@ -304,7 +304,7 @@ def main():
             pickle.dump(variability_dict, open(save_dir + "th1_variability.p", "wb"))
 
         elif k == 3:
-            tuning_dict = tuning_bnpp(
+            tuning_dict = tuning_npnr(
                 checkpoint_dir,
                 reg_config_names,
                 dataset_dict,

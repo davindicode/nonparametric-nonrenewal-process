@@ -10,7 +10,7 @@ from jax import lax, vmap
 from .base import ArrayTypes_, module
 from .inputs.gaussian import GaussianLatentObservedSeries
 from .observations.base import Observations
-from .observations.bnpp import NonparametricPointProcess
+from .observations.npnr import NonparametricPointProcess
 from .observations.svgp import (
     ModulatedFactorized,
     ModulatedRenewal,

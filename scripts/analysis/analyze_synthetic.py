@@ -38,7 +38,7 @@ def tuning(
     outdims_per_batch,
 ):
     """
-    Compute tuning curves of BNPP model
+    Compute tuning curves of NPNR model
     """
     # data
     tbin = dataset_dict["properties"]["tbin"]

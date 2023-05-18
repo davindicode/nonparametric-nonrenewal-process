@@ -40,7 +40,7 @@ def load_model_and_config(filename, dataset_dict, mapping_builder, rng):
 
 def extract_lengthscales(kernels, ISI_order):
     """
-    Extract and sort kernel lengthscales from BNPP models
+    Extract and sort kernel lengthscales from NPNR models
     """
     dim_counter, len_deltas, len_xs = 0, [], []
     for k in kernels:  # sort kernel lengthscales
@@ -490,13 +490,13 @@ def sample_activity(
     )
 
     if obs_type == "factorized_gp":
-        sample_ys, log_rho_ts = obs_model.sample_posterior(
+        sample_ys, log_lambda_ts = obs_model.sample_posterior(
             prng_state, x_eval, ini_Y=ini_Y, jitter=jitter
         )
 
     elif obs_type == "rate_renewal_gp":
         ini_t_tilde = jnp.zeros((num_samps, neurons))
-        sample_ys, log_rho_ts = obs_model.sample_posterior(
+        sample_ys, log_lambda_ts = obs_model.sample_posterior(
             prng_state, x_eval, ini_spikes=ini_Y, ini_t_tilde=ini_t_tilde, jitter=jitter
         )
 
@@ -504,7 +504,7 @@ def sample_activity(
         timesteps, ISI_order = x_eval.shape[2], ISIs.shape[-1]
         ini_t_since = jnp.zeros((num_samps, neurons))
         past_ISIs = mean_ISIs[:, None] * jnp.ones((num_samps, neurons, ISI_order - 1))
-        sample_ys, log_rho_ts = obs_model.sample_posterior(
+        sample_ys, log_lambda_ts = obs_model.sample_posterior(
             prng_state,
             timesteps,
             x_eval,
@@ -516,7 +516,7 @@ def sample_activity(
     else:
         raise ValueError("Invalid observation model type")
 
-    return np.array(sample_ys), np.array(log_rho_ts)
+    return np.array(sample_ys), np.array(log_lambda_ts)
 
 
 def linear_regression(X, Y):
@@ -840,7 +840,7 @@ def evaluate_regression_fits(
         print("Test data and predictions...")
         test_lpds, test_ells, test_datas_ts = [], [], []
         pred_log_intensities, pred_spiketimes = [], []
-        sample_log_rhos, sample_spiketimes = [], []
+        sample_log_lambdas, sample_spiketimes = [], []
 
         iterator = tqdm(range(len(test_dataset_dicts)))
         for en in iterator:  # test
@@ -913,9 +913,9 @@ def evaluate_regression_fits(
             pred_log_intensities.append(pred_log_intens)
             pred_spiketimes.append(pred_spkts)
 
-            sample_ys, log_rho_ts = [], []
+            sample_ys, log_lambda_ts = [], []
             for n in range(num_samps):
-                sample_ys_, log_rho_ts_ = sample_activity(
+                sample_ys_, log_lambda_ts_ = sample_activity(
                     prng_state,
                     1,
                     dataloader.load_batch(0),
@@ -930,10 +930,10 @@ def evaluate_regression_fits(
                 prng_state, _ = jr.split(prng_state)
 
                 sample_ys.append(sample_ys_)
-                log_rho_ts.append(log_rho_ts_)
+                log_lambda_ts.append(log_lambda_ts_)
 
             sample_ys = np.concatenate(sample_ys)
-            log_rho_ts = np.concatenate(log_rho_ts)
+            log_lambda_ts = np.concatenate(log_lambda_ts)
 
             sample_spkts = []
             for n in range(neurons):
@@ -945,7 +945,7 @@ def evaluate_regression_fits(
                 )
 
             sample_spiketimes.append(sample_spkts)
-            sample_log_rhos.append(log_rho_ts)
+            sample_log_lambdas.append(log_lambda_ts)
 
         # export
         results = {
@@ -958,7 +958,7 @@ def evaluate_regression_fits(
             "pred_ts": pred_ts,
             "pred_log_intensities": pred_log_intensities,
             "pred_spiketimes": pred_spiketimes,
-            "sample_log_rhos": sample_log_rhos,
+            "sample_log_lambdas": sample_log_lambdas,
             "sample_spiketimes": sample_spiketimes,
             "KS_quantiles": sort_cdfs,
             "KS_statistic": T_KSs,

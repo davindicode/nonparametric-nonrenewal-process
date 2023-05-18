@@ -862,11 +862,11 @@ def main():
 
     variability_dict = pickle.load(open(save_dir + "th1_variability" + ".p", "rb"))
 
-    bnpp_dict = pickle.load(open(save_dir + "th1_regression" + ".p", "rb"))
+    npnr_dict = pickle.load(open(save_dir + "th1_regression" + ".p", "rb"))
 
     baseline_dict = pickle.load(open(save_dir + "th1_baselines" + ".p", "rb"))
 
-    regression_dict = {**baseline_dict, **bnpp_dict}
+    regression_dict = {**baseline_dict, **npnr_dict}
     reg_config_names = list(regression_dict.keys())
     use_reg_config_names = [reg_config_names[k] for k in use_model_inds]
     visualize_names = [reg_config_names[k] for k in use_model_inds[visualize_inds]]
@@ -920,11 +920,11 @@ def main():
 
     variability_dict = pickle.load(open(save_dir + "hc3_variability" + ".p", "rb"))
 
-    bnpp_dict = pickle.load(open(save_dir + "hc3_regression" + ".p", "rb"))
+    npnr_dict = pickle.load(open(save_dir + "hc3_regression" + ".p", "rb"))
 
     baseline_dict = pickle.load(open(save_dir + "hc3_baselines" + ".p", "rb"))
 
-    regression_dict = {**baseline_dict, **bnpp_dict}
+    regression_dict = {**baseline_dict, **npnr_dict}
     reg_config_names = list(regression_dict.keys())
     use_reg_config_names = [reg_config_names[k] for k in use_model_inds]
     visualize_names = [reg_config_names[k] for k in use_model_inds[visualize_inds]]

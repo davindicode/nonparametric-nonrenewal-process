@@ -23,7 +23,7 @@ from lib.inputs.gaussian import GaussianLatentObservedSeries
 from lib.models import GaussianTwoLayer
 
 from lib.observations.base import Observations
-from lib.observations.bnpp import NonparametricPointProcess
+from lib.observations.npnr import NonparametricPointProcess
 from lib.observations.svgp import (
     ModulatedFactorized,
     ModulatedRenewal,
@@ -698,7 +698,7 @@ def build_nonparametric(
         whitened=True,
     )
 
-    # BNPP
+    # NPNR
     wrap_tau = mean_ISIs * np.ones((obs_dims,))  # seconds
     mean_tau = mean_ISIs / 30.0 * np.ones((obs_dims,))
     mean_amp = mean_amp * np.ones((obs_dims,))
