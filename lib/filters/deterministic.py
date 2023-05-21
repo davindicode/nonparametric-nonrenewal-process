@@ -67,7 +67,7 @@ class RaisedCosineBumps(Filter):
     """
     Raised cosine basis [1], takes the form of
 
-    .. math:: f(t;a,c) = 1/2 * cos( min(max(a * log(t + c) - phi, -pi), pi) + 1 )
+    .. math:: f(t;a,c) = 1/2 * cos( min(max(a * log(t + c) - phi, -pi), pi) ) + 1
 
     References:
 
