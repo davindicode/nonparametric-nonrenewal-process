@@ -250,7 +250,7 @@ def main():
     ### parser ###
     parser = argparse.ArgumentParser(
         usage="%(prog)s [options]",
-        description="Analysis of hc3 regression models.",
+        description="Generating synthetic spike train data.",
     )
 
     parser.add_argument("--seed", default=123, type=int)

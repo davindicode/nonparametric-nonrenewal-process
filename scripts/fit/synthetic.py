@@ -5,66 +5,6 @@ import numpy as np
 import template
 
 
-def counts_dataset(session_name, bin_size, path, select_fracs=None):
-    filename = session_name + ".npz"
-    data = np.load(path + filename)
-
-    # spike counts
-    spktrain = data["spktrain"][sel_unit, :]
-    sample_bin = data["tbin"]  # s
-    # sample_bin = 0.001
-    track_samples = spktrain.shape[1]
-
-    # cut out section
-    if select_fracs is None:
-        select_fracs = [0.0, 1.0]
-    t_ind = start_time
-
-    # covariates
-    x_t = data["x_t"]
-    y_t = data["y_t"]
-
-    tbin, resamples, rc_t, (rhd_t, rx_t, ry_t) = utils.neural.bin_data(
-        bin_size,
-        sample_bin,
-        spktrain,
-        track_samples,
-        (x_t, y_t),
-        average_behav=True,
-        binned=True,
-    )
-    timestamps = np.arange(resamples) * tbin
-
-    rcov = {
-        "x": rx_t,
-        "y": ry_t,
-        "time": timestamps,
-    }
-
-    metainfo = {}
-    name = session_name + "bin{}".format(bin_size) + "sel{}to{}".format(*select_fracs)
-    units_used = rc_t.shape[0]
-    max_count = int(rc_t.max())
-
-    # export
-    props = {
-        "max_count": max_count,
-        "tbin": tbin,
-        "name": name,
-        "neurons": units_used,
-        "metainfo": metainfo,
-    }
-
-    dataset_dict = {
-        "covariates": rcov,
-        "ISIs": ISIs,
-        "spiketrains": rc_t,
-        "timestamps": timestamps,
-        "properties": props,
-    }
-    return dataset_dict
-
-
 def spikes_dataset(session_name, path, max_ISI_order, select_fracs):
     """
     :param int max_ISI_order: selecting the starting time based on the
@@ -207,42 +147,21 @@ def observed_kernel_dict_induc_list(rng, observations, num_induc, out_dims, cova
 
 def main():
     parser = argparse.ArgumentParser("%(prog)s [options]", "Fit model to data")
-    subparsers = parser.add_subparsers(dest="datatype")
-
-    parser_counts = subparsers.add_parser("counts", help="Fit model to count data.")
-    parser_spikes = subparsers.add_parser("spikes", help="Fit model to spikes data.")
-
-    parser_counts = template.standard_parser(parser_counts)
-    parser_spikes = template.standard_parser(parser_spikes)
-
-    parser_counts.add_argument("--data_path", action="store", type=str)
-    parser_counts.add_argument("--session_name", action="store", type=str)
-    parser_counts.add_argument(
+    parser = template.standard_parser(parser)
+    
+    parser.add_argument("--data_path", action="store", type=str)
+    parser.add_argument("--session_name", action="store", type=str)
+    parser.add_argument(
         "--select_fracs", default=[0.0, 1.0], nargs="+", type=float
     )
-    parser_counts.add_argument("--bin_size", default=10, type=int)
-
-    parser_spikes.add_argument("--data_path", action="store", type=str)
-    parser_spikes.add_argument("--session_name", action="store", type=str)
-    parser_spikes.add_argument(
-        "--select_fracs", default=[0.0, 1.0], nargs="+", type=float
-    )
-    parser_spikes.add_argument("--max_ISI_order", default=4, type=int)
+    parser.add_argument("--max_ISI_order", default=4, type=int)
 
     args = parser.parse_args()
 
     print("Loading data...")
-    if args.datatype == "counts":
-        assert args.observations.split("-")[0] == "factorized_gp"
-        dataset_dict = counts_dataset(
-            args.session_name, args.data_path, args.bin_size, args.select_fracs
-        )
-    elif args.datatype == "spikes":
-        dataset_dict = spikes_dataset(
-            args.session_name, args.data_path, args.max_ISI_order, args.select_fracs
-        )
-    else:
-        raise ValueError
+    dataset_dict = spikes_dataset(
+        args.session_name, args.data_path, args.max_ISI_order, args.select_fracs
+    )
 
     print("Setting up model...")
     save_name = template.gen_name(args, dataset_dict)

@@ -290,42 +290,21 @@ def observed_kernel_dict_induc_list(rng, obs_covs, num_induc, out_dims, covariat
 
 def main():
     parser = argparse.ArgumentParser("%(prog)s [options]", "Fit model to data")
-    subparsers = parser.add_subparsers(dest="datatype")
-
-    parser_counts = subparsers.add_parser("counts", help="Fit model to count data.")
-    parser_spikes = subparsers.add_parser("spikes", help="Fit model to spikes data.")
-
-    parser_counts = template.standard_parser(parser_counts)
-    parser_spikes = template.standard_parser(parser_spikes)
-
-    parser_counts.add_argument("--data_path", action="store", type=str)
-    parser_counts.add_argument("--session_name", action="store", type=str)
-    parser_counts.add_argument(
+    parser = template.standard_parser(parser)
+    
+    parser.add_argument("--data_path", action="store", type=str)
+    parser.add_argument("--session_name", action="store", type=str)
+    parser.add_argument(
         "--select_fracs", default=[0.0, 1.0], nargs="+", type=float
     )
-    parser_counts.add_argument("--bin_size", default=10, type=int)
-
-    parser_spikes.add_argument("--data_path", action="store", type=str)
-    parser_spikes.add_argument("--session_name", action="store", type=str)
-    parser_spikes.add_argument(
-        "--select_fracs", default=[0.0, 1.0], nargs="+", type=float
-    )
-    parser_spikes.add_argument("--max_ISI_order", default=5, type=int)
+    parser.add_argument("--max_ISI_order", default=5, type=int)
 
     args = parser.parse_args()
 
     print("Loading data...")
-    if args.datatype == "counts":
-        assert args.observations.split("-")[0] == "factorized_gp"
-        dataset_dict = counts_dataset(
-            args.session_name, args.data_path, args.bin_size, args.select_fracs
-        )
-    elif args.datatype == "spikes":
-        dataset_dict = spikes_dataset(
-            args.session_name, args.data_path, args.max_ISI_order, args.select_fracs
-        )
-    else:
-        raise ValueError
+    dataset_dict = spikes_dataset(
+        args.session_name, args.data_path, args.max_ISI_order, args.select_fracs
+    )
 
     print("Setting up model...")
     save_name = template.gen_name(args, dataset_dict)
