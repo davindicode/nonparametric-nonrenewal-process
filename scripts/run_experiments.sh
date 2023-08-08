@@ -94,6 +94,8 @@ python3 hc3.py --data_path ../../data/saves/ --session_name ec014.29_ec014.468_i
 
 
 
+python3 hc3.py --data_path ../../data/saves/ --session_name ec014.29_ec014.468_isi5 --select_frac 0.0 0.5 --seeds 1 2 3 --lr_start 1e-2 --lr_decay 0.98 --lr_end 1e-4 --margin_epochs 100 --loss_margin -1 --batch_size 10000 --observed_covs x-hd --observations nonparam_pp_gp-64-matern32-matern32-1000-n2. --likelihood isi4 --freeze_params obs_model.log_warp_tau --device 0
+
 
 
 ### analysis ###
@@ -111,6 +113,7 @@ python3 analyze_hc3.py --tasks 0 --batch_size 10000 --device 0
 python3 analyze_hc3.py --tasks 1 --batch_size 30000 --device 0
 python3 analyze_hc3.py --tasks 2 --batch_size 100 --device 0
 python3 analyze_hc3.py --tasks 3 --batch_size 1000 --device 0
+python3 analyze_hc3.py --tasks 4 --batch_size 10000 --device 0
 
 
 

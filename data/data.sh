@@ -4,6 +4,7 @@
 cd ./synthetic/
 
 python3 generate.py --seed 123
+python3 generate.py --seed 1234
 
 
 cd ../th1/

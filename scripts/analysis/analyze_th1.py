@@ -158,7 +158,7 @@ def main():
 
     parser.add_argument("--seed", default=123, type=int)
     parser.add_argument("--savedir", default="../saves/", type=str)
-    parser.add_argument("--datadir", default="../../data/th1/", type=str)
+    parser.add_argument("--datadir", default="../../data/saves/", type=str)
     parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
 
     parser.add_argument("--tasks", default=[0, 1, 2], nargs="+", type=int)
@@ -230,11 +230,6 @@ def main():
     max_ISI_order = 4
 
     select_fracs = [0.0, 0.5]
-    dataset_dict = th1.spikes_dataset(
-        session_name, data_path, max_ISI_order, select_fracs
-    )
-    neurons = dataset_dict["properties"]["neurons"]
-
     test_select_fracs = [
         [0.5, 0.6],
         [0.6, 0.7],
@@ -242,18 +237,23 @@ def main():
         [0.8, 0.9],
         [0.9, 1.0],
     ]
-    test_dataset_dicts = [
-        th1.spikes_dataset(session_name, data_path, max_ISI_order, tf)
-        for tf in test_select_fracs
-    ]
+    
+    dataset_dict = th1.spikes_dataset(
+        session_name, data_path, max_ISI_order, select_fracs
+    )
+    neurons = dataset_dict["properties"]["neurons"]
 
     ### analysis ###
-    regression_dict, variability_dict, tuning_dict = {}, {}, {}
     tuning_neuron_list = list(range(neurons))
 
     process_steps = args.tasks
     for k in process_steps:  # save after finishing each dict
         if k == 0:
+            test_dataset_dicts = [
+                th1.spikes_dataset(session_name, data_path, max_ISI_order, tf)
+                for tf in test_select_fracs
+            ]
+
             regression_dict = utils.evaluate_regression_fits(
                 checkpoint_dir,
                 reg_config_names,
@@ -269,6 +269,11 @@ def main():
             pickle.dump(regression_dict, open(save_dir + "th1_regression.p", "wb"))
 
         elif k == 1:
+            test_dataset_dicts = [
+                th1.spikes_dataset(session_name, data_path, max_ISI_order, tf)
+                for tf in test_select_fracs
+            ]
+            
             baseline_dict = utils.evaluate_regression_fits(
                 checkpoint_dir,
                 baseline_config_names,

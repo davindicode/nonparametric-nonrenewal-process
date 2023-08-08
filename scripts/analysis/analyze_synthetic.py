@@ -253,8 +253,9 @@ def main():
 
     parser.add_argument("--seed", default=123, type=int)
     parser.add_argument("--data_seed", default=123, type=int)
+    parser.add_argument("--heldout_data_seed", default=1234, type=int)
     parser.add_argument("--savedir", default="../saves/", type=str)
-    parser.add_argument("--datadir", default="../../data/synthetic/", type=str)
+    parser.add_argument("--datadir", default="../../data/saves/", type=str)
     parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
 
     parser.add_argument("--tasks", default=[0, 1, 2], nargs="+", type=int)
@@ -285,6 +286,7 @@ def main():
     batch_size = args.batch_size
 
     data_seed = args.data_seed
+    heldout_data_seed = args.heldout_data_seed
 
     ### names ###
     ISI_order = 4
@@ -299,29 +301,42 @@ def main():
         + "X[x-y]_Z[]_freeze[obs_model0log_warp_tau]",
     ]
 
+    max_ISI_order = 4
+    test_select_fracs = [
+        [0.0, 0.2],
+        [0.2, 0.4],
+        [0.4, 0.6],
+        [0.6, 0.8],
+        [0.8, 1.0],
+    ]
+    select_fracs = [0.0, 1.0]
+    
     ### load dataset ###
     session_name = "syn_data_seed{}".format(data_seed)
-    max_ISI_order = 4
 
-    select_fracs = [0.0, 1.0]
     dataset_dict = synthetic.spikes_dataset(
         session_name, data_path, max_ISI_order, select_fracs
     )
     neurons = dataset_dict["properties"]["neurons"]
 
     ### analysis ###
-    regression_dict, tuning_dict = {}, {}
-    tuning_neuron_list = list(range(neurons))
-
     process_steps = args.tasks
     for k in process_steps:  # save after finishing each dict
         if k == 0:
+            session_name = "syn_data_seed{}".format(heldout_data_seed)
+
+            test_dataset_dict = [
+                synthetic.spikes_dataset(
+                    session_name, data_path, max_ISI_order, tf
+                ) for tf in test_select_fracs
+            ]
+            
             regression_dict = utils.evaluate_regression_fits(
                 checkpoint_dir,
                 reg_config_names,
                 synthetic.observed_kernel_dict_induc_list,
                 dataset_dict,
-                [],
+                test_dataset_dict,
                 rng,
                 prng_state,
                 batch_size,
@@ -333,6 +348,8 @@ def main():
             )
 
         elif k == 1:
+            tuning_neuron_list = list(range(neurons))
+            
             tuning_dict = tuning(
                 checkpoint_dir,
                 reg_config_names,

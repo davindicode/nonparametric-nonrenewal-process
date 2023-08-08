@@ -912,7 +912,9 @@ def evaluate_regression_fits(
             pred_log_intensities.append(pred_log_intens)
             pred_spiketimes.append(pred_spkts)
 
+            sample_spkts = []
             sample_ys, log_lambda_ts = [], []
+            
             for n in range(num_samps):
                 sample_ys_, log_lambda_ts_ = sample_activity(
                     prng_state,
@@ -931,17 +933,17 @@ def evaluate_regression_fits(
                 sample_ys.append(sample_ys_)
                 log_lambda_ts.append(log_lambda_ts_)
 
-            sample_ys = np.concatenate(sample_ys)
-            log_lambda_ts = np.concatenate(log_lambda_ts)
+            if num_samps > 0:
+                sample_ys = np.concatenate(sample_ys)
+                log_lambda_ts = np.concatenate(log_lambda_ts)
 
-            sample_spkts = []
-            for n in range(neurons):
-                sample_spkts.append(
-                    [
-                        (np.where(sample_ys[tr, n] > 0)[0] + pred_start) * tbin
-                        for tr in range(num_samps)
-                    ]
-                )
+                for n in range(neurons):
+                    sample_spkts.append(
+                        [
+                            (np.where(sample_ys[tr, n] > 0)[0] + pred_start) * tbin
+                            for tr in range(num_samps)
+                        ]
+                    )
 
             sample_spiketimes.append(sample_spkts)
             sample_log_lambdas.append(log_lambda_ts)

@@ -200,10 +200,10 @@ def main():
 
     parser.add_argument("--seed", default=123, type=int)
     parser.add_argument("--savedir", default="../saves/", type=str)
-    parser.add_argument("--datadir", default="../../data/hc3/", type=str)
+    parser.add_argument("--datadir", default="../../data/saves/", type=str)
     parser.add_argument("--checkpointdir", default="../checkpoint/", type=str)
 
-    parser.add_argument("--tasks", default=[0, 1, 2], nargs="+", type=int)
+    parser.add_argument("--tasks", default=[0, 1, 2, 3], nargs="+", type=int)
     parser.add_argument("--batch_size", default=20000, type=int)
 
     parser.add_argument("--device", default=0, type=int)
@@ -267,17 +267,17 @@ def main():
         "ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern32-matern32-1000-n2._"
         + "X[x-hd-theta]_Z[]_freeze[obs_model0log_warp_tau]",
     ]
+    
+    reduced_config_names = [
+        "ec014.29_ec014.468_isi5ISI5sel0.0to0.5_isi4__nonparam_pp_gp-64-matern32-matern32-1000-n2._"
+        + "X[x-hd]_Z[]_freeze[obs_model0log_warp_tau]",
+    ]
 
     ### load dataset ###
     session_name = "ec014.29_ec014.468_isi5"
     max_ISI_order = 4
 
     select_fracs = [0.0, 0.5]
-    dataset_dict = hc3.spikes_dataset(
-        session_name, data_path, max_ISI_order, select_fracs
-    )
-    neurons = dataset_dict["properties"]["neurons"]
-
     test_select_fracs = [
         [0.5, 0.6],
         [0.6, 0.7],
@@ -285,18 +285,22 @@ def main():
         [0.8, 0.9],
         [0.9, 1.0],
     ]
-    test_dataset_dicts = [
-        hc3.spikes_dataset(session_name, data_path, max_ISI_order, tf)
-        for tf in test_select_fracs
-    ]
+    dataset_dict = hc3.spikes_dataset(
+        session_name, data_path, max_ISI_order, select_fracs
+    )
+    neurons = dataset_dict["properties"]["neurons"]
 
     ### analysis ###
-    regression_dict, variability_dict, tuning_dict = {}, {}, {}
     tuning_neuron_list = list(range(neurons))
 
     process_steps = args.tasks
     for k in process_steps:  # save after finishing each dict
         if k == 0:
+            test_dataset_dicts = [
+                hc3.spikes_dataset(session_name, data_path, max_ISI_order, tf)
+                for tf in test_select_fracs
+            ]
+
             regression_dict = utils.evaluate_regression_fits(
                 checkpoint_dir,
                 reg_config_names,
@@ -312,6 +316,11 @@ def main():
             pickle.dump(regression_dict, open(save_dir + "hc3_regression.p", "wb"))
 
         elif k == 1:
+            test_dataset_dicts = [
+                hc3.spikes_dataset(session_name, data_path, max_ISI_order, tf)
+                for tf in test_select_fracs
+            ]
+            
             baseline_dict = utils.evaluate_regression_fits(
                 checkpoint_dir,
                 baseline_config_names,
@@ -361,6 +370,26 @@ def main():
             )
 
             pickle.dump(tuning_dict, open(save_dir + "hc3_tuning.p", "wb"))
+            
+        elif k == 4:
+            test_dataset_dicts = [
+                hc3.spikes_dataset(session_name, data_path, max_ISI_order, tf)
+                for tf in test_select_fracs
+            ]
+            
+            reduced_dict = utils.evaluate_regression_fits(
+                checkpoint_dir,
+                reduced_config_names,
+                hc3.observed_kernel_dict_induc_list,
+                dataset_dict,
+                test_dataset_dicts,
+                rng,
+                prng_state,
+                batch_size,
+                num_samps=16,
+            )
+
+            pickle.dump(reduced_dict, open(save_dir + "hc3_reduced.p", "wb"))
 
 
 if __name__ == "__main__":
