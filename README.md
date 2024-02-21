@@ -6,10 +6,10 @@
 
 ### Overview
 
-This is the code repository for this [paper]().
+This is the code repository for this [paper](https://openreview.net/forum?id=qlJoo2y3gY).
 Models are implemented in Python and JAX with dependencies on libraries listed below at the end.
-See `data/` for data generation, preprocessing and visualization.
-See notebooks in `notebooks/` for a examples on loading fitted models.
+See `data/` for data preprocessing, synthetic data generation, and visualization.
+See notebooks in `notebooks/` for a examples on loading and analyzing fitted models.
 See `scripts/` for model fitting, analysis and plotting code.
 
 

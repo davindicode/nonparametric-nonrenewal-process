@@ -2,6 +2,9 @@ import os
 
 import sys
 
+import jax
+jax.config.update('jax_platform_name', 'cpu')
+
 import jax.numpy as jnp
 import jax.random as jr
 
@@ -118,7 +121,7 @@ def main():
     ax.set_yticks([])
     ax.text(-0.15, -0.15, r"$0$", fontsize=11)
 
-    ax.set_xlabel("ISI")
+    ax.set_xlabel("interspike interval")
     ax.set_ylabel("probablity")
 
     ### export ###

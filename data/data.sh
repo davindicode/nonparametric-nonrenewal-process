@@ -1,12 +1,14 @@
 #!/bin/bash
 
 
+# synthetic data
 cd ./synthetic/
 
 python3 generate.py --seed 123
 python3 generate.py --seed 1234
 
 
+# head direction cells in open arena
 cd ../th1/
 
 DATADIR="/scratches/sagarmatha_2/ktj21/data/crcns/th-1/data/"
@@ -17,7 +19,7 @@ python3 preprocess.py --datadir $DATADIR --savedir $SAVEDIR --session_id 140313 
 python3 select_units.py --datadir $SAVEDIR --session_id 140313 --mouse_id Mouse28 --phase wake
 
 
-
+# place cells along corridor
 cd ../hc3/
 
 DATADIR="/scratches/ramanujan_2/dl543/hc-3/"
